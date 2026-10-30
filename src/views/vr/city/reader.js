@@ -1,24 +1,74 @@
-// The reading panel (borrowed from vr-breeze and adapted): a header, a stream of turns (one texture per turn, so
-// scrolling and switching never re-rasterise text), the turn strip, fades, and the "new output" pill.
+// The reading panel (borrowed from vr-breeze and adapted): a header, a stream of turns (drawn in tiles, so
+// scrolling never re-rasterises text), the turn strip, fades, and the "new output" pill.
 import * as THREE from 'three';
-import {Panel} from './panel.js';
+import {Panel, panels} from './panel.js';
 import {S, get, turnsOf} from './state.js';
 import * as V from './views.js';
-import {PPM, TURN_W, layoutTurn, drawTurn} from './turns.js';
-import {world, frameMesh, frameRingGeo, setFrameSize, nowMs, animMs, clamp, easeOut, R, RW, RH, TOP, STREAM_TOP, STREAM_BOT} from './core.js';
+import {PPM, TURN_W, layoutTurn, layoutTurnSteps, drawTurn} from './turns.js';
+import {world, renderer, frameMesh, frameRingGeo, setFrameSize, nowMs, animMs, clamp, easeOut, R, RW, RH, TOP, STREAM_TOP, STREAM_BOT} from './core.js';
 
 export const VIEW_PX = Math.round(R.streamH * PPM);
 export const TURN_GAP = 22, SNAP_MARGIN = 14;
 export const TURN_X = -RW / 2 + 0.006;
 
-// ------------------------------------------------------------------ turn sets: one texture per turn, cached per session
+// ------------------------------------------------------------------ turn sets: turns laid out once, drawn in tiles
+// pi-web (usability round 1): a turn used to be ONE canvas capped at 4096 px, which cut long turns (the latest reply)
+// and uploaded hundreds of MB per switch on real transcripts. Now every turn is laid out in full (cheap, no pixels),
+// and drawn only where you can see it: in TILE.h-tall tiles (one texture each, so scrolling still never re-rasters a
+// tile), for the visible window plus one screen above and below. Tiles off that window are released. Rastering is
+// budgeted per frame (TILE.budget bytes, at least one tile), and the resident tile textures are capped (TILE.cap),
+// least recently seen first. Tiles raster at TILE.raster texels per layout px: the text stays well above the
+// headset's rendered pixel density (see the PR's legibility note).
+export const TILE = {h: 1024, raster: 0.72, budget: 4e6, cap: 120e6, margin: 1, layMs: 6};
 const scratch = document.createElement('canvas').getContext('2d');
-export const sets = new Map(); // sid -> TurnSet (LRU by lastUse)
+export const sets = new Map(); // sid -> TurnSet
 export const expandedBySid = new Map();
+export const tileStats = {rasters: 0, bytes: 0, resident: 0, dropped: 0, frameBytes: 0};
 function turnKey(s, t, i, exp, mark) {
   const parts = [i, t.start, t.end, mark != null && mark >= t.start && mark < t.end ? mark : -1];
-  for (let j = t.start; j < t.end; j++) { const m = s.messages[j]; parts.push(m.type[0] + (m.status || '') + (m.sum || '') + (m.html?.length || 0) + (m.streaming ? 's' : '') + (exp.has(j) ? 'x' : '')); }
+  for (let j = t.start; j < t.end; j++) { const m = s.messages[j]; parts.push(m.type[0] + (m.status || '') + (m.sum || '') + (m.src != null ? m.src.length : m.html?.length || m.text?.length || 0) + (m.streaming ? 's' : '') + (exp.has(j) ? 'x' : '')); }
   return parts.join('|');
+}
+const tileBytes = (t) => t.panel ? t.panel.cw * t.panel.ch * 4 * (t.panel.tex.generateMipmaps ? 1.34 : 1) : 0;
+// Tile panels are pooled, not disposed: their materials stay alive, so three.js keeps the compiled shader program
+// (disposing the last material of a kind released the program, and the next tile recompiled it: 150-250 ms frames on
+// every switch). A pooled panel keeps its mesh and material; its texture and canvas memory are released.
+const pool = [];
+function poolPanel(p) {
+  const i = panels.indexOf(p); if (i >= 0) panels.splice(i, 1);
+  p.mesh.parent?.remove(p.mesh);
+  p.tex.dispose(); p.canvas.width = p.canvas.height = 1;
+  p.regions = []; p.hoverIds = new Set(); p.turn = null;
+  if (pool.length < 96) pool.push(p); else { p.mesh.geometry.dispose(); p.mat.dispose(); }
+}
+function unpoolPanel(name, o) {
+  const p = pool.pop();
+  if (!p) return new Panel(name, o);
+  p.name = name; p.w = o.w; p.h = o.h; p.cw = o.canvasW; p.ch = o.canvasH; p.drawFn = o.draw;
+  p.canvas.width = p.cw; p.canvas.height = p.ch;
+  p.tex.generateMipmaps = o.mipmaps !== false; p.tex.minFilter = p.tex.generateMipmaps ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  p.tex.needsUpdate = true;
+  p.mesh.geometry.dispose(); p.u0 = 0; p.v0 = 0; p.mesh.geometry = p.geometry();
+  p.mesh.visible = true; p.mat.opacity = 1; p.dirty = true;
+  panels.push(p);
+  return p;
+}
+/** A turn's height before it is laid out: about 46 characters per 52 px line, plus its chips and headings. */
+function estimateTurn(s, t) {
+  let h = 120;
+  for (let j = t.start; j < t.end; j++) {
+    const m = s.messages[j];
+    if (m.type === 'tool' || m.type === 'edit' || m.type === 'thinking') { h += 78; continue; }
+    const n = (m.type === 'assistant' ? (m.src != null ? m.src.length : (m.html || '').length * 0.8) : (m.text || '').length) || 0;
+    h += 40 + Math.ceil(n / (m.type === 'user' ? 38 : 46)) * 52;
+  }
+  return h;
+}
+const dist = (tt, y) => (y >= tt.top && y <= tt.top + tt.h ? 0 : Math.min(Math.abs(y - tt.top), Math.abs(y - tt.top - tt.h)));
+/** Draw the part of a turn's layout between y0 and y1 (layout px) into a tile canvas. */
+function drawTurnRange(c, lay, w, y0, y1) {
+  if (y0 === 0) { c.fillStyle = '#1c1c1c'; c.fillRect(48, 2, w - 96, 2); }
+  for (const it of lay.items) if (it.y < y1 && it.y + it.h > y0) it.draw(c, it.y);
 }
 export class TurnSet {
   constructor(sid) {
@@ -27,58 +77,224 @@ export class TurnSet {
     this.build();
   }
   mark() { const s = get(this.sid); return s.id === S.currentId ? s.newMark : s.seenCount < s.messages.length ? s.seenCount : null; }
+  /**
+   * Keys, positions and the stream height. Turns whose content changed are queued for layout (layStep) and keep an
+   * estimated height until then, so opening a long session never lays out everything in one frame.
+   */
   build() {
     const s = get(this.sid);
     const ts = turnsOf(s), mark = this.mark();
     const next = [];
-    let y = 8;
     ts.forEach((t, i) => {
       const key = turnKey(s, t, i, this.expanded, mark);
-      let tt = this.turns[i]?.key === key ? this.turns[i] : null;
-      if (!tt) { this.turns[i]?.panel.dispose(); tt = this.makeTurn(s, t, i, mark, key); }
-      tt.top = y;
-      tt.panel.mesh.position.set(0, -y / PPM, 0);
-      y += tt.h + TURN_GAP;
+      let tt = this.turns[i];
+      if (!tt) tt = {key: null, lay: null, h: estimateTurn(s, t), top: 0, replyY: null, markY: null, tiles: [], i};
+      tt.start = t.start; tt.end = t.end;
+      if (tt.key !== key) { tt.want = {key, t, mark}; if (!tt.lay) tt.h = estimateTurn(s, t); }
       next.push(tt);
     });
-    for (let i = ts.length; i < this.turns.length; i++) this.turns[i].panel.dispose();
+    for (let i = ts.length; i < this.turns.length; i++) this.releaseTurn(this.turns[i]);
     this.turns = next;
-    this.height = y + 10;
-    const mi = next.findIndex((tt) => tt.markY != null);
-    this.markY = mi >= 0 ? next[mi].top + next[mi].markY : null;
-    this.markF = mi >= 0 ? (mi + next[mi].markY / next[mi].h) / next.length : null;
+    this.place();
     this.stale = false;
-    if (this.reader) this.reader.attachClip(this);
   }
-  makeTurn(s, t, i, mark, key) {
-    const lay = layoutTurn(scratch, s, t, {index: i, expanded: this.expanded, newMark: mark});
-    const h = Math.min(lay.h, 4096);
-    const sid = this.sid;
-    // pi-web: a turn that is still streaming is rebuilt on every update; building its mipmaps each time is the costly
-    // part (as for the round 3 tiles), so only settled turns get them.
+  /** Stack the turns (laid out or estimated) and position their tiles. */
+  place() {
+    let y = 8;
+    for (const tt of this.turns) {
+      tt.top = y;
+      for (const tl of tt.tiles) if (tl.panel) tl.panel.mesh.position.set(0, -(y + tl.y0) / PPM, 0);
+      y += tt.h + TURN_GAP;
+    }
+    this.height = y + 10;
+    const mi = this.turns.findIndex((tt) => tt.markY != null);
+    this.markY = mi >= 0 ? this.turns[mi].top + this.turns[mi].markY : null;
+    this.markF = mi >= 0 ? (mi + this.turns[mi].markY / this.turns[mi].h) / this.turns.length : null;
+    this.version = (this.version || 0) + 1;
+  }
+  /** Lay out these turns now (indices; missing ones are skipped). */
+  layTurnsNow(idx) {
+    const s = get(this.sid); let moved = false;
+    for (const i of idx) { const tt = this.turns[i]; if (!tt?.want) continue; const w = tt.want; tt.want = null; Object.assign(tt, this.relayTurn(s, w.t, tt.i, w.mark, w.key, tt)); moved = true; }
+    if (moved) this.place();
+  }
+  /** The turn holding the "new since you looked" mark, or -1. */
+  markTurn() { const m = this.mark(); return m == null ? -1 : this.turns.findIndex((tt) => tt.start <= m && m < tt.end); }
+  /** Turns still to lay out. */
+  pending() { return this.turns.filter((tt) => tt.want); }
+  /**
+   * Lay out queued turns for up to `ms` milliseconds: the ones nearest stream position `focusY` first (what you are
+   * about to see), at least one. Returns whether anything moved.
+   */
+  layStep(ms, focusY = Infinity) {
+    const todo = this.pending();
+    if (!todo.length) return false;
+    const s = get(this.sid);
+    todo.sort((a, b) => dist(a, focusY) - dist(b, focusY));
+    const t0 = performance.now();
+    let moved = false;
+    for (const tt of todo) {
+      // A turn's layout runs as a generator, message by message, and resumes next frame when the budget is spent.
+      const w = tt.want;
+      if (!tt.gen || tt.genKey !== w.key) { tt.gen = layoutTurnSteps(scratch, s, w.t, {index: tt.i, expanded: this.expanded, newMark: w.mark, width: TURN_W}); tt.genKey = w.key; }
+      let r = tt.gen.next();
+      while (!r.done && performance.now() - t0 < ms) r = tt.gen.next();
+      if (!r.done) break;
+      tt.want = null; tt.gen = null;
+      Object.assign(tt, this.relayTurn(s, w.t, tt.i, w.mark, w.key, tt, r.value));
+      moved = true;
+      if (performance.now() - t0 > ms) break;
+    }
+    if (moved) this.place();
+    return moved;
+  }
+  /** (Re)lay a turn. Its tiles keep their textures until they are re-rastered (no flash while a reply streams).
+   * `lay` may be given (a layout finished over several frames by layStep). */
+  relayTurn(s, t, i, mark, key, old, lay = layoutTurn(scratch, s, t, {index: i, expanded: this.expanded, newMark: mark, width: TURN_W})) {
     let live = false; for (let j = t.start; j < t.end; j++) if (s.messages[j].streaming || s.messages[j].status === 'running') live = true;
-    const panel = new Panel(`turn:${sid}:${i}`, {w: TURN_W / PPM, h: h / PPM, ppm: PPM, canvasW: TURN_W, canvasH: h, anchorX: 0, anchorY: 1, renderOrder: 3, hoverRedraw: false, mipmaps: !live,
-      draw: (ctx, p) => { drawTurn(ctx, lay, TURN_W); for (const r of lay.regions) p.region(`chip:${sid}:${r.msg}`, 0, r.y, TURN_W, r.h, {chip: r.msg, click: () => V.UI.toggleChip(sid, r.msg)}); }});
-    panel.isTurn = true;
-    panel.mat.depthWrite = false;
-    this.group.add(panel.mesh);
-    return {panel, key, h, top: 0, replyY: lay.replyY, markY: lay.markY};
+    const h = lay.h, n = Math.max(1, Math.ceil(h / TILE.h)), tiles = [];
+    for (let k = 0; k < n; k++) {
+      const y0 = k * TILE.h, th = Math.min(TILE.h, h - y0);
+      // Heights round up to 64 px, so a streaming turn's last tile is re-created only every few lines.
+      const ch = Math.max(64, Math.ceil(th / 64) * 64);
+      const prev = old?.tiles[k];
+      if (prev?.panel && prev.ch === ch) { prev.dirty = true; prev.live = live; tiles.push(prev); continue; }
+      if (prev) this.releaseTile(prev);
+      tiles.push({k, y0, ch, panel: null, dirty: true, live, seen: 0});
+    }
+    if (old) for (const tl of old.tiles.slice(n)) this.releaseTile(tl);
+    return {key, lay, h, top: old?.top || 0, replyY: lay.replyY, markY: lay.markY, tiles, i, want: null};
   }
+  releaseTile(tl) { if (tl.panel) { tileStats.resident -= tileBytes(tl); poolPanel(tl.panel); tl.panel = null; tileStats.dropped++; } tl.dirty = true; }
+  releaseTurn(tt) { for (const tl of tt.tiles) this.releaseTile(tl); }
+  releaseAll() { for (const tt of this.turns) this.releaseTurn(tt); }
+  /** Raster (or re-raster) one tile; returns the bytes it uploads. */
+  rasterTile(tt, tl) {
+    const R_ = TILE.raster, sid = this.sid;
+    if (!tl.panel) {
+      const lay = () => tt.lay;
+      const opts = {w: TURN_W / PPM, h: tl.ch / PPM, ppm: PPM, canvasW: Math.round(TURN_W * R_), canvasH: Math.round(tl.ch * R_), anchorX: 0, anchorY: 1, renderOrder: 3, hoverRedraw: false, mipmaps: !tl.live,
+        draw: (ctx, p) => {
+          ctx.save(); ctx.setTransform(R_, 0, 0, R_, 0, 0); ctx.translate(0, -tl.y0);
+          drawTurnRange(ctx, lay(), TURN_W, tl.y0, tl.y0 + tl.ch);
+          ctx.restore();
+          for (const r of lay().regions) if (r.y < tl.y0 + tl.ch && r.y + r.h > tl.y0) p.region(`chip:${sid}:${r.msg}`, 0, r.y - tl.y0, TURN_W, r.h, {chip: r.msg, click: () => V.UI.toggleChip(sid, r.msg)});
+        }};
+      const panel = unpoolPanel(`turn:${sid}:${tt.i}:${tl.k}`, opts);
+      panel.toCanvas = (uv) => ({x: uv.x * TURN_W, y: (1 - uv.y) * tl.ch});
+      panel.fromCanvas = (x, y) => ({u: x / TURN_W, v: 1 - y / tl.ch});
+      panel.isTurn = true; panel.turn = tt; panel.mat.depthWrite = false;
+      panel.mesh.position.set(0, -(tt.top + tl.y0) / PPM, 0);
+      if (this.reader) { panel.mat.clippingPlanes = this.reader.clip; panel.mat.opacity = this.reader.alpha; }
+      this.group.add(panel.mesh);
+      tl.panel = panel;
+    } else {
+      tileStats.resident -= tileBytes(tl);
+      const mips = !tl.live; if (tl.panel.tex.generateMipmaps !== mips) { tl.panel.tex.generateMipmaps = mips; tl.panel.tex.minFilter = mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter; }
+    }
+    tl.panel.dirty = true; tl.panel.update(true); tl.dirty = false;
+    renderer.initTexture(tl.panel.tex); // upload now, inside this frame's budget (also for a prefetched set off-screen)
+    const b = tileBytes(tl); tileStats.resident += b; tileStats.rasters++; tileStats.bytes += b;
+    return b;
+  }
+  /** Tiles that intersect [y0, y1] (stream px), with whether they also intersect the viewport [v0, v1]. */
+  *tilesIn(y0, y1) {
+    for (const tt of this.turns) {
+      if (!tt.lay || tt.top > y1 || tt.top + tt.h < y0) continue;
+      for (const tl of tt.tiles) { const a = tt.top + tl.y0, b = a + tl.ch; if (b >= y0 && a <= y1) yield [tt, tl, a, b]; }
+    }
+  }
+  /** The turn whose layout covers stream position y, and the tile there (for tests: is the text at y drawn?). */
+  tileAt(y) { for (const [tt, tl] of this.tilesIn(y, y)) return {turn: tt.i, tile: tl.k, drawn: !!tl.panel && !tl.dirty}; return null; }
   snapPos(i) { return this.turns[i].top - SNAP_MARGIN; }
-  dispose() { for (const t of this.turns) t.panel.dispose(); this.turns = []; this.group.parent?.remove(this.group); sets.delete(this.sid); }
+  dispose() { this.releaseAll(); this.turns = []; this.group.parent?.remove(this.group); sets.delete(this.sid); }
 }
 export function setFor(sid) {
   let set = sets.get(sid);
   if (!set) { set = new TurnSet(sid); sets.set(sid, set); }
   else if (set.stale) set.build();
   set.lastUse = nowMs();
-  // LRU: keep the current session, the readers' sessions and the prefetched neighbours; drop the rest.
-  if (sets.size > 6) {
+  // Layouts are cheap to keep, tiles are not: sets beyond the readers' and the prefetched ones keep no tiles (tileStep).
+  if (sets.size > 8) {
     const keep = new Set([S.currentId, ...readers.map((r) => r.sid), sid]);
     const old = [...sets.values()].filter((x) => !keep.has(x.sid)).sort((a, b) => a.lastUse - b.lastUse);
-    while (sets.size > 6 && old.length) old.shift().dispose();
+    while (sets.size > 8 && old.length) old.shift().dispose();
   }
   return set;
+}
+/** Stand-ins for the tile materials (with and without a reader's clipping planes), compiled up front and kept, so the
+ * first tile of a kind never compiles its shader in the middle of a session switch. */
+const warm = [];
+export function shaderWarmup() {
+  if (!warm.length) {
+    for (const clip of [readers[0].clip, null]) for (const mipmaps of [true, false]) {
+      const p = new Panel('turn-warmup', {w: 0.001, h: 0.001, ppm: PPM, canvasW: 4, canvasH: 4, renderOrder: 3, hoverRedraw: false, mipmaps, interactive: false, draw: () => {}});
+      p.mat.depthWrite = false; if (clip) p.mat.clippingPlanes = clip;
+      const i = panels.indexOf(p); if (i >= 0) panels.splice(i, 1);
+      p.mesh.frustumCulled = false; warm.push(p.mesh);
+    }
+  }
+  return warm;
+}
+/** Sessions whose landing screen should be ready before you flick to them (set by app.js). */
+export const prefetch = {sids: []};
+/**
+ * Each frame: which tiles are wanted (the readers' visible windows first, then a screen above and below, then the
+ * prefetched neighbours' landing screens), raster the most important within the per-frame budget, and release the rest.
+ */
+export function tileStep() {
+  const t = nowMs(), wanted = [], keep = new Set();
+  const want = (set, y0, y1, v0, v1, prio) => {
+    for (const [tt, tl, a, b] of set.tilesIn(y0, y1)) {
+      const vis = b >= v0 && a <= v1, pr = vis ? prio : prio + 1;
+      keep.add(tl); tl.seen = t;
+      if (!tl.panel || tl.dirty) wanted.push({set, tt, tl, pr, d: Math.abs(a - v0)});
+    }
+  };
+  // Layout first, time-sliced: the readers' sets around what they show, then the prefetched ones.
+  let layMs = TILE.layMs;
+  for (const r of readers) {
+    if (!r.set || r.set.reader !== r || !r.set.pending().length) continue;
+    const t1 = performance.now(); r.layout(layMs); layMs -= performance.now() - t1;
+  }
+  for (const sid of prefetch.sids) { const set = sets.get(sid); if (!set || set.reader || layMs <= 0) continue; const t1 = performance.now(); set.layStep(layMs, landingOf(set)); layMs -= performance.now() - t1; }
+  for (const r of readers) {
+    if (!r.set || r.set.reader !== r || r.alpha < 0.01) continue;
+    const v0 = r.scroll, v1 = r.scroll + VIEW_PX, m = VIEW_PX * TILE.margin;
+    want(r.set, v0 - m, v1 + m, v0, v1, 0);
+  }
+  for (const sid of prefetch.sids) {
+    const set = sets.get(sid); if (!set || set.reader) continue;
+    const y = landingOf(set);
+    want(set, y, y + VIEW_PX, y, y + VIEW_PX, 2);
+  }
+  wanted.sort((a, b) => a.pr - b.pr || a.d - b.d);
+  let used = 0;
+  for (const w of wanted) {
+    if (used > 0 && used + w.tl.ch * TURN_W * TILE.raster * TILE.raster * 4 * 1.34 > TILE.budget) break;
+    used += w.set.rasterTile(w.tt, w.tl);
+  }
+  tileStats.frameBytes = used;
+  // Release: every tile outside its set's window, then (if still over the cap) the least recently seen.
+  const all = [];
+  for (const set of sets.values()) for (const tt of set.turns) for (const tl of tt.tiles) if (tl.panel) { if (!keep.has(tl)) set.releaseTile(tl); else all.push([set, tl]); }
+  if (tileStats.resident > TILE.cap) {
+    all.sort((a, b) => a[1].seen - b[1].seen);
+    for (const [set, tl] of all) { if (tileStats.resident <= TILE.cap) break; if (tl.seen === t && set.reader) continue; set.releaseTile(tl); }
+  }
+  // Show only the drawn tiles that intersect each reader's viewport.
+  for (const r of readers) {
+    if (!r.set || r.set.reader !== r) continue;
+    const v0 = r.scroll - 40, v1 = r.scroll + VIEW_PX + 40;
+    for (const tt of r.set.turns) for (const tl of tt.tiles) if (tl.panel) { const a = tt.top + tl.y0; tl.panel.mesh.visible = a + tl.ch > v0 && a < v1; }
+  }
+}
+/** Where a reader would land in a set (the same rule as Reader.landing, without a reader). */
+function landingOf(set) {
+  const s = get(set.sid), max = Math.max(0, set.height - VIEW_PX);
+  if (set.markY != null) return clamp(set.markY - 24, 0, max);
+  if (s?.savedScroll != null) return clamp(s.savedScroll, 0, max);
+  return set.turns.length ? clamp(set.snapPos(set.turns.length - 1), 0, max) : 0;
 }
 
 // ------------------------------------------------------------------ the reader: header, stream of turns, turn strip
@@ -141,7 +357,7 @@ export class Reader {
   }
   get maxScroll() { return Math.max(0, (this.set?.height || 0) - VIEW_PX); }
   get dest() { return this.anim ? this.anim.to : this.scroll; }
-  attachClip(set) { for (const t of set.turns) t.panel.mat.clippingPlanes = this.clip; }
+  attachClip(set) { for (const t of set.turns) for (const tl of t.tiles) if (tl.panel) tl.panel.mat.clippingPlanes = this.clip; }
   setSession(sid) {
     if (this.set && this.set.reader === this) { this.set.reader = null; this.view.remove(this.set.group); }
     this.sid = sid;
@@ -150,10 +366,25 @@ export class Reader {
     this.set.reader = this;
     this.view.add(this.set.group);
     this.attachClip(this.set);
-    for (const t of this.set.turns) t.panel.update(true);
     this.anim = null; this.vel = 0; this.newOutput = false;
+    // pi-web: lay out the turns you land on first (the "new since you looked" one, else the latest), within the
+    // frame budget; the rest follow a few milliseconds a frame, with the view anchored to what you are reading.
     this.scroll = this.landing();
+    const mt = this.set.markTurn(), lt = mt >= 0 ? mt : this.set.turns.length - 1;
+    if (this.set.turns[lt]?.want) { this.layout(TILE.layMs); this.scroll = this.landing(); }
     this.header.invalidate(); this.strip.invalidate();
+  }
+  /** Time-sliced layout of the rest of the set, keeping the view (or its scroll target) on the same content. */
+  layout(ms) {
+    const set = this.set; if (!set) return;
+    const y = this.dest, ai = set.turns.findIndex((tt) => tt.top + tt.h + TURN_GAP > y);
+    const anchor = ai >= 0 ? {i: ai, off: y - set.turns[ai].top} : null;
+    const wasBottom = this.dest >= this.maxScroll - 2 && this.maxScroll > 0;
+    if (!set.layStep(ms, y + VIEW_PX / 2)) return;
+    if (wasBottom && ai === set.turns.length - 1) { const d = this.maxScroll - this.dest; this.scroll += d; if (this.anim) { this.anim.from += d; this.anim.to += d; } }
+    else if (anchor) { const d = set.turns[anchor.i].top + anchor.off - y; if (d) { this.scroll += d; if (this.anim) { this.anim.from += d; this.anim.to += d; } } }
+    // The strip's ticks follow the real heights: redraw it when the layout is done, or at most every 400 ms meanwhile.
+    if (!set.pending().length || nowMs() - (this.stripAt || 0) > 400) { this.stripAt = nowMs(); this.strip.invalidate(); }
   }
   landing() {
     const s = get(this.sid), set = this.set;
@@ -199,7 +430,8 @@ export class Reader {
   relayout() {
     const atBottom = this.dest >= this.maxScroll - 30 || this.follow;
     this.set.build();
-    for (const t of this.set.turns) t.panel.update(true);
+    this.layout(TILE.layMs); // a streaming reply: its turn is laid out at once (it is what you are watching)
+    this.attachClip(this.set);
     if (atBottom) { this.to(this.maxScroll, 300); this.follow = false; } else if (this.maxScroll > this.dest + 30) this.newOutput = true;
     this.strip.invalidate(); this.header.invalidate();
   }
@@ -219,11 +451,7 @@ export class Reader {
     this.scroll = clamp(this.scroll, 0, max);
     if (this.scroll >= max - 8) this.newOutput = false;
     this.view.position.y = STREAM_TOP + this.scroll / PPM;
-    // Cull turns outside the viewport (no redraw: visibility only).
-    for (const t of this.set.turns) {
-      const vis = t.top + t.h > this.scroll - 40 && t.top < this.scroll + VIEW_PX + 40;
-      t.panel.mesh.visible = vis;
-    }
+    // Tiles: drawn, released and shown by tileStep (main.js), within the per-frame budget.
     // Current turn index for the header.
     let ti = 0;
     const probe = this.scroll >= max - 4 && max > 0 ? this.scroll + VIEW_PX * 0.45 : this.scroll + 60;
@@ -257,7 +485,7 @@ export class Reader {
     this.ind.material.uniforms.uOpacity.value = op;
     for (const f of this.fades) f.material.uniforms.uOpacity.value = op;
     for (const p of [this.header, this.strip, this.pill]) p.mat.opacity = op;
-    if (this.set?.reader === this) for (const t of this.set.turns) t.panel.mat.opacity = op;
+    if (this.set?.reader === this) for (const t of this.set.turns) for (const tl of t.tiles) if (tl.panel) tl.panel.mat.opacity = op;
   }
 }
 export const readers = [new Reader('rA'), new Reader('rB')];

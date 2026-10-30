@@ -16,7 +16,10 @@ export type CityMessage = {
   type: "user" | "assistant" | "tool";
   key: string;
   text?: string;
+  /** The City's HTML (assistant messages): parsed from `src` on first read, so a transcript parses only what is drawn. */
   html?: string;
+  /** The assistant message's markdown. */
+  src?: string;
   time?: string;
   streaming?: boolean;
   name?: string;
@@ -64,6 +67,10 @@ export type CityClient = {
   artifacts(sessionId: string): CityArtifact[];
   /** Bumps when any session's artifacts change (the city's markers re-sync). */
   artifactsVersion(): number;
+  /** Load and follow these sessions' transcripts now (they load lazily otherwise). */
+  warm(ids: string[]): void;
+  /** Whether a session's transcript has loaded (the scene waits for it before marking what is "new"). */
+  messagesLoaded(id: string): boolean;
   events: { subscribe(fn: (event: { type: string; sessionId: string }) => void): () => void };
   files: { home: string; tree(root?: string): CityDir | null };
   actions: { openSession(id: string): void; prompt(id: string, text: string): boolean; markRead(id: string): void; openIn2D(id: string, artifact?: { url: string }): void };
@@ -102,8 +109,20 @@ function markdownHtml(text: string) {
   return html;
 }
 
+/** Give an assistant message an `html` that is parsed from its markdown on first read (and re-parsed when it changes). */
+function lazyHtml(message: CityMessage): CityMessage {
+  let parsedFrom: string | undefined, html = "";
+  Object.defineProperty(message, "html", {
+    configurable: true, enumerable: false,
+    get() { if (parsedFrom !== this.src) { parsedFrom = this.src; html = markdownHtml(this.src || ""); } return html; },
+  });
+  return message;
+}
+
 /** Streaming deltas arrive at token rate; the scene re-lays a transcript at most this often (ms). */
 export const STREAM_SYNC_MS = 200;
+/** How long the file walk may take before the city is built (first frame). */
+export const TREE_MS = 2500;
 
 function toolArgs(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
@@ -132,7 +151,7 @@ export function cityMessagesOf(messages: readonly ClientMessage[], running: bool
     if (message.role === "user") {
       out.push({ type: "user", key: message.id, text: message.text, time: clock(message.timestamp) });
     } else if (message.role === "assistant") {
-      if (message.text.trim()) out.push({ type: "assistant", key: message.id, html: markdownHtml(message.text), time: clock(message.timestamp), streaming: Boolean(message.streaming) });
+      if (message.text.trim()) out.push(lazyHtml({ type: "assistant", key: message.id, src: message.text, time: clock(message.timestamp), streaming: Boolean(message.streaming) }));
       for (const [index, call] of (message.toolCalls || []).entries()) {
         const entry = toolEntry(`${message.id}:call:${call.id || index}`, call.name, call.args, call.paths, running ? "running" : "success");
         if (call.id) toolByCallId.set(call.id, entry);
@@ -206,6 +225,8 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
   const artifactArrays = new Map<string, CityArtifact[]>();
   const artifactSubscriptions = new Map<string, () => void>();
   let artifactsVersion = 0;
+  const hot = new Set<string>();
+  const loadedOnce = new Set<string>();
   const sessionListeners = new Set<() => void>();
   const eventListeners = new Set<(event: { type: string; sessionId: string }) => void>();
   let included: ClientSession[] = [];
@@ -258,19 +279,31 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
         synthetic: false,
       };
     });
-    // Follow the transcripts of the sessions on screen (and stop following the rest).
+    // Stop following sessions that left the scene. Transcripts load lazily (warm): the current session and its
+    // neighbours, running sessions (their beams need the tool), and whatever you open or point at.
     const ids = new Set(list.map((session) => session.id));
-    for (const [id, unsubscribe] of messageSubscriptions) if (!ids.has(id)) { unsubscribe(); messageSubscriptions.delete(id); }
-    for (const id of ids) if (!messageSubscriptions.has(id)) {
+    for (const [id, unsubscribe] of messageSubscriptions) if (!ids.has(id)) { unsubscribe(); messageSubscriptions.delete(id); hot.delete(id); }
+    for (const [id, unsubscribe] of artifactSubscriptions) if (!ids.has(id)) { unsubscribe(); artifactSubscriptions.delete(id); }
+    warm(list.filter((session) => session.status === "running").map((session) => session.id));
+  }
+
+  /** Load and follow these sessions' transcripts and artifacts (idempotent). */
+  function warm(ids: Array<string | null | undefined>) {
+    for (const id of ids) {
+      if (!id || hot.has(id) || !included.some((session) => session.id === id)) continue;
+      hot.add(id);
       const store = client.messages(id);
       messageSubscriptions.set(id, store.subscribe(() => scheduleSync(id)));
-      syncMessages(id, false);
-    }
-    for (const [id, unsubscribe] of artifactSubscriptions) if (!ids.has(id)) { unsubscribe(); artifactSubscriptions.delete(id); }
-    for (const id of ids) if (!artifactSubscriptions.has(id)) {
       artifactSubscriptions.set(id, client.artifacts(id).subscribe(() => syncArtifacts(id)));
+      syncMessages(id, false);
       syncArtifacts(id, false);
     }
+  }
+  /** A session and its neighbours in the pinned order (the ones a flick reaches next). */
+  function neighbours(id: string) {
+    const pins = snapshot.filter((session) => session.pinned).sort((a, b) => a.pinOrder - b.pinOrder).map((session) => session.id);
+    const i = pins.indexOf(id);
+    return i < 0 ? [id] : [id, pins[(i + 1) % pins.length], pins[(i - 1 + pins.length) % pins.length]];
   }
 
   const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -282,7 +315,7 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
 
   /** Rebuild a session's City message array in place, reusing message objects so the scene's caches hold. */
   function syncMessages(sessionId: string, notify = true) {
-    if (disposed) return;
+    if (disposed || !hot.has(sessionId)) return;
     const session = client.sessions.getSnapshot().find((item) => item.id === sessionId);
     const fresh = cityMessagesOf(client.messages(sessionId).getSnapshot(), session?.status === "running");
     let array = arrays.get(sessionId);
@@ -293,16 +326,23 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
       const existing = byKey!.get(message.key);
       if (!existing || existing.type !== message.type) { byKey!.set(message.key, message); return message; }
       for (const key of Object.keys(existing) as Array<keyof CityMessage>) if (!(key in message)) delete existing[key];
+      // Object.assign copies own enumerable fields only: the lazy html getter of `existing` stays, and re-parses
+      // when the new `src` differs.
       return Object.assign(existing, message);
     });
     const keep = new Set(next.map((message) => message.key));
     for (const key of [...byKey.keys()]) if (!keep.has(key)) byKey.delete(key);
     array.splice(0, array.length, ...next);
     if (notify) for (const listener of [...eventListeners]) listener({ type: "transcript", sessionId });
+    // The first time a transcript arrives, the scene re-reads the session (its "seen" position starts there).
+    if (!loadedOnce.has(sessionId) && !client.messages(sessionId).loading()) {
+      loadedOnce.add(sessionId);
+      if (notify) for (const listener of [...sessionListeners]) listener();
+    }
   }
 
   function syncArtifacts(sessionId: string, notify = true) {
-    if (disposed) return;
+    if (disposed || !hot.has(sessionId)) return;
     const cwd = client.sessions.getSnapshot().find((item) => item.id === sessionId)?.cwd || "";
     const fresh = client.artifacts(sessionId).getSnapshot().map((artifact) => cityArtifactOf(sessionId, cwd, artifact));
     let array = artifactArrays.get(sessionId);
@@ -358,8 +398,10 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
     progress?.(`Mapping ${roots.length} workspace${roots.length === 1 ? "" : "s"}…`);
     const trees = new Map<string, FileTreeDir | null>();
     const budget = Math.max(800, Math.floor(6000 / Math.max(1, roots.length)));
+    // The city is built from whatever the walk has after this long (deep folders show as blocks without buildings).
+    const treeDeadline = Date.now() + TREE_MS;
     await Promise.all([...layout.avenues.values()].flat().map(async (root) => {
-      trees.set(root, await client.files.tree(root, { maxEntries: budget }).catch(() => null));
+      trees.set(root, await client.files.tree(root, { maxEntries: budget, deadline: treeDeadline }).catch(() => null));
     }));
     homeTree = {
       name: basename(home) || "/",
@@ -373,25 +415,30 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
         }),
       })),
     };
-    // Transcripts: the scene lays them out as soon as it is built.
-    progress?.("Loading transcripts…");
-    await Promise.race([
-      Promise.all(included.map((session) => new Promise<void>((resolve) => {
-        const store = client.messages(session.id);
-        if (!store.loading()) { resolve(); return; }
-        const unsubscribe = store.subscribe(() => { if (!store.loading()) { unsubscribe(); resolve(); } });
-      }))),
-      new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]);
-    for (const session of included) syncMessages(session.id, false);
+    // Transcripts: only the session you start on (and its neighbours) load now; the rest load when you go to them.
+    progress?.("Loading the current session…");
+    const start = included.find((session) => session.id === initialSessionId)?.id
+      || snapshot.filter((session) => session.pinned).sort((a, b) => a.pinOrder - b.pinOrder)[0]?.id || included[0]?.id;
+    if (start) {
+      warm(neighbours(start));
+      const store = client.messages(start);
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          if (!store.loading()) { resolve(); return; }
+          const unsubscribe = store.subscribe(() => { if (!store.loading()) { unsubscribe(); resolve(); } });
+        }),
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
+      for (const id of hot) syncMessages(id, false);
+    }
     project();
-    for (const session of included) syncArtifacts(session.id, false);
     if (homeTree) addArtifactFiles(homeTree, home);
     unsubscribeSessions = client.sessions.subscribe(() => {
       project();
       for (const listener of [...sessionListeners]) listener();
     });
     unsubscribeEvents = client.events.subscribe((event) => {
+      if (event.type === "turn/start") warm([event.sessionId]);
       if (event.type === "turn/start" || event.type === "turn/end") syncMessages(event.sessionId);
     });
   }
@@ -413,6 +460,8 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
       return array;
     },
     artifactsVersion: () => artifactsVersion,
+    warm: (ids) => warm(ids),
+    messagesLoaded: (id) => hot.has(id) && !client.messages(id).loading(),
     live: client,
     events: { subscribe(fn) { eventListeners.add(fn); return () => { eventListeners.delete(fn); }; } },
     files: {
@@ -420,7 +469,11 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
       tree(root = home) { return root === home ? homeTree : null; },
     },
     actions: {
-      openSession(id) { if (id) void client.actions.openSession(id).catch((error) => console.warn("VR view: could not open session", error)); },
+      openSession(id) {
+        if (!id) return;
+        warm(neighbours(id));
+        void client.actions.openSession(id).catch((error) => console.warn("VR view: could not open session", error));
+      },
       prompt(id, text) {
         if (!id || !text.trim()) return false;
         void client.actions.prompt(id, text).catch((error) => console.warn("VR view: prompt failed", error));

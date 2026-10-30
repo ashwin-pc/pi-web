@@ -238,5 +238,8 @@ describe("createPiWebClient", () => {
     expect(await client.files.tree("/elsewhere")).toBeNull();
     const truncated = await client.files.tree("/w/a", { maxDepth: 1 });
     expect(truncated?.dirs[0]).toMatchObject({ name: "src", truncated: true, files: [] });
+    // A deadline in the past: the walk stops before listing anything, and says so.
+    const late = await client.files.tree("/w/a", { deadline: Date.now() - 1 });
+    expect(late).toMatchObject({ files: [], dirs: [], truncated: true });
   });
 });

@@ -3,6 +3,7 @@
 // sits on its referent (never displaced: a label that collides with a higher-priority one hides), and shows only at
 // the distance where it carries information: districts from altitude, blocks closer, files close up.
 import * as THREE from 'three';
+import {AtlasUploader} from './atlas-upload.js';
 import {SANS, MONO, font, fillRR} from './draw.js';
 
 const SLOT_W = 680, SLOT_H = 84, COLS = 3, ROWS = 24, EM = 34, SUB = 28;
@@ -14,6 +15,7 @@ export class Labels {
     this.canvas = document.createElement('canvas'); this.canvas.width = SLOT_W * COLS; this.canvas.height = SLOT_H * ROWS;
     this.ctx = this.canvas.getContext('2d');
     this.tex = new THREE.CanvasTexture(this.canvas); this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.generateMipmaps = false; this.tex.minFilter = THREE.LinearFilter;
+    this.up = new AtlasUploader(this.tex); // pi-web: changed slots only
     const n = COLS * ROWS;
     this.pos = new THREE.BufferAttribute(new Float32Array(n * 4 * 3), 3).setUsage(THREE.DynamicDrawUsage);
     this.uv = new THREE.BufferAttribute(new Float32Array(n * 4 * 2), 2).setUsage(THREE.DynamicDrawUsage);
@@ -44,7 +46,7 @@ export class Labels {
   /** Draws a pi-web-style pill: dark panel, hairline border (gold for districts and hot blocks), title and status. */
   draw(i, c) {
     const x = (i % COLS) * SLOT_W, y = Math.floor(i / COLS) * SLOT_H, ctx = this.ctx;
-    ctx.clearRect(x, y, SLOT_W, SLOT_H);
+    ctx.clearRect(x, y, SLOT_W, SLOT_H); this.up.mark(x, y, SLOT_W, SLOT_H);
     const mono = c.kind === 'file';
     ctx.font = font(EM, 700, mono ? MONO : SANS);
     // A name too long for the slot keeps its start and its end (the extension), with an ellipsis in the middle.
@@ -105,7 +107,7 @@ export class Labels {
     });
     this.mesh.geometry.setDrawRange(0, out.length * 6);
     this.pos.needsUpdate = true; this.uv.needsUpdate = true;
-    if (this.dirty) { this.tex.needsUpdate = true; this.dirty = false; }
+    if (this.dirty || this.up.queue.size) { this.up.flush(); this.dirty = false; }
     this.placed = out.map((o) => ({id: o.c.id, kind: o.c.kind, text: o.s.shown || o.c.text, full: o.c.text, sub: o.c.sub || '', click: o.c.click, cx: o.box.cx, cy: o.box.cy, w: o.box.w, h: o.box.h, D: o.D, deg: o.c.deg,
       degW: Math.atan(o.box.w) * 180 / Math.PI, degH: Math.atan(o.box.h) * 180 / Math.PI, anchorGap: 4 * o.k / o.box.h}));
     this.lastView = {eye: view.eye.clone(), inv: inv.clone()};

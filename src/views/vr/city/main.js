@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import {panels} from './panel.js';
 import {S, emit, tickDwell} from './state.js';
 import {A, renderer, scene, camera, world, nowMs, QS, tickAnim} from './core.js';
-import {readers} from './reader.js';
+import {readers, tileStep, shaderWarmup} from './reader.js';
 import {city, bar, pops, comfort, composer, sideBatch, prefetchStep, openReader, tickReaders} from './app.js';
 import {followFrame} from './follow.js';
 import * as N from './city-nav.js';
@@ -22,7 +22,17 @@ avatarsReady.then(() => { bar.invalidate(); for (const r of readers) r.header.in
 readers[0].setSession(S.currentId);
 if (QS.get('read') === '1') openReader(S.currentId);
 // Compile every material now (reading-mode ones included), so the first open does not stall on shader compilation.
-{ const hidden = []; scene.traverse((o) => { if (!o.visible) { hidden.push(o); o.visible = true; } }); renderer.compile(scene, camera); for (const o of hidden) o.visible = false; }
+// pi-web: also the turn tiles' materials (they are created lazily), and once more on the first XR frame.
+function precompile(cam) {
+  const warm = shaderWarmup(); for (const m of warm) scene.add(m);
+  const hidden = []; scene.traverse((o) => { if (!o.visible) { hidden.push(o); o.visible = true; } }); renderer.compile(scene, cam); for (const o of hidden) o.visible = false;
+  for (const m of warm) scene.remove(m);
+  // Shaders link lazily (three checks a program on its first use, which blocks until the driver has finished):
+  // finish them all now, not on the first frame that draws them (a 300 ms stall in the middle of a session switch).
+  for (const p of renderer.info.programs || []) p.getUniforms?.();
+}
+precompile(camera);
+let xrCompiled = false;
 let last = nowMs(), lastBlink = 0;
 renderer.setAnimationLoop((time, frame) => {
   const t = nowMs();
@@ -32,6 +42,7 @@ renderer.setAnimationLoop((time, frame) => {
   A.fpsWin.push(t - last); if (A.fpsWin.length > 120) A.fpsWin.shift();
   last = t;
   A.frames++;
+  if (frame && !xrCompiled) { xrCompiled = true; precompile(renderer.xr.getCamera()); }
   if (frame) xrFrame(frame, dt);
   else if (A.debugCam) { camera.position.fromArray(A.debugCam.pos); camera.lookAt(new THREE.Vector3().fromArray(A.debugCam.at)); camera.fov = A.debugCam.fov || 50; camera.updateProjectionMatrix(); camera.updateMatrixWorld(); updateMouseRay(); }
   else { updateDeskCamera(dt); updateMouseRay(); }
@@ -51,10 +62,12 @@ renderer.setAnimationLoop((time, frame) => {
   followFrame(dt);
   updateHovers();
   for (const p of pointers) if (p !== mouse && p.press) pressMove(p);
-  if ((S.composer.dictating || S.composer.focused) && t - lastBlink > 120) { composer.invalidate(); lastBlink = t; }
+  // The composer redraws for the dictation meter (8 a second) and for its caret (twice a second, pi-web: it was 8,
+  // each a texture upload of the side columns' atlas).
+  if (S.composer.dictating && t - lastBlink > 120 || S.composer.focused && Math.floor(t / 500) !== Math.floor(lastBlink / 500)) { composer.invalidate(); lastBlink = t; }
   for (const p of panels) if (!p.isTurn) p.update();
-  for (const r of readers) if (r.set?.reader === r) for (const tt of r.set.turns) if (tt.panel.dirty) tt.panel.update(true);
   prefetchStep();
+  tileStep(); // pi-web: turn tiles, windowed and budgeted (reader.js)
   if (frame) updateXRVisuals();
   sideBatch.sync();
   renderer.render(scene, camera);

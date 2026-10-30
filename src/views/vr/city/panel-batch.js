@@ -3,6 +3,7 @@
 // opacity (its material is made invisible, so the renderer skips it); every frame the batch copies each visible
 // panel's vertices into world space and its canvas into the atlas when it changed.
 import * as THREE from 'three';
+import {AtlasUploader} from './atlas-upload.js';
 
 export class PanelBatch {
   constructor(list, {renderOrder = 6, name = 'panel-batch'} = {}) {
@@ -15,6 +16,8 @@ export class PanelBatch {
     this.tex = new THREE.CanvasTexture(this.canvas);
     this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.anisotropy = list[0].tex.anisotropy;
     this.tex.minFilter = THREE.LinearMipmapLinearFilter;
+    // pi-web (usability round 1): a changed panel re-uploads only its own part of the atlas (it was all of it).
+    this.up = new AtlasUploader(this.tex, {slotsPerFrame: list.length});
     const maxV = list.reduce((a, p) => a + p.mesh.geometry.attributes.position.count + 64, 0);
     this.pos = new THREE.BufferAttribute(new Float32Array(maxV * 3), 3).setUsage(THREE.DynamicDrawUsage);
     this.uv = new THREE.BufferAttribute(new Float32Array(maxV * 2), 2).setUsage(THREE.DynamicDrawUsage);
@@ -36,8 +39,9 @@ export class PanelBatch {
       const r = this.rects[i];
       this.ctx.clearRect(r.x, 0, r.w, this.canvas.height);
       this.ctx.drawImage(p.canvas, r.x, 0);
+      this.up.mark(r.x, 0, r.w, r.h);
     });
-    if (changed) this.tex.needsUpdate = true;
+    if (changed) this.up.flush();
     let nv = 0, ni = 0;
     const P = this.pos.array, U = this.uv.array, C = this.col.array, I = this.idx.array, v = new THREE.Vector3();
     const W = this.canvas.width, H = this.canvas.height;

@@ -113,28 +113,33 @@ export function parseHtml(html) {
 
 const runFont = (run, size, weight) => run.code ? font(size * 0.86, 500, MONO) : font(size, run.b ? 700 : weight, SANS, run.i ? 'italic' : 'normal');
 
+const WIDTHS = new Map(); // font -> (token -> width)
 /** Word-wrap styled runs into lines. Returns {lines: [{frags: [{text, x, w, run}]}], lineH, height}. */
 export function layoutRuns(ctx, runs, maxW, size, weight = 400, lineH = size * 1.45) {
   const lines = [];
   let frags = [], x = 0;
   const push = () => { lines.push({frags}); frags = []; x = 0; };
+  // pi-web: word widths are memoised per font (real transcripts repeat words a lot; layout was most of a switch).
+  let fontKey = '', widths = null;
+  const mw = (t) => { let w = widths.get(t); if (w === undefined) { w = ctx.measureText(t).width; if (widths.size < 20000) widths.set(t, w); } return w; };
   for (const run of runs) {
     ctx.font = runFont(run, size, weight);
+    if (ctx.font !== fontKey) { fontKey = ctx.font; widths = WIDTHS.get(fontKey) || new Map(); WIDTHS.set(fontKey, widths); }
     const pad = run.code ? size * 0.28 : 0;
     const tokens = run.text.split(/(\s+)/).filter(Boolean);
     for (let tok of tokens) {
       const isSpace = /^\s+$/.test(tok);
       if (isSpace && x === 0) continue;
-      let w = ctx.measureText(tok).width + (isSpace ? 0 : pad * 2);
+      let w = mw(tok) + (isSpace ? 0 : pad * 2);
       if (!isSpace && x + w > maxW && x > 0) { push(); }
       if (!isSpace && w > maxW) {
-        // Hard-break a very long token.
+        // Hard-break a very long token (the longest prefix that fits, by binary search).
         while (tok.length && ctx.measureText(tok).width + pad * 2 > maxW) {
-          let n = tok.length;
-          while (n > 1 && ctx.measureText(tok.slice(0, n)).width + pad * 2 > maxW) n--;
-          frags.push({text: tok.slice(0, n), x, w: ctx.measureText(tok.slice(0, n)).width + pad * 2, run, pad});
+          let lo = 1, hi = tok.length;
+          while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ctx.measureText(tok.slice(0, mid)).width + pad * 2 <= maxW) lo = mid; else hi = mid - 1; }
+          frags.push({text: tok.slice(0, lo), x, w: ctx.measureText(tok.slice(0, lo)).width + pad * 2, run, pad});
           push();
-          tok = tok.slice(n);
+          tok = tok.slice(lo);
         }
         w = ctx.measureText(tok).width + pad * 2;
       }

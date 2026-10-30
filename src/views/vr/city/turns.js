@@ -4,7 +4,7 @@
 import {C, MONO, SANS, font, fillRR, icon, text, ellipsize, parseHtml, layoutRuns, drawRuns, codeTokens} from './draw.js';
 
 export const PPM = 1100; // canvas px per metre on the reading panel
-export const TURN_W = 1500; // turn canvas width (px) = 1.36 m (round 3: the focus panel is wider); text column ≈ 1404 px ≈ 80 characters at 35 px
+export const TURN_W = 900; // pi-web (usability round 1): the conversation is 35° wide; text column 804 px, about 46 characters at 35 px
 export const BODY = 35; // body text px: 31.8 mm at 1.4 m = 1.3° (22.7 px-at-1 m, where 1 px at 1 m = 1 mm)
 const M = 12; // block margin inside the canvas
 const PAD = 36; // inner padding of a turn block
@@ -41,6 +41,14 @@ export function chipText(m) { const l = chipLabel(m); return l.joined ? `${l.nam
  * opts: {index, expanded: Set<msgIndex>, newMark: msgIndex|null, width?: canvas px (default TURN_W; live tiles are narrower)}
  */
 export function layoutTurn(ctx, s, turn, opts) {
+  const g = layoutTurnSteps(ctx, s, turn, opts);
+  let r = g.next();
+  while (!r.done) r = g.next();
+  return r.value;
+}
+/** pi-web: the same layout as a generator that yields after each message, so a very long turn can be laid out over
+ * several frames (reader.js layStep) instead of stalling one. */
+export function* layoutTurnSteps(ctx, s, turn, opts) {
   const TW = opts.width || TURN_W, INNER = TW - 2 * M - 2 * PAD; // eslint-disable-line no-shadow
   const items = [], regions = [];
   let y = 0, replyY = null, markY = null;
@@ -157,6 +165,7 @@ export function layoutTurn(ctx, s, turn, opts) {
       gap(open ? 16 : 10);
     }
     prevKind = kind;
+    yield;
   }
   if (replyY === null) replyY = y;
   gap(18);

@@ -27,8 +27,10 @@ export async function walkFileTree(options: {
   const concurrency = 6;
   while (frontier.length && budget > 0) {
     if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (options.deadline && Date.now() > options.deadline) { for (const item of frontier) item.dir.truncated = true; break; }
     const next: typeof frontier = [];
     for (let index = 0; index < frontier.length; index += concurrency) {
+      if (options.deadline && Date.now() > options.deadline) { for (const item of frontier.slice(index)) item.dir.truncated = true; break; }
       const slice = frontier.slice(index, index + concurrency);
       const listings = await Promise.all(slice.map((item) => options.list(options.sessionId, item.relative, options.signal).catch(() => ({ entries: [] } as Listing))));
       slice.forEach((item, position) => {

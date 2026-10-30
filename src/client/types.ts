@@ -120,7 +120,7 @@ export type FileTreeDir = {
   truncated?: boolean;
 };
 
-export type FileTreeOptions = { maxDepth?: number; maxEntries?: number; signal?: AbortSignal };
+export type FileTreeOptions = { maxDepth?: number; maxEntries?: number; signal?: AbortSignal; /** Stop walking (and mark what is left truncated) at this time (ms since epoch). */ deadline?: number };
 
 export type PiWebClientActions = {
   /**

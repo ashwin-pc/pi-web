@@ -3,6 +3,7 @@
 // never moved off its beam: a card that would collide with another (or with the bar or the reading panel) becomes
 // a small avatar coin instead, and so does a card that is too far away to be worth reading.
 import * as THREE from 'three';
+import {AtlasUploader} from './atlas-upload.js';
 import {SANS, MONO, font, fillRR, icon, ellipsize} from './draw.js';
 import {get} from './state.js';
 import {drawAvatar} from './avatars.js';
@@ -18,6 +19,7 @@ export class Cards {
     this.canvas = document.createElement('canvas'); this.canvas.width = AW; this.canvas.height = AH;
     this.ctx = this.canvas.getContext('2d');
     this.tex = new THREE.CanvasTexture(this.canvas); this.tex.colorSpace = THREE.SRGBColorSpace; this.tex.generateMipmaps = false; this.tex.minFilter = THREE.LinearFilter;
+    this.up = new AtlasUploader(this.tex); // pi-web: changed slots only
     const n = CCOLS * CROWS + KCOLS * KROWS;
     this.pos = new THREE.BufferAttribute(new Float32Array(n * 12), 3).setUsage(THREE.DynamicDrawUsage);
     this.uv = new THREE.BufferAttribute(new Float32Array(n * 8), 2).setUsage(THREE.DynamicDrawUsage);
@@ -32,7 +34,7 @@ export class Cards {
   slot(map, sid, max) { if (map.has(sid)) return map.get(sid); const used = new Set(map.values()); for (let i = 0; i < max; i++) if (!used.has(i)) { map.set(sid, i); return i; } return -1; }
   drawCard(i, sid) {
     const s = get(sid), ctx = this.ctx, x = (i % CCOLS) * CW, y = Math.floor(i / CCOLS) * CH;
-    ctx.clearRect(x, y, CW, CH);
+    ctx.clearRect(x, y, CW, CH); this.up.mark(x, y, CW, CH);
     fillRR(ctx, x + 2, y + 2, CW - 4, CH - 4, 14, 'rgba(10,10,10,0.93)', 'rgba(226,177,95,0.75)', 2);
     drawAvatar(ctx, sid, x + 34, y + 34, 21);
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
@@ -67,7 +69,7 @@ export class Cards {
   }
   drawCoin(i, sid) {
     const ctx = this.ctx, x = (i % KCOLS) * COIN, y = CROWS * CH + Math.floor(i / KCOLS) * COIN;
-    ctx.clearRect(x, y, COIN, COIN);
+    ctx.clearRect(x, y, COIN, COIN); this.up.mark(x, y, COIN, COIN);
     ctx.beginPath(); ctx.arc(x + 48, y + 48, 44, 0, Math.PI * 2); ctx.fillStyle = 'rgba(10,10,10,0.9)'; ctx.fill();
     ctx.lineWidth = 5; ctx.strokeStyle = '#e2b15f'; ctx.stroke();
     drawAvatar(ctx, sid, x + 48, y + 48, 36);
@@ -128,7 +130,7 @@ export class Cards {
     });
     this.mesh.geometry.setDrawRange(0, this.placed.length * 6);
     this.pos.needsUpdate = true; this.uv.needsUpdate = true;
-    if (this.dirty) { this.tex.needsUpdate = true; this.dirty = false; }
+    if (this.dirty || this.up.queue.size) { this.up.flush(); this.dirty = false; }
     this.lastView = {eye: view.eye.clone(), inv: inv.clone()};
     this.mesh.visible = this.placed.length > 0;
   }
