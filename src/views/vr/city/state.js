@@ -56,7 +56,8 @@ function sync(first = false) {
     Object.assign(s, {id: c.id, title: c.title, short: c.short, cwd: c.cwd, origin: c.parent, lane: c.lane, note: c.note, model: c.model, ctx: c.context,
       running: c.running, error: c.error, unread: c.unread, synthetic: c.synthetic, messages: client.messages(c.id)});
     if (s.updatedAt !== c.updatedAt) { s.updatedAt = c.updatedAt; s.touched = c.updatedAt; }
-    if (s.seenCount == null) {
+    // pi-web: transcripts load lazily; where you last looked is set once the transcript is there.
+    if (s.seenCount == null && client.messagesLoaded?.(c.id) !== false) {
       // Where you last looked: all of it, unless the client says otherwise.
       const turns = turnsOf(s);
       s.seenCount = c.seenTurns != null && c.seenTurns < turns.length ? turns[c.seenTurns].start : s.messages.length;
@@ -90,7 +91,9 @@ export function indicator(s) {
   if (s.running) return 'running';
   if (waitingCount(s)) return 'waiting';
   if (s.error) return 'error';
-  if (s.unread && s.id !== S.currentId) return 'unread';
+  // pi-web (usability round 1): "needs you" means finished and unread, or asking you; a worker's result goes to the
+  // session that spawned it (that one needs you), so a worker alone never does.
+  if (s.unread && s.id !== S.currentId && !s.origin) return 'unread';
   if (s.id !== S.currentId && asksQuestion(s)) return 'asking';
   return s.id === S.currentId ? 'current' : 'idle';
 }
@@ -111,7 +114,7 @@ export function durText(ms) {
 }
 export function statusText(s) {
   const k = indicator(s);
-  if (k === 'running') return `Running ${durText(now() - s.running.since)}`;
+  if (k === 'running') return `${runningWhat(s)} · ${durText(now() - s.running.since)}`;
   if (k === 'waiting') { const n = waitingCount(s); return `Waiting on ${n} worker${n > 1 ? 's' : ''}`; }
   if (k === 'unread') return 'Finished · unread';
   if (k === 'error') return `Error · ${s.error}`;
@@ -124,7 +127,7 @@ export function isQuiet(s) {
 }
 /** The fence line, in order: people who finished and whom you have not read yet. First come, first served. */
 export const fenceLine = () => {
-  const q = S.queue.map(get).filter((s) => s && s.unread && !s.running && !waitingCount(s));
+  const q = S.queue.map(get).filter((s) => s && s.unread && !s.origin && !s.running && !waitingCount(s));
   // Then the sessions whose latest reply asks you something (in pinned order).
   for (const id of S.pinned) { const s = get(id); if (s && !q.includes(s) && !s.running && !waitingCount(s) && !s.unread && asksQuestion(s)) q.push(s); }
   return q;
@@ -157,6 +160,20 @@ export function nextNeedingYou() {
   const line = fenceLine(), i = line.findIndex((x) => x.id === S.currentId);
   if (i < 0) return line[0] || null;
   return line.length > 1 ? line[(i + 1) % line.length] : null;
+}
+/** pi-web: what a running session is doing, named by its target: "editing reader.js", "reading README.md",
+ * "searching src/views", "running npm test", or "thinking". */
+export function runningWhat(s) {
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i];
+    if (m.type !== 'tool' || m.status !== 'running') continue;
+    const t = currentTool(s), path = m.args?.path || (m.name === 'read' || m.name === 'write' || m.name === 'edit' ? m.sub : '');
+    const cmd = String(m.args?.command || m.sub || '').split(' · ')[0].trim();
+    if (path) return `${t.label} ${String(path).split('/').filter(Boolean).pop()}`;
+    if (t.act === 'search') { const toks = cmd.split(/\s+/).filter((x) => /[/.]/.test(x) && !x.startsWith('-')); return `searching ${toks.pop() || cmd.split(' ')[0]}`; }
+    return `${m.name === 'bash' ? 'running' : m.name} ${cmd.length > 28 ? `${cmd.slice(0, 27)}…` : cmd}`.trim();
+  }
+  return 'thinking';
 }
 /** What a running session is doing right now, from its latest running tool. */
 export function currentTool(s) {

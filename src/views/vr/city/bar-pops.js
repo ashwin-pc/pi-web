@@ -3,6 +3,7 @@
 // (settings, back to the 2D app, scrolling the row). Both live in the bar's group, so they follow it.
 import * as THREE from 'three';
 import {Panel} from './panel.js';
+import {client} from './client.js';
 import {S, get, indicator, statusText, unreadTurns} from './state.js';
 import {C, SANS, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {drawAvatar} from './avatars.js';
@@ -11,32 +12,34 @@ import {BAR, UIB, PAGE, cellOf} from './bar.js';
 import {currentToolName} from './bar.js';
 
 // D: a little behind the bar's surface, so a ray coming down from a raised hand to an avatar meets the bar first.
-export const PREVIEW = {w: 0.46, h: 0.15, ppm: 2000, TEXT_PX: 28, D: 0.98};
+export const PREVIEW = {w: 0.46, h: 0.19, ppm: 2000, TEXT_PX: 32, D: 0.98};
 function drawPreview(ctx, p) {
   const id = p.sid, s = get(id); if (!s) return;
   const W = p.cw, H = p.ch, k = indicator(s);
   fillRR(ctx, 3, 3, W - 6, H - 6, 22, '#0b0b0b', '#e2b15f', 4);
   drawAvatar(ctx, id, 52, 52, 30);
-  text(ctx, s.title, 96, 40, {size: 30, weight: 700, maxW: W - 120});
+  text(ctx, s.title, 96, 42, {size: 36, weight: 700, maxW: W - 120});
   const need = k === 'unread' || k === 'asking';
   const st = k === 'asking' ? 'Asking you a question' : need ? `${statusText(s)} · ${unreadTurns(s)} unread turn${unreadTurns(s) > 1 ? 's' : ''}`
-    : k === 'running' ? `${statusText(s)} · ${currentToolName(s)}` : statusText(s);
-  text(ctx, st, 96, 74, {size: 22, weight: 700, color: C.accent, maxW: W - 120});
+    : statusText(s);
+  text(ctx, st, 96, 84, {size: 30, weight: 700, color: C.accent, maxW: W - 120});
   ctx.font = font(PREVIEW.TEXT_PX, 400, SANS);
   const body = previewText(s) || [...s.messages].reverse().find((m) => m.type === 'user')?.text || 'No messages yet.';
   const w = wrapWhole(ctx, body, W - 64, 3);
   ctx.fillStyle = '#e8e8e8'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-  w.lines.forEach((ln, i) => ctx.fillText(ln, 32, 122 + i * 38));
-  p.drawn = {sid: id, state: k, text: w.lines.join(' '), chars: w.shown, total: w.total, lines: w.lines.length, cut: w.cut};
-  // Two actions along the bottom: open (the main one), and fly to its place in the city.
-  const by = H - 52;
+  w.lines.forEach((ln, i) => ctx.fillText(ln, 32, 136 + i * 40));
+  p.drawn = {sid: id, state: k, status: st, text: w.lines.join(' '), chars: w.shown, total: w.total, lines: w.lines.length, cut: w.cut};
+  // Actions along the bottom: open (the main one), beside, and fly to its place in the city. pi-web (usability
+  // round 1): each button is 104 px tall (3.2° from the eye, was 1.5°) and a third of the card wide.
+  const BH = 104, by = H - 12 - BH / 2;
   const acts = [{id: 'pv:open', label: 'Open', ic: 'chevron-right', click: () => UIB.choose(id)}, {id: 'pv:beside', label: 'Beside', ic: 'columns-2', click: () => UIB.beside?.(id)}, {id: 'pv:fly', label: 'Fly to', ic: 'locate-fixed', click: () => UIB.flyToSession(id)}];
+  const bw = (W - 24 - 12 * (acts.length - 1)) / acts.length;
   for (const [i, b] of acts.entries()) {
-    const x = W - 32 - (acts.length - i) * 170 + i * 10 - 20, hov = p.isHover(b.id);
-    fillRR(ctx, x, by - 22, 160, 44, 22, hov ? '#2a2a2a' : '#181818', i === 0 ? 'rgba(226,177,95,0.7)' : '#333', 2);
-    icon(ctx, b.ic, x + 26, by, 22, C.accent, 2.6);
-    text(ctx, b.label, x + 46, by + 1, {size: 22, weight: 700});
-    p.region(b.id, x, by - 26, 160, 52, {click: b.click});
+    const x = 12 + i * (bw + 12), hov = p.isHover(b.id);
+    fillRR(ctx, x, by - BH / 2, bw, BH, 26, hov ? '#2a2a2a' : '#181818', i === 0 ? 'rgba(226,177,95,0.7)' : '#333', 2);
+    icon(ctx, b.ic, x + 40, by, 32, C.accent, 2.6);
+    text(ctx, b.label, x + 70, by + 1, {size: 30, weight: 700, maxW: bw - 80});
+    p.region(b.id, x - 6, by - BH / 2 - 6, bw + 12, BH + 12, {click: b.click});
   }
   p.region('pv:card', 0, 0, W, H - 60, {under: true, click: () => UIB.choose(id)});
 }
@@ -50,6 +53,7 @@ function drawMenu(ctx, p) {
     {id: 'menu:motion', label: 'Reduce motion', sub: 'blink instead of fly', on: S.reduceMotion, click: () => UIB.setReduceMotion(!S.reduceMotion)},
     {id: 'menu:vignette', label: 'Vignette', sub: 'while flying or grabbing', on: S.vignette !== false, click: () => UIB.setVignette(S.vignette === false)},
     {id: 'menu:table', label: 'Tabletop', sub: 'god mode: city as a model', on: !!UIB.isTable?.(), click: () => UIB.toggleTable()},
+    ...(UIB.inVR?.() ? [{id: 'menu:exitvr', label: 'Exit VR', sub: 'stay on this page', click: () => UIB.exitVR()}] : []),
     {id: 'menu:exit', label: 'Back to chat', sub: 'the normal pi-web view', click: () => UIB.exit()},
     ...(pg ? [{id: 'menu:prev', label: '◂ Scroll left', sub: range, click: () => UIB.turnPage(-1)},
       {id: 'menu:next', label: 'Scroll right ▸', sub: range, click: () => UIB.turnPage(1)}] : []),
@@ -86,6 +90,7 @@ export class BarPops {
     else panel.mesh.lookAt(this.bar.g.localToWorld(new THREE.Vector3()));
   }
   update(hoverSid) {
+    if (hoverSid) client.warm?.([hoverSid]); // pi-web: its transcript loads when you point at it (for the preview)
     const s = hoverSid && get(hoverSid), k = s && indicator(s);
     const show = !!s && !this.bar.moreOpen;
     if (show) {
@@ -99,7 +104,7 @@ export class BarPops {
     } else this.preview.mesh.visible = false;
     this.menu.mesh.visible = this.bar.moreOpen;
     if (this.menu.mesh.visible) this.place(this.menu, BAR.COLS - 2.2, MENU.h);
-    const sig = `${S.reduceMotion}|${S.vignette}|${UIB.isTable?.()}|${UIB.start?.()}|${S.pinned.length}`;
+    const sig = `${S.reduceMotion}|${S.vignette}|${UIB.isTable?.()}|${UIB.start?.()}|${S.pinned.length}|${UIB.inVR?.()}`;
     if (sig !== this.sig) { this.sig = sig; this.menu.invalidate(); }
     this.preview.update(); this.menu.update();
   }

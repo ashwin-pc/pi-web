@@ -7,15 +7,18 @@
 // Every avatar cell is a 6.1° × 6.6° target.
 import * as THREE from 'three';
 import {Panel} from './panel.js';
-import {S, get, indicator, unreadTurns, waitingCount, fenceLine} from './state.js';
+import {S, get, indicator, unreadTurns, waitingCount, fenceLine, needsAttention} from './state.js';
 import {C, SANS, MONO, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {drawAvatar} from './avatars.js';
 import {wrapWhole} from './city-text.js';
 import {animMs, clamp, DEG} from './core.js';
 
 const QB = new URLSearchParams(location.search);
-export const BAR = {D: 0.95, CELL: 6.1, ROW: 6.6, COLS: 12, ROWS: 1, VIS: 10, ELEV: -26.5, FOLLOW: 35, PPM: 2100, TITLE_DEG: 0.82, STATUS_DEG: 0.72,
-  BELOW: +(QB.get('barbelow') || 24), CITY_GAZE: +(QB.get('barcity') || 26), PITCH_FOLLOW: 12, ELEV_MIN: -70, ELEV_MAX: -16};
+// pi-web (usability round 1): 8 avatars plus Home and More (61°, was 74°: its ends sit within ±30°); every avatar is
+// named (titles 0.95°); it follows your head only past 48° (more than its half width plus 10°), never while you point
+// at it; drawn at 1400 px per metre (about 23 px per degree, above the headset's ~15), a third of the upload.
+export const BAR = {D: 0.95, READ_SCALE: 1.85, CELL: 6.1, ROW: 6.6, COLS: 10, ROWS: 1, VIS: 8, ELEV: -26.5, FOLLOW: 48, PPM: 1400, TITLE_DEG: 0.95, STATUS_DEG: 0.9,
+  BELOW: +(QB.get('barbelow') || 24), CITY_GAZE: +(QB.get('barcity') || 26), PITCH_FOLLOW: 12, ELEV_MIN: -50, ELEV_MAX: -16};
 const M_PER_DEG = BAR.D * DEG;
 const CELL_M = BAR.CELL * M_PER_DEG, ROW_M = BAR.ROW * M_PER_DEG, PAD_M = 0.004;
 export const PAGE = BAR.VIS; // avatars visible at once (the row scrolls past them)
@@ -29,7 +32,7 @@ export const pages = () => Math.max(1, Math.ceil(S.pinned.length / PAGE));
 export const maxStart = () => Math.max(0, S.pinned.length - PAGE);
 export function cellOf(id, start) { const i = S.pinned.indexOf(id) - start; if (i < 0 || i >= PAGE) return null; return {col: i, row: 0}; }
 /** Sessions off the row that need you (the More chip counts them). */
-export function offRow(start) { const ids = S.pinned.filter((id, i) => i < start || i >= start + PAGE); return {n: ids.length, need: ids.filter((id) => ['unread', 'asking', 'error'].includes(indicator(get(id)))).length}; }
+export function offRow(start) { const ids = S.pinned.filter((id, i) => i < start || i >= start + PAGE); return {n: ids.length, need: ids.filter((id) => needsAttention(get(id))).length}; }
 const RING = {idle: 0, current: 0, running: 1, waiting: 2, unread: 3, asking: 3, error: 4};
 
 function drawBar(ctx, p) {
@@ -61,9 +64,8 @@ function drawBar(ctx, p) {
     ctx.font = font(px(BAR.TITLE_DEG), 650, SANS);
     let w = wrapWhole(ctx, s.title, cw - 26, 2);
     if (w.cut && s.short) w = wrapWhole(ctx, s.short, cw - 26, 2);
-    const tc = k === 'idle' ? C.muted : '#f2f2f2', titled = cur || hov || bar.gaze === id;
-    if (!titled) w = {...w, lines: []};
-    w.lines.forEach((ln, j) => text(ctx, ln, cx, y + px(4.75) + j * px(1.0), {size: px(BAR.TITLE_DEG), weight: 650, color: tc, align: 'center'}));
+    const tc = k === 'idle' ? C.muted : '#f2f2f2', titled = true;
+    w.lines.forEach((ln, j) => text(ctx, ln, cx, y + px(4.65) + j * px(1.05), {size: px(BAR.TITLE_DEG), weight: 650, color: tc, align: 'center'}));
     if (cur) fillRR(ctx, cx - cw * 0.3, y + rh - 16, cw * 0.6, 5, 2.5, C.accent);
     bar.drawn.push({id, col, titled, lines: w.lines, chars: w.lines.join(' ').replace(/ …$/, '').length, total: (s.title).length, usedShort: w.lines.join(' ').replace(/ …$/, '') !== s.title, cut: w.cut});
     // Round 3: pull an avatar up out of the bar (5° or more) to open that session beside the focused one.
@@ -161,7 +163,7 @@ export class Bar {
   update(headPos, headYaw, dt, deskElev = null, headPitch = 0, contentLow = null) {
     // Lazy follow: re-centre only when the head has turned more than 35° away; then ease over to it.
     let d = Math.atan2(Math.sin(headYaw - this.yawTarget), Math.cos(headYaw - this.yawTarget));
-    if (Math.abs(d) > BAR.FOLLOW * DEG) { this.yawTarget = headYaw; this.follow.push({t: Math.round(animMs()), to: +(headYaw / DEG).toFixed(1)}); }
+    if (Math.abs(d) > BAR.FOLLOW * DEG && !this.pointed) { this.yawTarget = headYaw; this.follow.push({t: Math.round(animMs()), to: +(headYaw / DEG).toFixed(1)}); }
     d = Math.atan2(Math.sin(this.yawTarget - this.yaw), Math.cos(this.yawTarget - this.yaw));
     this.yaw += S.reduceMotion ? d : d * Math.min(1, dt / 0.16);
     this.pos.copy(headPos); // body-locked in position (it never swims); only its heading follows lazily
@@ -179,7 +181,9 @@ export class Bar {
       const low = contentLow != null && contentLow > gaze - BAR.CITY_GAZE ? contentLow : null;
       // Round 3: while panels are open, the bar keeps below all of them (panelCap: the highest centre that clears them).
       const pl = this.panelCap == null ? 1e9 : this.panelCap;
-      const want = clamp(Math.min(gaze - BAR.BELOW, low == null ? 1e9 : low - top, pl), BAR.ELEV_MIN, BAR.ELEV_MAX);
+      // pi-web (usability round 1): while panels are open the bar sits just under them (it no longer follows your gaze
+      // down to −70°, where pointing at it meant a steep, resting-like ray); in the city it stays above −50°.
+      const want = this.panelCap != null ? clamp(pl, BAR.ELEV_MIN, BAR.ELEV_MAX) : clamp(Math.min(gaze - BAR.BELOW, low == null ? 1e9 : low - top), BAR.ELEV_MIN, BAR.ELEV_MAX);
 
       const covering = (low != null && this.elevTarget + top > low + 1 || this.panelCap != null && this.elevTarget > this.panelCap + 0.3) && want < this.elevTarget - 1;
       // Your gaze has to rest (0.5 s within 4°) somewhere new, and not on or just above the bar (looking at the bar
@@ -196,6 +200,9 @@ export class Bar {
     }
     this.g.position.copy(this.pos);
     this.g.rotation.set(deskElev ? deskElev.pitch : this.panel.cone ? 0 : this.elev * DEG, this.yaw, 0, 'YXZ');
+    // pi-web (usability round 1): while panels are open the bar moves out to just in front of them (same angular size,
+    // 1.8 m instead of 0.95 m), so a ray from your hand to the composer or a panel no longer passes through it first.
+    this.g.scale.setScalar(!deskElev && this.panelCap != null ? BAR.READ_SCALE : 1);
     // The row scrolls to keep the current session on it when you move to another one (a user action), never on a
     // status change; a scroll from More stays until you next move.
     if (S.currentId !== this.lastCur) {
