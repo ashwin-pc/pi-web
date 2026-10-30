@@ -30,7 +30,7 @@ export function updateDeskCamera(dt) {
   // Round 3: while reading, look at the layout's centre (plus any drag-look offset; it resets when you close).
   if (!S.reading) { desk.readYaw = 0; desk.readPitch = 0; }
   const vc = S.reading ? relDir(A.r3?.viewCentre().yaw || 0, A.r3?.viewCentre().elev || 0) : null;
-  const wantPitch = S.reading ? Math.asin(vc.y) + (desk.readPitch || 0) : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y + Math.atan2(-vc.x, -vc.z) + (desk.readYaw || 0) : desk.lookYaw;
+  const wantPitch = S.reading ? Math.asin(vc.y) + (desk.readPitch || 0) + (desk.framePitch?.() || 0) : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y + Math.atan2(-vc.x, -vc.z) + (desk.readYaw || 0) : desk.lookYaw;
   desk.pitch += (wantPitch - desk.pitch) * k;
   // Round 3: the cockpit is 81° wide; the desktop preview widens its view to 100° while panels are open.
   // pi-web (usability round 2): touch screens frame what fits them (touch.js sets frameHfov), and pinch zooms.

@@ -12,17 +12,18 @@
 // Needs you, Home and More fixed at its end; More opens a sheet with every setting, zoom and height buttons, the
 // layouts, and help. Swipes starting within EDGE px of the left or right edge are left to the browser's back gesture.
 import {S, get, indicator, statusText, unreadTurns, needsYou, on} from './state.js';
-import {A, renderer, clamp, DEG} from './core.js';
+import {A, renderer, camera, clamp, DEG} from './core.js';
 import {host} from './host.js';
 import * as V from './views.js';
 import {UIB} from './bar.js';
 import {drawAvatar} from './avatars.js';
 import {previewText} from './city-text.js';
-import {switchBy, isTable, setTable, goHome, flyToSession} from './app.js';
+import {switchBy, isTable, setTable, goHome, flyToSession, city} from './app.js';
 import {mouse, pressStart, pressMove, pressEnd, logInput, head, intersect} from './input.js';
 import {desk, setPointerAt, pointerGone, updateMouseRay, fitCamera} from './desktop.js';
 import * as N from './city-nav.js';
 import {readers} from './reader.js';
+import * as THREE from 'three';
 
 const UI = V.UI;
 const EDGE = 24, LONG_MS = 450, SLOP = 8;
@@ -40,11 +41,14 @@ const el = renderer.domElement;
 function frameHfov() {
   if (!touch.dock || A.r3?.multi()) return null;
   const a = window.innerWidth / Math.max(1, window.innerHeight);
-  if (a < 0.8) return 40;
+  if (a < 0.8) return 38.5; // round 3: the conversation and its reply row edge to edge (35.3°, the row a little wider in view)
   const fromV = 2 * Math.atan(Math.tan((58 * DEG) / 2) * a) / DEG;
   return Math.max(72, fromV);
 }
 desk.frameHfov = frameHfov;
+/** Round 3: on a portrait screen, look a little higher, so the conversation, its layout chips and its reply box sit in the middle of the
+ * space between the top bar and the dock. */
+desk.framePitch = () => (touch.dock && !A.r3?.multi() && window.innerWidth / Math.max(1, window.innerHeight) < 0.8 ? 4 * DEG : 0);
 
 // ------------------------------------------------------------------ gestures on the scene
 const pts = new Map();
@@ -67,7 +71,8 @@ el.addEventListener('pointerdown', (e) => {
     if (g?.mode === 'swipe') desk.readYaw = 0;
     cancelLong(); mouse.press = null;
     const [a, b] = [...pts.values()];
-    g = {mode: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), z0: desk.zoom};
+    // Round 3: two fingers also pan the city (they hold the ground point under their middle), while reading nothing.
+    g = {mode: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), z0: desk.zoom, grab: S.reading ? null : groundAt((a.x + b.x) / 2, (a.y + b.y) / 2)};
     return;
   }
   if (pts.size > 2) return;
@@ -88,6 +93,10 @@ el.addEventListener('pointermove', (e) => {
     const [a, b] = [...pts.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
     const z = clamp(g.z0 * g.d0 / Math.max(20, d), 0.45, 1.8);
     if (Math.abs(z - desk.zoom) > 0.002) { desk.zoom = z; fitCamera(); g.moved = true; }
+    if (g.grab) {
+      const now = groundAt((a.x + b.x) / 2, (a.y + b.y) / 2);
+      if (now) { const p0 = city.root.worldToLocal(g.grab.clone()), p1 = city.root.worldToLocal(now.clone()); N.nav.pos.x += p0.x - p1.x; N.nav.pos.z += p0.z - p1.z; N.nav.speed = 1; N.apply(city.root); g.panned = true; }
+    }
     return;
   }
   if (g.mode === 'long') return;
@@ -113,7 +122,12 @@ el.addEventListener('pointermove', (e) => {
     else desk.lookYaw = g.look.yaw + dx * radPerPx();
     return;
   }
-  if (g.mode === 'alt') { const step = (g.lastY - e.clientY) / Math.max(1, window.innerHeight); g.lastY = e.clientY; if (step) N.fly(head.yaw, 0, 0, step * 3, 1, head.local); } // drag up: higher
+  // Drag up: higher. Round 3: a quarter of the screen is about a quarter of your height (it was 80% of it), and at most
+  // 12 m a move event.
+  if (g.mode === 'alt') {
+    const step = (g.lastY - e.clientY) / Math.max(1, window.innerHeight); g.lastY = e.clientY;
+    if (step) { const alt = Math.max(3, N.altitude(head.local)), climb = clamp(step * 1.25, -12 / (alt * 0.8), 12 / (alt * 0.8)); N.fly(head.yaw, 0, 0, climb, 1, head.local); }
+  }
 });
 /** A tap that lands just beside a small 3D button takes it: the nearest clickable target within SLOP_PX (a 33 px button
  * then answers like a 48+ px one; the cover screen held sideways draws the cockpit's buttons that small). */
@@ -131,14 +145,26 @@ function nearTap(x, y) {
   setPointerAt({clientX: x, clientY: y}); updateMouseRay();
   return best?.h || null;
 }
+/** Where a screen point's ray meets the city's ground (world space), or null. */
+function groundAt(x, y) {
+  const r = el.getBoundingClientRect(), rc = new THREE.Raycaster();
+  rc.setFromCamera(new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1), camera);
+  return rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0).applyMatrix4(city.root.matrixWorld), new THREE.Vector3());
+}
+let lastTap = {t: -1e9, x: 0, y: 0};
 function up(e, cancelled) {
   if (e.pointerType !== 'touch' || !pts.has(e.pointerId)) return;
   pts.delete(e.pointerId);
   if (!g) { if (!pts.size) pointerGone(); return; }
-  if (g.mode === 'pinch') { if (!pts.size) { tlog('pinch', {zoom: +desk.zoom.toFixed(2)}); endGesture(); } return; }
+  if (g.mode === 'pinch') { if (!pts.size) { tlog(g.panned ? 'pan' : 'pinch', {zoom: +desk.zoom.toFixed(2)}); endGesture(); } return; }
   cancelLong();
   const dx = e.clientX - g.x0, dt = Math.max(1, performance.now() - g.t0);
   if (!cancelled) {
+    // Round 3: a double tap on the conversation's text resets the zoom.
+    if (!g.mode && S.reading && onReader(g.hit) && !clickable(g.hit)) {
+      if (performance.now() - lastTap.t < 500 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) { desk.zoom = 1; fitCamera(); lastTap.t = -1e9; mouse.press = null; tlog('double-tap-zoom'); endGesture(); return; }
+      lastTap = {t: performance.now(), x: e.clientX, y: e.clientY};
+    }
     if (!g.mode && mouse.press && !clickable(mouse.press.hit) && !mouse.press.hit?.region?.strip) { const n = nearTap(e.clientX, e.clientY); if (n) { mouse.press.hit = n; mouse.press.reg = n.region; tlog('tap-near', {target: n.region?.id}); } }
     if (g.mode === 'press' || !g.mode) { setPointerAt(e); updateMouseRay(); if (!g.mode && touch.dock && g.hit?.region?.session === S.currentId && S.reading) openCard(S.currentId); else pressEnd(mouse); if (!g.mode) tlog('tap', {target: g.hit?.region?.id || (g.hit?.reader ? 'reader' : null)}); }
     else if (g.mode === 'swipe') {
@@ -235,6 +261,12 @@ setInterval(syncDock, 400);
 // ------------------------------------------------------------------ sheets: a session's card, and More
 const sheet = document.createElement('section');
 sheet.id = 'vrSheet'; sheet.className = 'vrChrome'; sheet.hidden = true; sheet.setAttribute('role', 'dialog');
+// Round 3: drag a sheet down to close it (it follows the finger; far or fast enough closes, else it springs back).
+let sd = null;
+sheet.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch' && sheet.scrollTop <= 0) sd = {y0: e.clientY, t0: performance.now(), dy: 0}; });
+sheet.addEventListener('pointermove', (e) => { if (!sd) return; sd.dy = Math.max(0, e.clientY - sd.y0); if (sd.dy > 6) { sheet.style.transform = `translateY(${sd.dy}px)`; sheet.style.transition = 'none'; } });
+const sheetUp = () => { if (!sd) return; const v = sd.dy / Math.max(1, performance.now() - sd.t0); const close = sd.dy > 90 || (v > 0.5 && sd.dy > 30); sheet.style.transition = 'transform 160ms ease-out'; sheet.style.transform = ''; sd = null; if (close) { closeSheet(); tlog('sheet:swipe-down'); } };
+sheet.addEventListener('pointerup', sheetUp); sheet.addEventListener('pointercancel', () => { if (sd) { sheet.style.transform = ''; sd = null; } });
 function closeSheet() { if (!touch.sheet) return; touch.sheet = null; touch.card = null; sheet.hidden = true; moreBtn.classList.remove('on'); }
 function sheetShell(title, body) {
   sheet.innerHTML = `<header><h2></h2><button type="button" class="x" aria-label="Close">×</button></header>${body}`;
@@ -244,7 +276,7 @@ function sheetShell(title, body) {
 }
 export function openCard(sid) {
   const s = get(sid); if (!s) return;
-  touch.sheet = 'card'; touch.card = sid;
+  touch.sheet = 'card'; touch.card = sid; sheet.dataset.kind = 'card';
   sheetShell(s.title, '<p class="st"></p><p class="pv"></p><div class="acts"><button type="button" data-a="open" class="pri">Open</button><button type="button" data-a="beside">Beside</button><button type="button" data-a="fly">Fly to</button></div>');
   const k = indicator(s);
   sheet.querySelector('.st').textContent = k === 'unread' ? `${statusText(s)} · ${unreadTurns(s)} unread turn${unreadTurns(s) > 1 ? 's' : ''}` : statusText(s);
@@ -254,7 +286,7 @@ export function openCard(sid) {
   sheet.querySelector('[data-a="fly"]').addEventListener('click', () => { closeSheet(); if (S.reading) UI.closeReader(); flyToSession(sid); tlog('card:fly', {sid}); });
 }
 function openMore() {
-  touch.sheet = 'more'; moreBtn.classList.add('on');
+  touch.sheet = 'more'; moreBtn.classList.add('on'); sheet.dataset.kind = 'more';
   const row = (label, html) => `<div class="row"><span>${label}</span><div class="ctl">${html}</div></div>`;
   const tog = (id, on) => `<button type="button" data-t="${id}" class="tog" aria-pressed="${on}">${on ? 'On' : 'Off'}</button>`;
   const r3m = A.r3?.mode?.() || 'focus';

@@ -102,3 +102,5 @@ body.vrTouch.vrTyping #vrTyping:not([hidden]) { display: flex; gap: 8px; left: 8
   body.vrTouch.vrTyping #vrComposerInput { right: 82px !important; bottom: 64px !important; height: 56px !important; }
 }
 .vrChip[hidden], .vrAv[hidden] { display: none; }
+/* Round 3: a sheet closes with a downward drag (the card has no scroll of its own; More drags from its header). */
+#vrSheet[data-kind="card"], #vrSheet header { touch-action: none; }
