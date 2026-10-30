@@ -11,7 +11,9 @@ export const nowMs = () => performance.now();
 // first frame of a newly opened panel, a texture upload) slows an animation down instead of skipping it.
 let animT = performance.now(), animReal = animT;
 export const animMs = () => animT;
-export function tickAnim() { const r = performance.now(); animT += Math.min(50, Math.max(0, r - animReal)); animReal = r; }
+// pi-web (usability round 3): animation time follows the wall clock up to 100 ms a frame (was 50): on a slow device
+// (a foldable at DPR 2.6, an emulator) a 280 ms panel opening took seconds, and a first tap met a cockpit still moving.
+export function tickAnim() { const r = performance.now(); animT += Math.min(100, Math.max(0, r - animReal)); animReal = r; }
 export const DEG = Math.PI / 180;
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const easeOut = (u) => 1 - Math.pow(1 - u, 3);

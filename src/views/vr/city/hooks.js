@@ -114,6 +114,7 @@ window.__vrCity = {
   cityFiles() { return {files: city.land.files.size, dirs: city.land.byPath.size, home: client.files.home}; },
   /** pi-web: the active reader's tiles. Is every turn laid out, does the tiling cover each turn's full height (no cut
    * turns), and is the text at the bottom of the view drawn? Plus resident tile textures and per-frame stats. */
+  touchLog() { return [...(A.touch?.log || [])]; },
   tileStats() { return {...tileStats, slow: A.slowPanel, phase: A.phaseMs ? Object.fromEntries(Object.entries(A.phaseMs).map(([k, v]) => [k, +v.toFixed(1)])) : null}; },
   readerTiles() {
     const r = A.active, set = r.set; if (!set) return null;

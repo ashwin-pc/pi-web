@@ -40,13 +40,17 @@ renderer.setAnimationLoop((time, frame) => {
   tickAnim();
   tickDwell(S.reading);
   const dt = Math.min(0.05, (t - last) / 1000);
+  // pi-web (usability round 3): the preview camera eases by wall-clock time (capped at 0.3 s a frame), so on a slow
+  // device it settles as fast as on a fast one; with frame-clamped time it drifted for seconds after an open, and a
+  // first tap landed on whatever the camera had moved to (the strip instead of the rail card).
+  const camDt = Math.min(0.3, (t - last) / 1000);
   A.fpsWin.push(t - last); if (A.fpsWin.length > 120) A.fpsWin.shift();
   last = t;
   A.frames++;
   if (frame && !xrCompiled) { xrCompiled = true; precompile(renderer.xr.getCamera()); }
   if (frame) xrFrame(frame, dt);
   else if (A.debugCam) { camera.position.fromArray(A.debugCam.pos); camera.lookAt(new THREE.Vector3().fromArray(A.debugCam.at)); camera.fov = A.debugCam.fov || 50; camera.updateProjectionMatrix(); camera.updateMatrixWorld(); updateMouseRay(); }
-  else { updateDeskCamera(dt); updateMouseRay(); }
+  else { updateDeskCamera(camDt); updateMouseRay(); }
   updateHead();
   // Flight: only your own input moves you (stick, grips, pinch-drag, keys), or an explicit fly-to / Home.
   if (frame) { if (xrInput.fwd || xrInput.strafe || xrInput.climb) N.fly(head.yaw, xrInput.fwd, xrInput.strafe, xrInput.climb, dt, head.local); }
