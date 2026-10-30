@@ -1,9 +1,32 @@
 import { sessionsReadTail, truncateSessionText, type SessionReadText } from "./referenceTools.js";
-import { textFromContent, toolCallName } from "./projection.js";
+import { toolCallName } from "./projection.js";
 import { isSessionReferenceId } from "../shared/sessionReference.js";
 
 const MAX_SESSION_READ_ENTRY_TEXT = 6_000;
 const MAX_SESSION_READ_TEXT = 12_000;
+const MAX_ORDINARY_INLINE_IMAGE_BYTES = 256 * 1024;
+
+function imageMediaType(value: Record<string, unknown>) {
+  for (const candidate of [value.mimeType, value.mediaType, value.mime_type]) {
+    if (typeof candidate === "string" && candidate.toLowerCase().startsWith("image/")) return candidate;
+  }
+  return "image";
+}
+
+function referenceTextFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (!part || typeof part !== "object") return "";
+    const value = part as Record<string, unknown>;
+    if (value.type === "text" && typeof value.text === "string") return value.text;
+    if (value.type !== "image") return "";
+    const bytes = typeof value.data === "string" ? Buffer.byteLength(value.data, "utf8") : 0;
+    return bytes > MAX_ORDINARY_INLINE_IMAGE_BYTES
+      ? `[omitted saved transcript ${imageMediaType(value)} base64 image data: ${bytes} bytes]`
+      : "[image]";
+  }).filter(Boolean).join("\n");
+}
 
 function shortValue(value: unknown, limit = 60): string {
   if (typeof value === "string") return truncateSessionText(value, limit).text;
@@ -41,7 +64,7 @@ export function projectSessionReferenceRecord(entry: unknown, compact: boolean):
     !record.message || typeof record.message !== "object") return undefined;
   const message = record.message as Record<string, unknown>;
   const role = typeof message.role === "string" ? message.role : "unknown";
-  const text = textForTail(textFromContent(message.content), role === "assistant" ? 700 : role === "toolResult" ? 200 : 400, compact);
+  const text = textForTail(referenceTextFromContent(message.content), role === "assistant" ? 700 : role === "toolResult" ? 200 : 400, compact);
   if (role === "assistant") {
     const lines = text.text ? [`[assistant] ${text.text}`] : [];
     for (const part of Array.isArray(message.content) ? message.content : []) {

@@ -12,7 +12,7 @@ import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
-import { savedTranscriptRecordLimits } from "../server/session/savedTranscriptSanitizer.js";
+import { savedTranscriptLimits } from "../server/session/savedTranscript.js";
 import { createSessionDraftStore } from "../src/drafts/sessionDraftStore.js";
 import { createSessionUiStateStore } from "../server/sessionUiState.js";
 
@@ -1302,7 +1302,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(await readFile(coldPath, "utf8")).toBe(original);
   });
 
-  it("retains a roughly 4.6 MiB cold tool result while replacing only its oversized inline image", async () => {
+  it("projects a roughly 4.6 MiB cold tool result with a sized inline-image omission", async () => {
     let coldPath = "";
     const { service, cwd, creates } = await fixtureService({
       list: async () => coldPath ? [{
@@ -1322,7 +1322,7 @@ describe("LocalSessionService standalone lifecycle", () => {
       },
     });
     expect(Buffer.byteLength(toolResult)).toBeGreaterThan(imageBytes);
-    expect(Buffer.byteLength(toolResult)).toBeLessThan(savedTranscriptRecordLimits.maxBytes);
+    expect(Buffer.byteLength(toolResult)).toBeLessThan(savedTranscriptLimits.maxRecordBytes);
     await writeFile(coldPath, [
       JSON.stringify({ type: "session", id: "image-cold", cwd }),
       toolResult,
@@ -1332,12 +1332,12 @@ describe("LocalSessionService standalone lifecycle", () => {
     const tail = await service.readSession({ sessionId: "image-cold" }, 20);
     expect(tail.entries).toEqual([expect.objectContaining({
       entryId: "large-tool-result",
-      text: expect.stringMatching(/inspect_image: ordinary tool output survived.*omitted saved transcript image\/png base64 image data: 4606572 bytes/s),
+      text: "  ✓ inspect_image: ordinary tool output survived\n[omitted saved transcript image/png base64 image data: 4606572 bytes]",
     })]);
     const exact = await service.readSession({ sessionId: "image-cold", entryId: "large-tool-result" }, 20);
     expect(exact.entries).toEqual([expect.objectContaining({
       entryId: "large-tool-result",
-      text: expect.stringMatching(/inspect_image: ordinary tool output survived.*omitted saved transcript image\/png base64 image data: 4606572 bytes/s),
+      text: "  ✓ inspect_image: ordinary tool output survived\n[omitted saved transcript image/png base64 image data: 4606572 bytes]",
     })]);
     expect(creates).toHaveLength(1);
     await service.disposeAll();

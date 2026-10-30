@@ -2,7 +2,6 @@ import type { SessionProjection } from "@earendil-works/pi-coding-agent";
 import { parseAttachmentMarkup } from "../shared/attachments.js";
 import type { PiWebSession } from "../types.js";
 import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "./dto.js";
-import { savedTranscriptOmission } from "./savedTranscriptSanitizer.js";
 
 export type ContentDecorator = (content: unknown) => unknown;
 
@@ -15,7 +14,7 @@ export function textFromContent(content: unknown): string {
     if (!part || typeof part !== "object") return "";
     const p = part as Record<string, unknown>;
     if (p.type === "text" && typeof p.text === "string") return p.text;
-    if (p.type === "image") return savedTranscriptOmission(p) || "[image]";
+    if (p.type === "image") return "[image]";
     // toolCall parts are rendered as tool cards in the UI — omit from text
     return "";
   }).filter(Boolean).join("\n");
