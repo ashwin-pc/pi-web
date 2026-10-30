@@ -98,8 +98,11 @@ The path must be absolute and its existing parent must be owned by the running
 user with no group or other access. The supervisor creates the socket as mode
 0600 with the running user's ownership while continuing to listen on TCP.
 Only requests received on that socket may assert the configured external
-identity header. The tunnel must remove every caller-supplied copy of the
-identity header and set one verified user value. Other processes running as
+identity header. Because filesystem access authenticates the tunnel process,
+the Unix listener also accepts its single canonical `X-Forwarded-For` and
+strict `X-Forwarded-Host`; the TCP listener still requires an explicit proxy
+peer. The tunnel must remove every caller-supplied copy of these headers and
+set one verified value. Other processes running as
 the same account remain trusted because they can open the user-owned socket;
 other local accounts cannot open it.
 

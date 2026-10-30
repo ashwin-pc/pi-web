@@ -6,9 +6,13 @@ export function trustedProxyPeer(req: IncomingMessage): boolean {
   return !!peer && (process.env.PI_WEB_AUTH_PROXY_PEERS || "").split(",")
     .some(value => canonicalIP(value.trim()) === peer);
 }
-export function forwardedHost(req: IncomingMessage, protocol?: "http:" | "https:"): string | undefined {
+export function forwardedHost(
+  req: IncomingMessage,
+  protocol?: "http:" | "https:",
+  trusted = trustedProxyPeer(req),
+): string | undefined {
   const value = req.headers["x-forwarded-host"];
-  if (!trustedProxyPeer(req)) return undefined;
+  if (!trusted) return undefined;
   return normalizedAuthority(value, protocol);
 }
 

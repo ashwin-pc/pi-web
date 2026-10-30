@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { browserMutationFailure, type MutationAdmissionFailure } from "./server/auth/admission.js";
-import { createOriginRejectionReporter, originFailureHint } from "./server/auth/origin.js";
+import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
   UNKNOWN_SUPERVISOR_PEER,
