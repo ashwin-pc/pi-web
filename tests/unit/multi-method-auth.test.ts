@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { isolatedAuthEnv } from "../auth-isolation.js";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -30,13 +30,12 @@ async function fixture() {
     join(await mkdtemp(join(tmpdir(), "pi-multi-auth-")), "auth.json"),
   );
   const kernel = new AuthKernel(
-    "legacy",
+    "passkey",
     store,
-    "legacy-secret",
     false,
     "x-user",
     "authenticated",
-    ["legacy", "password", "passkey", "external"],
+    ["password", "passkey", "external"],
   );
   return { store, kernel };
 }
@@ -146,7 +145,7 @@ describe("multi-method human authentication", () => {
   it("denies stale-cookie and grant persistence and other-device lockout", async () => {
     for (const grant of [false, true]) {
       const { kernel, store } = await fixture(); const res = response();
-      await kernel.establishSession(res, { id: "owner" }, grant ? "grant" : "legacy", undefined, !grant);
+      await kernel.establishSession(res, { id: "owner" }, grant ? "grant" : "password", undefined, !grant);
       const auth = await kernel.gate(req({}, { cookie: res.headers["set-cookie"].split(";")[0] }));
       if (!auth.ok) throw Error("missing session");
       if (!grant) await store.update(s => { s.sessions[0].authenticatedAt = Date.now() - 600000; });
@@ -163,7 +162,7 @@ describe("multi-method human authentication", () => {
   it("atomically revokes API tokens by default with an explicit retention option", async () => {
     for (const revokeApiTokens of [undefined, true, false]) for (const password of [true, false]) {
       const { kernel, store } = await fixture(); const res = response();
-      await kernel.establishSession(res, { id: "owner" }, "legacy");
+      await kernel.establishSession(res, { id: "owner" }, "password");
       const auth = await kernel.gate(req({}, { cookie: res.headers["set-cookie"].split(";")[0] }));
       if (!auth.ok || !auth.sessionHash) throw Error("missing session");
       await store.update(s => { s.apiTokens.push({ id: "test", hash: "hash", name: "test", createdAt: Date.now(), expiresAt: Date.now() + 60000 }); });
@@ -191,12 +190,9 @@ describe("multi-method human authentication", () => {
   });
   it("reports environment-only and store-only method deltas", async () => {
     const { kernel, store } = await fixture();
-    await store.update(s => { s.config = { policy: "authenticated", methods: ["legacy"] }; });
+    await store.update(s => { s.config = { policy: "authenticated", methods: ["password"] }; });
     const warn = vi.fn(); await kernel.startupDiagnostics(warn);
-    expect(warn.mock.calls[0][0]).toContain("environment-only methods=[password, passkey, external]");
-    kernel.methods = new Set(["password"]);
-    warn.mockClear(); await kernel.startupDiagnostics(warn);
-    expect(warn.mock.calls[0][0]).toContain("store-only methods=[legacy]");
+    expect(warn.mock.calls[0][0]).toContain("environment-only methods=[passkey, external]");
   });
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
@@ -208,20 +204,21 @@ describe("multi-method human authentication", () => {
       });
       store.listeners.add(seen);
       await store.update((s) => {
-        s.verifiedMethods = ["legacy"];
+        s.verifiedMethods = ["password"];
       });
       expect(seen).toHaveBeenCalledOnce();
-      expect((await store.read()).verifiedMethods).toEqual(["legacy"]);
+      expect((await store.read()).verifiedMethods).toEqual(["password"]);
     } finally {
       log.mockRestore();
     }
   });
-  it("the gate observes retirement without relying on a prior config refresh", async () => {
+  it("the gate observes API token revocation without relying on a prior config refresh", async () => {
     const { store, kernel } = await fixture();
-    const request = req({}, { authorization: "Bearer legacy-secret" });
+    await store.update(s => s.apiTokens.push({ id: "test", name: "test", hash: hashSecret("piw_test"), createdAt: Date.now(), expiresAt: Date.now() + 60_000 }));
+    const request = req({}, { authorization: "Bearer piw_test" });
     expect((await kernel.gate(request)).ok).toBe(true);
     await store.update((s) => {
-      s.config = { policy: "authenticated", methods: [] };
+      s.apiTokens[0].revokedAt = Date.now();
     });
     expect((await kernel.gate(request)).ok).toBe(false);
   });
@@ -233,7 +230,7 @@ describe("multi-method human authentication", () => {
     const warn = vi.fn();
     await kernel.startupDiagnostics(warn);
     expect(warn).toHaveBeenCalledTimes(2);
-    expect(kernel.methods.has("legacy")).toBe(false);
+    expect(kernel.methods.has("password")).toBe(true);
   });
   it("requires explicit sanitized proxy trust for throttle identities", () => {
     const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
@@ -290,9 +287,9 @@ describe("multi-method human authentication", () => {
     );
     expect(enrollment.status).toBe(403);
     const recent = response();
-    await kernel.establishSession(recent, { id: "legacy:token" }, "legacy");
+    await kernel.establishSession(recent, { id: "owner" }, "password");
     const r = req(
-      { methods: ["legacy", "password"] },
+      { methods: ["password", "passkey"] },
       { cookie: recent.headers["set-cookie"].split(";")[0] },
       "PUT",
     );
@@ -331,7 +328,7 @@ describe("multi-method human authentication", () => {
     expect(res.text).toContain('name="confirm"');
     expect(res.text).toContain("Passwords do not match");
     const { kernel } = await fixture();
-    expect(await kernel.readyMethods()).toEqual(["legacy", "external"]);
+    expect(await kernel.readyMethods()).toEqual(["external"]);
   });
   it("clears the current cookie when self-revoking and records grant attribution honestly", async () => {
     const { kernel, store } = await fixture();
@@ -379,7 +376,7 @@ describe("multi-method human authentication", () => {
     );
     expect(res.status).toBe(403);
   });
-  it("translates legacy configuration into independent policy and methods", () => {
+  it("translates supported compatibility configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
       methods: [],
@@ -395,21 +392,160 @@ describe("multi-method human authentication", () => {
     });
     expect(() => resolveAuthConfig({ PI_WEB_AUTH_METHODS: "basic" })).toThrow();
   });
-  it("recovery does not re-enable a retired password method", async () => {
+  it("recovery removes saved legacy authority and creates a usable single-use bootstrap", async () => {
     const { store } = await fixture();
+    const now = Date.now();
     await store.update((s) => {
-      s.config = { policy: "authenticated", methods: ["passkey"] };
-      s.password = { hash: "retired-password-hash", changedAt: 1 };
+      s.config = { policy: "authenticated", methods: ["legacy"] } as never;
+      s.verifiedMethods = ["legacy"] as never;
+      s.sessions.push(
+        {
+          hash: hashSecret("legacy-method"),
+          identity: { id: "owner" },
+          method: "legacy" as never,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        },
+        {
+          hash: hashSecret("legacy-grant-descendant"),
+          identity: { id: "legacy:token" },
+          method: "grant",
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        },
+        ...(["password", "passkey", "external"] as const).map((method) => ({
+          hash: hashSecret(`supported-${method}`),
+          identity: { id: `${method}:owner` },
+          method,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        })),
+      );
+      s.deviceGrants = [
+        {
+          id: "legacy-method-grant",
+          hash: "legacy-method-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "owner" },
+          createdBySessionHash: hashSecret("legacy-method"),
+        },
+        {
+          id: "legacy-identity-grant",
+          hash: "legacy-identity-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "legacy:token" },
+          createdBySessionHash: hashSecret("legacy-grant-descendant"),
+        },
+        {
+          id: "supported-grant",
+          hash: "supported-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "password:owner" },
+          createdBySessionHash: hashSecret("supported-password"),
+        },
+      ];
+      s.apiTokens.push({
+        id: "automation",
+        name: "Automation",
+        hash: hashSecret("piw_automation"),
+        createdAt: now,
+        expiresAt: now + 60_000,
+      });
     });
-    await promisify(execFile)(
-      process.execPath,
-      ["--import", "tsx", "server/auth/cli.ts", "recover"],
-      { env: { ...isolatedAuthEnv(), PI_WEB_AUTH_STORE: store.path } },
-    );
+    const outputPath = `${store.path}.recover-output`;
+    const output = openSync(outputPath, "w");
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", "server/auth/cli.ts", "recover"],
+          {
+            env: { ...isolatedAuthEnv(), PI_WEB_AUTH_STORE: store.path },
+            stdio: ["ignore", output, output],
+          },
+        );
+        child.once("error", reject);
+        child.once("close", code => code === 0 ? resolve() : reject(new Error(`recover exited ${code}`)));
+      });
+    } finally {
+      closeSync(output);
+    }
+    const stdout = await readFile(outputPath, "utf8");
     const state = await store.read();
-    expect(state.config?.methods).toEqual(["passkey"]);
-    expect(state.password?.hash).toBe("retired-password-hash");
+    expect(state.config?.methods).toEqual([]);
+    expect(state.verifiedMethods).toEqual([]);
     expect(state.bootstrap?.usedAt).toBeUndefined();
+    expect(
+      state.sessions
+        .filter(
+          (session) =>
+            (session.method as string) === "legacy" ||
+            session.identity.id === "legacy:token",
+        )
+        .every((session) => session.revokedAt),
+    ).toBe(true);
+    expect(
+      state.sessions
+        .filter((session) => session.identity.id.endsWith(":owner"))
+        .every((session) => !session.revokedAt),
+    ).toBe(true);
+    expect(
+      state.deviceGrants
+        ?.filter((grant) => grant.id.startsWith("legacy-"))
+        .every((grant) => grant.cancelledAt),
+    ).toBe(true);
+    expect(
+      state.deviceGrants?.find((grant) => grant.id === "supported-grant")
+        ?.cancelledAt,
+    ).toBeUndefined();
+    expect(state.apiTokens[0].revokedAt).toBeUndefined();
+    const link = String(stdout).match(/https?:\/\/\S+/)?.[0];
+    expect(link).toBeTruthy();
+    const kernel = new AuthKernel("passkey", store, false);
+    await kernel.refreshConfig();
+    for (const method of ["password", "passkey", "external"]) {
+      expect(
+        (await kernel.gate(
+          req({}, { cookie: `pi_web_session=supported-${method}` }),
+        )).ok,
+      ).toBe(true);
+    }
+    expect(
+      (await kernel.gate(
+        req({}, { authorization: "Bearer piw_automation" }),
+      )).ok,
+    ).toBe(true);
+    const setup = response();
+    await handlePasswordLogin(
+      req({
+        token: new URL(link!).searchParams.get("token"),
+        password: "recovered secure password",
+      }),
+      setup,
+      new URL("/api/auth/password/bootstrap", config.origin),
+      kernel,
+      store,
+    );
+    expect(setup.status).toBe(200);
+    expect((await store.read()).config?.methods).toEqual(["password"]);
+    const replay = response();
+    await handlePasswordLogin(
+      req({
+        token: new URL(link!).searchParams.get("token"),
+        password: "another recovered password",
+      }),
+      replay,
+      new URL("/api/auth/password/bootstrap", config.origin),
+      kernel,
+      store,
+    );
+    expect(replay.status).toBe(401);
   });
   it("serializes concurrent password work without rejecting a bounded waiter", async () => {
     const outcomes = await Promise.allSettled([
@@ -432,11 +568,13 @@ describe("multi-method human authentication", () => {
   });
   it("prints setup only for an unconfigured store and consumes its token once", async () => {
     const { store } = await fixture();
-    const kernel = new AuthKernel("legacy", store, "", false);
+    const kernel = new AuthKernel("passkey", store, false);
     const link = await initializeAuth(kernel, config.origin, false);
     expect(link).toBeTruthy();
     const token = new URL(link!).searchParams.get("token");
     expect(await readFile(store.path, "utf8")).not.toContain(token);
+    expect((await kernel.gate(req({}, { authorization: "" }, "GET"))).ok).toBe(false);
+    expect((await kernel.gate(req({}, {}, "GET"))).ok).toBe(false);
     expect(await initializeAuth(kernel, config.origin, false)).toBeUndefined();
     const url = new URL("/api/auth/password/bootstrap", config.origin),
       res = response();
@@ -459,10 +597,10 @@ describe("multi-method human authentication", () => {
     );
     expect(replay.status).toBe(401);
   });
-  it("lets an existing legacy session enroll password, requires verified replacement, and revokes sessions", async () => {
+  it("lets an existing authenticated session rotate password and revoke sessions", async () => {
     const { store, kernel } = await fixture(),
       original = response();
-    await kernel.establishSession(original, { id: "legacy:token" });
+    await kernel.establishSession(original, { id: "owner" }, "password");
     const cookie = original.headers["set-cookie"].split(";")[0];
     const auth = await kernel.gate(req({}, { cookie }));
     if (!auth.ok) throw new Error("No session");
@@ -505,7 +643,7 @@ describe("multi-method human authentication", () => {
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(200);
     expect(
-      (await kernel.gate(req({}, { authorization: "Bearer legacy-secret" })))
+      (await kernel.gate(req({}, { authorization: "Bearer removed-secret" })))
         .ok,
     ).toBe(false);
     expect(
@@ -517,7 +655,7 @@ describe("multi-method human authentication", () => {
     expect(
       (
         await kernel.gate(
-          req({}, { cookie, authorization: "Bearer legacy-secret" }),
+          req({}, { cookie, authorization: "Bearer removed-secret" }),
         )
       ).ok,
     ).toBe(false);

@@ -26,6 +26,7 @@ import {
   handlePublicDeviceGrant,
   handleSecurityRoute,
 } from "../../server/auth/security.js";
+import type { HumanAuthMethod } from "../../server/auth/config.js";
 
 const config = {
   origin: "https://public.example",
@@ -203,15 +204,14 @@ function response() {
 }
 
 async function fixture(
-  methods = ["legacy", "password", "passkey"] as const,
+  methods: readonly HumanAuthMethod[] = ["password", "passkey"],
 ) {
   const store = new AuthStore(
     join(await mkdtemp(join(tmpdir(), "pi-stepup-")), "auth.json"),
   );
   const kernel = new AuthKernel(
-    "legacy",
+    "passkey",
     store,
-    "legacy-secret",
     false,
     "",
     "authenticated",
@@ -222,7 +222,7 @@ async function fixture(
 
 async function recentSession(kernel: AuthKernel) {
   const res = response();
-  await kernel.establishSession(res, { id: "owner" }, "legacy");
+  await kernel.establishSession(res, { id: "owner" }, "password");
   const cookie = res.headers["set-cookie"].split(";")[0];
   const auth = await kernel.gate(request({}, { cookie }));
   if (!auth.ok || !auth.sessionHash) throw new Error("Session missing");
@@ -373,7 +373,7 @@ describe("step-up and auth workload hardening", () => {
   });
 
   it("rechecks recent authentication inside the locked method transaction", async () => {
-    const { store, kernel } = await fixture(["legacy"]);
+    const { store, kernel } = await fixture(["password"]);
     const { cookie, auth } = await recentSession(kernel);
     const req = pendingRequest({ cookie }, "PUT");
     const observed = waitForRouteRead(store);
@@ -393,9 +393,9 @@ describe("step-up and auth workload hardening", () => {
         (session) => session.hash === auth.sessionHash,
       )!.authenticatedAt = Date.now() - 600_000;
     });
-    req.end(JSON.stringify({ methods: ["legacy"] }));
+    req.end(JSON.stringify({ methods: ["password"] }));
     await expect(route).rejects.toThrow("Recent sign-in required");
-    expect((await store.read()).config?.methods).not.toEqual(["legacy"]);
+    expect((await store.read()).config?.methods).not.toEqual(["password"]);
     vi.restoreAllMocks();
   });
 
@@ -531,17 +531,7 @@ describe("step-up and auth workload hardening", () => {
     await store.update((state) => {
       state.password = { hash: encoded, changedAt: Date.now() };
     });
-    const { auth } = await recentSession(
-      new AuthKernel(
-        "legacy",
-        store,
-        "legacy-secret",
-        false,
-        "",
-        "authenticated",
-        ["legacy", "password"],
-      ),
-    );
+    const { auth } = await recentSession(kernel);
     const verificationLoad = Array.from({ length: 5 }, () =>
       verifyPassword("wrong password", encoded),
     );
@@ -751,7 +741,7 @@ describe("step-up and auth workload hardening", () => {
   });
 
   it("skips auth-store rewrites for unauthenticated logout and bounds backlog", async () => {
-    const { store, kernel } = await fixture(["legacy"]);
+    const { store, kernel } = await fixture(["password"]);
     const { cookie } = await recentSession(kernel);
     const before = await readFile(store.path, "utf8");
     const listener = vi.fn();

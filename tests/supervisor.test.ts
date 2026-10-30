@@ -1,12 +1,12 @@
 import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
-import { AuthStore, hashSecret } from "../server/auth/kernel.js";
-import WebSocket from "ws";
+import { AuthStore } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { mintStoredApiToken } from "./auth-fixture.js";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
-const token = "supervisor-test-token";
 const supervisors = new Set<ChildProcess>();
 
 async function freePort(): Promise<number> {
@@ -38,7 +38,7 @@ async function waitFor<T>(
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
-async function status(port: number, supervisor: ChildProcess) {
+async function status(port: number, supervisor: ChildProcess, token: string) {
   return waitFor(async () => {
     const response = await fetch(`http://127.0.0.1:${port}/__supervisor/status`, {
       headers: { authorization: `Bearer ${token}` },
@@ -75,6 +75,8 @@ describe("pi-web supervisor", () => {
     const publicPort = await freePort();
     const childPort = await freePort();
     const authEnv = isolatedAuthEnv();
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    const token = await mintStoredApiToken(store, "supervisor");
     const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
       cwd: projectRoot,
       env: {
@@ -82,7 +84,7 @@ describe("pi-web supervisor", () => {
         HOST: "127.0.0.1",
         PORT: String(publicPort),
         PI_WEB_CHILD_PORT: String(childPort),
-        PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: token,
+        PI_WEB_AUTH_POLICY: "authenticated",
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
       },
@@ -90,41 +92,43 @@ describe("pi-web supervisor", () => {
     });
     supervisors.add(supervisor);
 
-    const initial = await status(publicPort, supervisor);
+    const initial = await status(publicPort, supervisor, token.secret);
     expect(initial.childPid).toBeTypeOf("number");
     process.kill(initial.childPid!, "SIGTERM");
 
     const recovered = await waitFor(async () => {
-      const current = await status(publicPort, supervisor);
+      const current = await status(publicPort, supervisor, token.secret);
       if (current.childGeneration <= initial.childGeneration || current.childPid === initial.childPid) return undefined;
       const response = await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token.secret}` },
       });
       return response.ok ? current : undefined;
     }, supervisor);
     expect(recovered.childGeneration).toBe(initial.childGeneration + 1);
 
-    // A stopped child cannot answer auth requests; the supervisor must verify
-    // the same persistent store directly, including legacy retirement.
-    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
-    await store.update(s => { s.config = { policy: "authenticated", methods: [] }; s.apiTokens.push({ id: "restart", name: "restart", hash: hashSecret("machine-restart"), createdAt: Date.now(), expiresAt: Date.now() + 60_000 }); });
+    // A stopped child cannot answer auth requests; the supervisor verifies the
+    // same persistent store directly and observes revocation immediately.
+    const restartToken = await mintStoredApiToken(store, "restart");
     process.kill(recovered.childPid!, "SIGSTOP");
     try {
-      const denied = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${token}` } });
-      expect(denied.status).toBe(401);
-      const allowed = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: "Bearer machine-restart" }, signal: AbortSignal.timeout(2000) });
+      const allowed = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${restartToken.secret}` }, signal: AbortSignal.timeout(2000) });
       expect(allowed.status).toBe(200);
-      await store.update(s => { s.config = { policy: "authenticated", methods: ["legacy"] }; });
+      await store.update(state => {
+        const record = state.apiTokens.find(item => item.id === restartToken.id);
+        if (record) record.revokedAt = Date.now();
+      });
+      const denied = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${restartToken.secret}` }, signal: AbortSignal.timeout(2000) });
+      expect(denied.status).toBe(401);
     } finally { process.kill(recovered.childPid!, "SIGCONT"); }
 
     const restartResponse = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token.secret}` },
     });
     expect(restartResponse.status).toBe(202);
 
     const intentionallyRestarted = await waitFor(async () => {
-      const current = await status(publicPort, supervisor);
+      const current = await status(publicPort, supervisor, token.secret);
       return current.childGeneration > recovered.childGeneration && current.childPid !== recovered.childPid
         ? current
         : undefined;
@@ -132,7 +136,7 @@ describe("pi-web supervisor", () => {
     expect(intentionallyRestarted.childGeneration).toBe(recovered.childGeneration + 1);
 
     await new Promise((resolve) => setTimeout(resolve, 1_200));
-    expect((await status(publicPort, supervisor)).childGeneration).toBe(intentionallyRestarted.childGeneration);
+    expect((await status(publicPort, supervisor, token.secret)).childGeneration).toBe(intentionallyRestarted.childGeneration);
   }, 20_000);
 
   it("preserves the public auth contract across proxying and restart", async () => {
@@ -154,7 +158,6 @@ describe("pi-web supervisor", () => {
           PI_WEB_AUTH_METHODS: "external",
           PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
           PI_WEB_AUTH_ORIGIN: publicOrigin,
-          PI_WEB_TOKEN: "",
           PI_WEB_MOCK: "1",
           PI_WEB_NO_SESSION: "1",
           NODE_ENV: "test",

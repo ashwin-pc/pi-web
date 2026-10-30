@@ -14,8 +14,12 @@ const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
 const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
-const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+const authStorePath = resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE);
+const authStore = new AuthStore(authStorePath);
+const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
+
+await new AuthKernel(authConfig.mode, authStore, true, authConfig.trustedHeader, authConfig.policy, authConfig.methods).refreshConfig();
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -24,8 +28,7 @@ const intentionalStops = new Set<number>();
 
 async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
   try {
-    const config = resolveAuthConfig(process.env);
-    const kernel = new AuthKernel(config.legacyMode, new AuthStore(resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE)), token, true, config.trustedHeader, config.policy, config.methods);
+    const kernel = new AuthKernel(authConfig.mode, new AuthStore(authStorePath), true, authConfig.trustedHeader, authConfig.policy, authConfig.methods);
     await kernel.refreshConfig();
     const auth = await kernel.gate(req);
     if (!auth.ok) return false;

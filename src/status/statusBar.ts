@@ -249,7 +249,7 @@ export function createStatusBar(options: {
     if (state.reconnectNoticeTimer === undefined) {
       state.reconnectNoticeTimer = window.setTimeout(() => {
         state.reconnectNoticeTimer = undefined;
-        if (state.wsDisconnected && elements.tokenOverlay.hidden && !elements.connectionStatusEl.classList.contains("offline")) {
+        if (state.wsDisconnected && !elements.connectionStatusEl.classList.contains("offline")) {
           setConnectionStatus("reconnecting", "Live updates reconnecting…");
         }
       }, reconnectNoticeDelayMs);
@@ -257,7 +257,7 @@ export function createStatusBar(options: {
     if (state.connectionLostTimer === undefined) {
       state.connectionLostTimer = window.setTimeout(() => {
         state.connectionLostTimer = undefined;
-        if (state.wsDisconnected && elements.tokenOverlay.hidden) {
+        if (state.wsDisconnected) {
           setConnectionStatus("offline", "Live updates unavailable", "Connection lost. Messages may still send, but live updates are unavailable.");
         }
       }, connectionLostDelayMs);
