@@ -651,7 +651,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       const extensionAuth = hasExtensionCredential(req) ? await authKernel.gate(req) : undefined;
       if (extensionAuth && !extensionAuth.ok) return sendJson(res, extensionAuth.status || 401, { ok: false, error: "Extension API authorization failed" });
       if (!extensionAuth) await authKernel.refreshConfig();
-      if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
+      const publicAuthMutation = method === "POST" && [
+        "/api/auth/device/redeem",
+        "/api/auth/password/login",
+        "/api/auth/password/bootstrap",
+        "/api/auth/external/login",
+        "/api/auth/passkey/options",
+        "/api/auth/passkey/verify",
+        "/api/auth/bootstrap/options",
+        "/api/auth/bootstrap/verify",
+      ].includes(url.pathname);
+      if (publicAuthMutation && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, { mode: "redirect", url: "/api/auth/login" });
