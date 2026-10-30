@@ -28,9 +28,12 @@ function targets() {
 }
 /** What a ray hits: panels in front win (the bar and its pop-ups first: they are nearest), then a live card or coin,
  * then a block or district sign (within 3°, the nearest wins). */
-export const REST_DROP = 0.45;
+// A controller or hand ray pointing steeply down (more than 45° below level) is a resting hand, not pointing: it
+// targets nothing. (pi-web: this replaces the old hand-height gate, which also caught real pointing from the elbow.)
+export const REST_PITCH = Math.sin(-45 * Math.PI / 180);
 export function intersect(ptr) {
   if (!ptr.valid) return null;
+  if (ptr.kind !== 'mouse' && !ptr.press && ptr.ray.direction.y < REST_PITCH) return null;
   raycaster.ray.copy(ptr.ray);
   raycaster.far = 8000;
   for (const h of raycaster.intersectObjects(targets(), false)) {
@@ -49,9 +52,8 @@ export function intersect(ptr) {
     }
     const reg = panel.regionAt(h.uv);
     if ((panel.name === 'bar' || panel.name === 'preview' || panel.name === 'menu') && !reg) continue;
-    // A resting hand (its ray starting more than REST_DROP below your eyes) does not reach the bar, which now sits
-    // low, where relaxed rays point; raise the hand to point at it.
-    if ((panel.name === 'bar' || panel.name === 'preview' || panel.name === 'menu') && ptr.kind !== 'mouse' && ptr.ray.origin.y < head.pos.y - REST_DROP) continue;
+    // pi-web (usability round 1): no hand-height gate any more (a ray from an elbow-height hand, the natural way to
+    // point, used to miss the bar). Whatever the ray actually hits is the target.
     return {panel, uv: h.uv.clone(), point: h.point, distance: h.distance, region: reg};
   }
   if (S.reading) return null; // while reading, the city ignores selects (a resting ray often lands there)
@@ -128,10 +130,10 @@ export const effortLog = [];
 export function logInput(kind) { effortLog.push({t: Math.round(nowMs()), kind}); if (effortLog.length > 400) effortLog.shift(); }
 export function pressStart(p) {
   p.hit = intersect(p);
-  if (S.composer.focused && p.hit?.panel !== composer) { S.composer.focused = false; composer.invalidate(); }
+  if (S.composer.focused && p.hit?.panel !== composer) UI.blurComposer?.();
   const reg = p.hit?.region || null;
   const P0 = gesturePoint(p, new THREE.Vector3());
-  p.press = {t0: nowMs(), reg, hit: p.hit, P0, last: P0.clone(), samples: [{t: nowMs(), y: 0}], mode: null, startScroll: A.active.scroll, right: head.right.clone()};
+  p.press = {t0: nowMs(), reg, hit: p.hit, P0, last: P0.clone(), samples: [{t: nowMs(), y: 0}], mode: null, startScroll: A.active.scroll, right: head.right.clone(), dir0: p.ray.direction.clone()};
   // Round 3: a region with a drag handler (a panel's grab bar or corner, an avatar pulled up out of the bar, the 3D
   // model): the drag owns the press; a press that barely moves is still a click.
   if (reg?.drag) { p.press.mode = 'drag'; p.press.dir0 = p.ray.direction.clone(); reg.drag.start?.(p); logInput(`${p.kind}:press`); return; }
@@ -204,7 +206,8 @@ export function pressEnd(p) {
     return;
   }
   if (pr.mode && pr.mode !== 'look-or-tap') return;
-  if (nowMs() - pr.t0 > 700) return;
+  // A slow, careful press is still a click if the ray barely moved (it used to be dropped after 700 ms).
+  if (nowMs() - pr.t0 > 700 && p.ray.direction.angleTo(pr.dir0 || p.ray.direction) / DEG > 1.2) return;
   if (pr.mode === 'look-or-tap' && pr.moved) return;
   tap(p, pr.hit);
 }
@@ -216,10 +219,15 @@ function tap(p, hit) {
   if (hit?.card) { cancelPending(); choose(hit.card); logInput(`${p.kind}:card`); return; }
   if (hit?.label) { cancelPending(); const c = hit.label.click; if (c?.fly) flyToPath(c.fly); logInput(`${p.kind}:sign`); return; }
   if (hit?.reader) return;
-  // Empty space: a quick second tap is "what needs me"; one tap (headset) opens the current session after a short wait.
-  if (nowMs() - lastEmptyTap < 450) { lastEmptyTap = -1e9; cancelPending(); UI.needsYou(); logInput(`${p.kind}:double-tap`); return; }
-  lastEmptyTap = nowMs();
-  if (!S.reading && p.kind !== 'mouse') { cancelPending(); pendingOpen = setTimeout(() => { pendingOpen = null; openReader(S.currentId); }, 330); }
+  // pi-web (usability round 1): a tap on nothing does nothing but a short "nothing here" pulse. It used to open the
+  // current session after 330 ms, so a near miss on an avatar opened a different session. For hands only (they have
+  // no buttons), a quick double tap on empty space is still "what needs me".
+  haptic(p, 0.08, 8);
+  if (p.kind === 'hand' || p.kind === 'transient') {
+    if (nowMs() - lastEmptyTap < 450) { lastEmptyTap = -1e9; UI.needsYou(); logInput(`${p.kind}:double-tap`); return; }
+    lastEmptyTap = nowMs();
+  }
+  logInput(`${p.kind}:empty-tap`);
 }
 function cancelPending() { if (pendingOpen) { clearTimeout(pendingOpen); pendingOpen = null; } }
 /** The hands that are panning the city this frame, in your space (for city-nav's grab). */
