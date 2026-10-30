@@ -104,9 +104,8 @@ test.describe("VR view, usability round 2 (emulated Quest 3)", () => {
 
   test("P2: the bar sits at −28° or higher while reading, clear of the composer; just above an avatar is not the composer", async ({ page }) => {
     await enter(page);
-    await page.waitForTimeout(1500);
-    const b = await vr(page, (city) => city.r3().bar);
-    expect(b.elev).toBeGreaterThanOrEqual(-28.01);
+    // The bar eases to its place (slower under load): wait for it to settle.
+    await expect.poll(async () => (await vr(page, (city) => city.r3().bar)).elev, { timeout: 10_000 }).toBeGreaterThanOrEqual(-28.01);
     // A ray 0.4° above an avatar's top edge: it must not land on the composer.
     const id = (await vr(page, (city) => city.state())).pinned[1];
     const above = await vr(page, (city, _i, x: string) => { const T = city._three.THREE, eye = city._three.head.pos.clone(), w = new T.Vector3(...Object.values(city.world(`avatar:${x}`)) as number[]), d = city.targetDeg(`avatar:${x}`); const dir = w.clone().sub(eye).normalize(); const up = new T.Vector3(0, 1, 0).projectOnPlane(dir).normalize(); const a = (d.h / 2 + 0.4) * Math.PI / 180; const p = eye.clone().add(dir.clone().multiplyScalar(Math.cos(a)).addScaledVector(up, Math.sin(a)).multiplyScalar(2)); return [p.x, p.y, p.z]; }, id);
