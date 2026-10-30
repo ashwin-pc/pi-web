@@ -12,6 +12,7 @@ import {Bar, UIB, PAGE, pages} from './bar.js';
 import {BarPops} from './bar-pops.js';
 import {PanelBatch} from './panel-batch.js';
 import {readers, sets, setFor, VIEW_PX, prefetch, HOLD, frameCount} from './reader.js';
+import {warmBlocks} from './turns.js';
 import {A, world, uiRoot, renderer, scene, camera, nowMs, animMs, clamp, easeOut, applyStatus, READER_POS, RH, DEG, FOCUS} from './core.js';
 import {restPos, setAnchor, faceRoom, context} from './focus.js';
 import {rail} from './artifacts.js';
@@ -262,6 +263,7 @@ UI.send = () => {
 // ------------------------------------------------------------------ state -> view
 on((topic, detail) => {
   if (topic === 'transcript') {
+    const ws = get(detail); if (ws) warmBlocks(ws.messages); // round 3: parse its replies in idle time
     const set = sets.get(detail);
     if (set) { if (set.reader && set.reader.sid === detail && set.reader.alpha > 0.01) set.reader.relayout(); else set.stale = true; }
     city.retarget();

@@ -19,7 +19,7 @@ export const TURN_X = -RW / 2 + 0.006;
 // budgeted per frame (TILE.budget bytes, at least one tile, leaving room for the other panels' uploads), and the resident tile textures are capped (TILE.cap),
 // least recently seen first. Tiles raster at TILE.raster texels per layout px: the text stays well above the
 // headset's rendered pixel density (see the PR's legibility note).
-export const TILE = {h: 1024, raster: 0.72, budget: 2.5e6, cap: 120e6, margin: 1, layMs: 3, urgentLayMs: 4, urgentMs: 3, frameMs: 6};
+export const TILE = {h: 1024, raster: 0.72, budget: 2.5e6, cap: 120e6, margin: 1, layMs: 2.5, urgentLayMs: 3.5, urgentMs: 3, frameMs: 5.5};
 // pi-web (usability round 2): a panel that appears (a cold open) stays invisible until the text in view is drawn, and a
 // far jump (the strip, the outline, a turn flick) waits at the old place until the new one is drawn, then cuts: for
 // at most HOLD.ms, and at least HOLD.frames frames (which only matters where frames are slow, as in an emulator). The
@@ -289,7 +289,9 @@ export function tileStep() {
     // Within the byte budget and (pi-web, round 2) the frame's tile time (TILE.frameMs, layout included); the text in
     // view always gets at least one tile, and urgent text up to TILE.urgentMs of rastering.
     const over = used > 0 && (used + w.tl.ch * TURN_W * TILE.raster * TILE.raster * 4 * 1.34 > TILE.budget || performance.now() - tl0 > TILE.frameMs);
-    if (over && !(w.pr < 0 && performance.now() - tr0 < TILE.urgentMs)) break;
+    // Urgent text may pass the byte budget, but (round 3) never the frame's tile time plus 2 ms: one cold open's frame
+    // rastered two tiles after a long layout step (a 19-22 ms frame).
+    if (over && !(w.pr < 0 && performance.now() - tr0 < TILE.urgentMs && performance.now() - tl0 < TILE.frameMs + 2)) break;
     if (!used && w.pr > 0 && performance.now() - tl0 > TILE.frameMs) break; // nothing in view is missing: wait
     used += w.set.rasterTile(w.tt, w.tl); nr++;
   }

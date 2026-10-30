@@ -13,6 +13,21 @@ const LH = Math.round(BODY * 1.5);
 const CHIP_H = 80; // pi-web (usability round 1): 2.8° from the eye in the cockpit (was 66 px, 2.3°): a target, it expands the tool card
 
 const htmlCache = new WeakMap();
+/** pi-web (usability round 3): a reply's markdown is rendered and parsed (blocksOf) the first time it is laid out, a
+ * single step of up to ~6 ms; warmBlocks does it ahead, in idle time (newest replies first), so a cold open's layout
+ * finds it ready. */
+const warmQ = [];
+let warmOn = false;
+const idle = window.requestIdleCallback || ((fn) => setTimeout(() => fn({timeRemaining: () => 8}), 30));
+export function warmBlocks(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) { const m = messages[i]; if (m.type === 'assistant' && !htmlCache.has(m)) warmQ.push(m); }
+  if (warmQ.length > 2000) warmQ.splice(0, warmQ.length - 2000);
+  if (!warmOn && warmQ.length) { warmOn = true; idle(warmStep); }
+}
+function warmStep(dl) {
+  while (warmQ.length && dl.timeRemaining() > 8) { const m = warmQ.shift(); if (!htmlCache.has(m)) blocksOf(m); }
+  if (warmQ.length) idle(warmStep); else warmOn = false;
+}
 const blocksOf = (m) => { let b = htmlCache.get(m); if (!b || b.html !== m.html) { b = {html: m.html, blocks: parseHtml(m.html)}; htmlCache.set(m, b); } return b.blocks; };
 const base = (p) => String(p || '').split('/').pop();
 
@@ -93,6 +108,8 @@ export function* layoutTurnSteps(ctx, s, turn, opts) {
       gap(22);
     } else if (m.type === 'assistant') {
       if (prevKind === 'chip') gap(10);
+      // Round 3: rendering its markdown and parsing the result are separate steps (each up to ~4 ms on a long reply).
+      if (!htmlCache.has(m)) { void m.html; yield; }
       for (const b of blocksOf(m)) {
         if (b.type === 'h') {
           const lay = layoutRuns(ctx, b.runs, INNER, BODY * 1.22, 700, BODY * 1.6);
