@@ -585,7 +585,7 @@ describe("step-up and auth workload hardening", () => {
     expect(retry.status).toBe(200);
   });
 
-  it("keeps passkey ceremonies isolated by peer under global pressure", async () => {
+  it("rotates a shared peer's pending ceremonies while preserving the global cap", async () => {
     const { store, kernel } = await fixture(["passkey"]);
     const options = async (peer: string) => {
       const res = response();
@@ -599,38 +599,42 @@ describe("step-up and auth workload hardening", () => {
       );
       return res;
     };
-    const owner = await options("192.0.2.40");
-    expect(owner.status).toBe(200);
-    expect((await options("192.0.2.40")).status).toBe(429);
-    expect((await options("192.0.2.41")).status).toBe(200);
-    for (let index = 0; index < 254; index++)
-      expect((await options(`198.51.${Math.floor(index / 250)}.${index % 250}`)).status).toBe(200);
-    const saturated = await options("203.0.113.250");
-
-    const challenge = JSON.parse(owner.text).challenge;
-    const verify = response();
-    await handlePasskeyRoute(
-      request(
-        {
+    const verify = async (peer: string, challenge: string) => {
+      const res = response();
+      await handlePasskeyRoute(
+        request({
           id: "unknown",
           response: {
-            clientDataJSON: Buffer.from(
-              JSON.stringify({ challenge }),
-            ).toString("base64url"),
+            clientDataJSON: Buffer.from(JSON.stringify({ challenge })).toString("base64url"),
           },
-        },
-        {},
-        "POST",
-        "192.0.2.40",
-      ),
-      verify,
-      new URL("/api/auth/passkey/verify", config.origin),
-      kernel,
-      store,
-      config,
-    );
-    expect(verify.status).toBe(401);
-    expect(saturated.status).toBe(429);
+        }, {}, "POST", peer),
+        res,
+        new URL("/api/auth/passkey/verify", config.origin),
+        kernel,
+        store,
+        config,
+      );
+      return res.status;
+    };
+
+    const peer = "192.0.2.40";
+    const owner = await options(peer);
+    expect(owner.status).toBe(200);
+    expect((await options(peer)).status).toBe(429);
+    const ownerChallenges = [JSON.parse(owner.text).challenge as string];
+    for (let index = 0; index < 4; index++) {
+      await new Promise(resolve => setTimeout(resolve, 260));
+      const rotated = await options(peer);
+      expect(rotated.status).toBe(200);
+      ownerChallenges.push(JSON.parse(rotated.text).challenge);
+    }
+    expect(await verify(peer, ownerChallenges[0])).toBe(400);
+
+    expect((await options("192.0.2.41")).status).toBe(200);
+    for (let index = 0; index < 251; index++)
+      expect((await options(`198.51.${Math.floor(index / 250)}.${index % 250}`)).status).toBe(200);
+    expect((await options("203.0.113.250")).status).toBe(429);
+    expect(await verify(peer, ownerChallenges.at(-1)!)).toBe(401);
   });
 
   it("accepts signed passkey ceremonies after a peer change and keeps them single-use", async () => {
