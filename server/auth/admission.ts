@@ -19,7 +19,13 @@ export function browserMutationFailure(
   via: AuthVia,
   configuredOrigin: string,
   mockMode = false,
+  url?: URL,
 ): MutationAdmissionFailure | undefined {
+  const method = req.method || "GET";
+  const fetchingGitStatus = method === "GET" &&
+    url?.pathname === "/api/git/status" &&
+    url.searchParams.get("fetch") === "1";
+  if (isIdempotentMethod(method) && !fetchingGitStatus) return undefined;
   const hasBrowserSignal =
     req.headers.origin !== undefined ||
     req.headers["sec-fetch-site"] !== undefined;

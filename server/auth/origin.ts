@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
 import { normalizedAuthority } from "./proxy.js";
 
-export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
+export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin (HTTPS recommended).";
 export const unconfiguredOriginWarning = "Rejected a browser request for an undeclared hostname. Set PI_WEB_AUTH_ORIGIN to the exact public origin (HTTPS recommended). One public origin is supported because browser sessions and WebAuthn credentials are bound to one relying-party origin.";
 let warned = false;
 
