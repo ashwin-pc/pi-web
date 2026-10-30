@@ -231,9 +231,9 @@ browser contribution HTML is a separate, untrusted boundary.
 
 ### Host-delegated HTML actions
 
-Sanitized footer, panel, Git-tab, and system-info HTML can request two small
-browser behaviors from pi-web. These are host actions: pi-web performs them
-after sanitization; they do not run extension-authored browser scripts.
+Sanitized footer, panel, Git-tab, and system-info HTML can request clipboard
+copy from pi-web. This is a host action: pi-web performs it after sanitization;
+it does not run extension-authored browser scripts.
 
 Use `data-web-copy="<text>"` to copy literal text. Put
 `data-web-copy-status` on a descendant whose text pi-web may temporarily
@@ -255,22 +255,60 @@ Enter and Space:
 </span>
 ```
 
-Use `data-web-scroll-fade` on a horizontally scrollable element to have pi-web
-maintain edge fades as its scroll and layout change:
+Purely visual behavior should stay in extension CSS. For example, this
+scroll-driven mask shows a right-edge fade at the start, both edge fades in the
+middle, and a left-edge fade at the end in modern Chromium. Browsers without
+scroll-driven animations retain the useful initial right-edge fade:
 
 ```html
-<div data-web-scroll-fade tabindex="0"
-     style="display:flex;gap:8px;overflow-x:auto">
+<style>
+  .my-extension-repo-strip {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-mask-image:
+      linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+    mask-image:
+      linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+  }
+
+  @supports (animation-timeline: scroll()) {
+    .my-extension-repo-strip {
+      animation: my-extension-repo-strip-fade 1ms linear both;
+      animation-timeline: scroll(self inline);
+    }
+
+    @keyframes my-extension-repo-strip-fade {
+      0% {
+        -webkit-mask-image:
+          linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+        mask-image:
+          linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+      }
+      1%, 99% {
+        -webkit-mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+        mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+      }
+      100% {
+        -webkit-mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 100%);
+        mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 100%);
+      }
+    }
+  }
+</style>
+
+<div class="my-extension-repo-strip" tabindex="0">
   <!-- wide strip content -->
 </div>
 ```
 
-The host sets `data-web-scroll-fade-state` to `right` at the start, `both` in
-the middle, `left` at the end, or `none` when the element does not overflow.
-It also owns the element's CSS mask while this attribute is present. The
-`data-web-copy`, `data-web-copy-status`, and `data-web-scroll-fade` attributes
-are explicitly preserved by the extension HTML sanitizer. They are independent
-of `data-web-action`, which continues to invoke the server-side extension.
+`data-web-copy` and `data-web-copy-status` are explicitly preserved by the
+extension HTML sanitizer. They are independent of `data-web-action`, which
+continues to invoke the server-side extension.
 
 ## Header action API
 

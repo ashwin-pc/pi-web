@@ -25,7 +25,6 @@ export function sanitizeExtensionHtml(html: string): DocumentFragment {
       "target",
       "data-web-copy",
       "data-web-copy-status",
-      "data-web-scroll-fade",
     ],
     FORBID_TAGS: ["iframe", "frame", "object", "embed", "portal"],
     FORBID_ATTR: ["srcdoc"],

@@ -35,7 +35,7 @@ export function initGitPanel(options: {
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
   const tabsContainer = statusTab.parentElement!;
-  const hostActions = extensionHostActions(primary);
+  extensionHostActions(primary);
   let panelHandle: RightPanelHandle | undefined;
   let extensionTabs: GitExtensionTab[] = [];
   let extensionTabView: GitExtensionTabView | undefined;
@@ -417,7 +417,6 @@ export function initGitPanel(options: {
     graphTab.classList.toggle("active", state.primaryView === "graph");
     renderExtensionTabButtons();
     primary.textContent = "";
-    hostActions.refresh();
     detail.textContent = "";
     if (state.primaryView === "graph") renderRepoPicker(primary);
     const primaryContent = document.createElement("div");
@@ -431,7 +430,6 @@ export function initGitPanel(options: {
         primaryContent.innerHTML = `<div class="gitExtensionError">${escapeHtml(extensionTabView.error)}</div>`;
       } else {
         primaryContent.replaceChildren(sanitizeExtensionHtml(extensionTabView.html || ""));
-        hostActions.refresh();
       }
       return;
     }
