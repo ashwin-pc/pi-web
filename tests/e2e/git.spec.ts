@@ -347,13 +347,31 @@ test("git panel remains single-pane when the software keyboard reduces viewport 
 });
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {
+  const commit = {
+    hash: "0123456789abcdef0123456789abcdef01234567",
+    shortHash: "0123456",
+    parents: ["fedcba9876543210fedcba9876543210fedcba98"],
+    author: "Pi Web",
+    date: "2026-01-01T00:00:00Z",
+    refs: [],
+    subject: "Test commit details",
+  };
+  await page.route("**/api/git/log?*", route => route.fulfill({
+    json: { ok: true, isRepo: true, commits: [commit] },
+  }));
+  await page.route("**/api/git/commit?*", route => route.fulfill({
+    json: {
+      ok: true,
+      commit,
+      files: [{ path: "src/example.ts", status: "M", additions: 1, deletions: 1 }],
+      diff: "diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1 +1 @@\n-old\n+new\n",
+    },
+  }));
   await page.goto("/");
   await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await page.locator("#gitGraphTab").click();
-  // Plain `git show` has no combined patch for merge commits, so exercise a
-  // regular commit when the repository's newest entry is a PR merge.
-  await page.locator(".gitCommitItem").filter({ hasNotText: /^Merge / }).first().click();
+  await page.locator(".gitCommitItem").click();
 
   await expect(page.locator(".gitCommitDetails")).toBeVisible();
   await expect(page.locator(".gitCommitFiles")).toBeVisible();
