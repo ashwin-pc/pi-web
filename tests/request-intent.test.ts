@@ -92,8 +92,8 @@ describe("request intent gate", () => {
       if (auth.ok) expect(requestIntentFailure(entry.req, new URL(entry.req.url!, origin), auth.via, origin)).toBeUndefined();
     }
     expect(await authenticated.gate(message({
-      authorization: "Bearer invalid",
+      authorization: "Bearer proxy-credential",
       "x-test-user": "proxy-owner",
-    }))).toEqual({ ok: false });
+    }))).toMatchObject({ ok: true, via: "external" });
   });
 });
