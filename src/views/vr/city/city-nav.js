@@ -22,6 +22,19 @@ export function setHome(L) {
   return home;
 }
 export const homeView = () => home;
+/** pi-web (usability round 1): where you start. A low overlook (30 m up, 120 m back from the districts' middle, facing
+ * it), so the city fills the middle of a level gaze instead of lying 150 m below an empty sky. Home (H, Y) is still
+ * the high vantage above city hall. */
+export function startView(L) {
+  const ds = L.districts.filter((d) => !d.node.meta?.big);
+  if (!ds.length || !home) return home;
+  const c = new THREE.Vector3(ds.reduce((a, d) => a + (d.rect.x0 + d.rect.x1) / 2, 0) / ds.length, 0, ds.reduce((a, d) => a + (d.rect.z0 + d.rect.z1) / 2, 0) / ds.length);
+  const back = new THREE.Vector3(L.hall.x - c.x, 0, L.hall.z - c.z);
+  if (back.lengthSq() < 1) back.set(0, 0, 1);
+  back.normalize();
+  const eye = c.clone().addScaledVector(back, 120).setY(30);
+  return {pos: eye.sub(new THREE.Vector3(0, EYE, 0)), yaw: Math.atan2(-(c.x - eye.x), -(c.z - eye.z)), scale: 1};
+}
 /** City-space position of a user-space point (eye, hand). */
 export function toCity(u, out = new THREE.Vector3()) { q.setFromAxisAngle(Y, nav.yaw); return out.copy(u).multiplyScalar(nav.scale).applyQuaternion(q).add(nav.pos); }
 export function apply(root) {

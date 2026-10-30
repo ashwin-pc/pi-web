@@ -1,10 +1,11 @@
 // WebXR: session start/end and recentring, controllers and hands (rays, joints, thumbstick flicks, buttons),
 // and the desktop chrome (Enter VR button, the iframe / no-headset fallback message). Adapted from vr-breeze.
 import * as THREE from 'three';
-import {S} from './state.js';
+import {S, nextNeedingYou} from './state.js';
 import * as V from './views.js';
 import {A, renderer, scene, uiRoot, nowMs, clamp, EYE} from './core.js';
-import {hint, dock, switchBy, openReader, closeReader, goHome} from './app.js';
+import {hint, dock, bar, switchBy, openReader, closeReader, goHome} from './app.js';
+import {UIB} from './bar.js';
 import {Pointer, pointers, pressStart, pressEnd, haptic, logInput} from './input.js';
 import {desk} from './desktop.js';
 
@@ -60,34 +61,60 @@ function onSourcesChange(e) { for (const src of e.removed || []) { const p = xrP
 const QX = new URLSearchParams(location.search);
 // Render scale 0.8 by default (measured: the biggest single gain after the far level of detail); MSAA stays on.
 export const XR_SCALE = +(QX.get('xrscale') || 0.8), XR_AA = QX.get('xraa') !== '0';
-let xrSession = null, needRecenter = false;
+let xrSession = null, needRecenter = false, openOnEnter = 0;
 export async function enterVR() {
   if (xrSession) { await xrSession.end(); return; }
+  let session = null;
   try {
-    const session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures: ['local-floor', 'hand-tracking', 'layers']});
+    session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures: ['local-floor', 'hand-tracking', 'layers']});
     xrSession = session;
-    renderer.xr.setFoveation(0.2);
-    // Headset render cost: ?xrscale= sets the framebuffer scale (XR_SCALE by default), and ?xraa=0 turns off MSAA
-    // for the headset only (three reads the context's antialias attribute when the session starts).
-    renderer.xr.setFramebufferScaleFactor(XR_SCALE);
-    if (!XR_AA) { const gl = renderer.getContext(), get = gl.getContextAttributes.bind(gl); gl.getContextAttributes = () => ({...get(), antialias: false}); }
-    await renderer.xr.setSession(session);
-    session.addEventListener('selectstart', onSelectStart);
-    session.addEventListener('selectend', onSelectEnd);
-    session.addEventListener('inputsourceschange', onSourcesChange);
+    // pi-web (usability round 1): the end handler is in place before anything can fail, so a failed start never
+    // leaves an immersive session running with no frames (a black view you cannot leave).
     session.addEventListener('end', () => {
       xrSession = null;
       for (const p of [...xrPointers.values()]) { if (p.vis) for (const o of Object.values(p.vis)) xrVisuals.remove(o); pointers.delete(p); }
       xrPointers.clear();
       uiRoot.position.set(0, 0, 0); uiRoot.rotation.set(0, 0, 0);
-      UI.xr = false; hint.invalidate(); dock.invalidate();
+      UI.xr = false; hint.invalidate(); dock.invalidate(); bar.invalidate();
       setStatus(); document.body.classList.remove('presenting');
     });
-    needRecenter = true; UI.xr = true; hint.invalidate(); dock.invalidate();
+    renderer.xr.setFoveation(0.2);
+    // Headset render cost: ?xrscale= sets the framebuffer scale (XR_SCALE by default), and ?xraa=0 turns off MSAA
+    // for the headset only (three reads the context's antialias attribute when the session starts).
+    renderer.xr.setFramebufferScaleFactor(XR_SCALE);
+    if (!XR_AA) { const gl = renderer.getContext(), get = gl.getContextAttributes.bind(gl); gl.getContextAttributes = () => ({...get(), antialias: false}); }
+    try { await renderer.xr.setSession(session); }
+    catch (err) {
+      // 'local-floor' can be refused (no floor calibration, a privacy prompt declined): fall back to 'local'.
+      console.warn('VR: local-floor failed, retrying with local', err);
+      renderer.xr.setReferenceSpaceType('local');
+      await renderer.xr.setSession(session);
+      xrStatus.space = 'local';
+    }
+    session.addEventListener('selectstart', onSelectStart);
+    session.addEventListener('selectend', onSelectEnd);
+    session.addEventListener('inputsourceschange', onSourcesChange);
+    // Holding the Meta button recentres the headset: the reference space fires 'reset'; follow it like a new start.
+    renderer.xr.getReferenceSpace()?.addEventListener?.('reset', () => { needRecenter = true; logInput('xr:reset'); });
+    // What the device really renders (emulators ignore the scale factor): logged, and in the test hook.
+    const bl = renderer.xr.getBaseLayer?.() || session.renderState?.baseLayer;
+    const fw = bl?.framebufferWidth ?? bl?.textureWidth, fh = bl?.framebufferHeight ?? bl?.textureHeight;
+    xrStatus.framebuffer = bl ? {width: fw, height: fh, scale: XR_SCALE, layer: bl.constructor?.name || 'layer', space: xrStatus.space || 'local-floor'} : null;
+    if (bl) console.info(`VR framebuffer ${fw} x ${fh} (scale ${XR_SCALE}, ${xrStatus.framebuffer.layer})`);
+    needRecenter = true; UI.xr = true; hint.invalidate(); dock.invalidate(); bar.invalidate();
     document.body.classList.add('presenting');
     setStatus();
-  } catch (err) { showMsg(`Could not start VR: ${err?.message || err}`); }
+    // You start in the session that needs you (else the current one), at eye level above the low city overlook: opened
+    // two frames in, once the headset's pose (your gaze) is known, so the cockpit centres on where you look.
+    openOnEnter = A.frames + 2;
+  } catch (err) {
+    try { await session?.end(); } catch { /* already ended */ }
+    xrSession = null; setStatus();
+    showMsg(`Could not start VR: ${err?.message || err}`);
+  }
 }
+UIB.exitVR = () => { if (xrSession) void xrSession.end(); };
+UIB.inVR = () => !!xrSession;
 function recenterTo(pose) {
   m4.fromArray(pose.transform.matrix); m4.decompose(p4, q4, s4);
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q4);
@@ -120,7 +147,11 @@ function stick(p, gp, dt) {
   const ax = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0] || 0, ay = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1] || 0;
   const t = nowMs();
   if (!S.reading) st.yOn = false;
-  if (!S.reading && st.xDir === 0 && Math.abs(ay) > 0.2 && Math.abs(ay) > Math.abs(ax)) { xrInput.climb = -Math.sign(ay) * Math.min(1, (Math.abs(ay) - 0.2) / 0.6); logInput('stick:altitude'); }
+  // pi-web (usability round 1): altitude needs a deliberate push (past 0.5, mostly vertical) held for 150 ms; a stray
+  // or diagonal thumb (y 0.45 for 1.5 s flew you 32 m) does nothing.
+  const vert = !S.reading && st.xDir === 0 && Math.abs(ay) > 0.5 && Math.abs(ay) > 2 * Math.abs(ax);
+  if (!vert) st.altSince = 0; else if (!st.altSince) st.altSince = t;
+  if (vert && t - st.altSince >= 150) { xrInput.climb = -Math.sign(ay) * Math.min(1, (Math.abs(ay) - 0.5) / 0.4); logInput('stick:altitude'); }
   if (st.xDir === 0) {
     if (Math.abs(ax) > 0.6 && Math.abs(ax) > Math.abs(ay) && (!st.yOn || !S.reading)) { st.xDir = Math.sign(ax); switchBy(st.xDir); haptic(p, 0.4, 20); logInput('stick:flick-x'); st.xCount = 1; st.xNext = t + 420; }
   } else if (Math.abs(ax) < 0.3) st.xDir = 0;
@@ -152,6 +183,7 @@ export function xrFrame(frame, dt) {
   const vpose = frame.getViewerPose(ref);
   if (vpose) { m4.fromArray(vpose.transform.matrix); m4.decompose(p4, q4, s4); (A.viewer ||= {pos: new THREE.Vector3(), quat: new THREE.Quaternion()}).pos.copy(p4); A.viewer.quat.copy(q4); }
   if (needRecenter) { const vp = frame.getViewerPose(ref); if (vp) { recenterTo(vp); needRecenter = false; } }
+  if (openOnEnter && !needRecenter && A.frames >= openOnEnter) { openOnEnter = 0; if (!S.reading) openReader(nextNeedingYou()?.id || S.currentId); }
   for (const src of frame.session.inputSources) {
     const p = pointerFor(src);
     const v = visualsFor(p);
@@ -174,8 +206,12 @@ export function xrFrame(frame, dt) {
     }
     if (src.gamepad && src.gamepad.axes && !src.hand) {
       if (src.handedness === 'left') leftStick(p, src.gamepad); else stick(p, src.gamepad, dt);
-      // Grip: grab the world (one hand pans; both hands pan, rotate and scale).
-      if (src.gamepad.buttons?.[1]?.pressed && grip) { xrInput.grabs.push({p: uiRoot.worldToLocal(p.grip.clone()), o: uiRoot.worldToLocal(p.ray.origin.clone()), d: p.ray.direction.clone().transformDirection(new THREE.Matrix4().copy(uiRoot.matrixWorld).invert()), side: src.handedness}); if (!p.gripping) logInput(`grip:${src.handedness}`); p.gripping = true; } else p.gripping = false;
+      // Grip: grab the world (one hand pans; both hands pan, rotate and scale). pi-web (usability round 1): never while
+      // reading (a finger resting on the grip slid the city 18 m behind the text), and only after the grip has been
+      // held for 300 ms (a light squeeze while holding the controller does nothing).
+      const held = !!src.gamepad.buttons?.[1]?.pressed;
+      if (!held) p.gripSince = 0; else if (!p.gripSince) p.gripSince = nowMs();
+      if (held && nowMs() - p.gripSince >= 300 && grip) { xrInput.grabs.push({p: uiRoot.worldToLocal(p.grip.clone()), o: uiRoot.worldToLocal(p.ray.origin.clone()), d: p.ray.direction.clone().transformDirection(new THREE.Matrix4().copy(uiRoot.matrixWorld).invert()), side: src.handedness}); if (!p.gripping) logInput(`grip:${src.handedness}`); p.gripping = true; } else p.gripping = false;
     }
   }
   xrInput.grabs.sort((a, b) => (a.side < b.side ? -1 : 1));

@@ -36,6 +36,8 @@ export const markers = new Markers(city);
 A.markers = markers;
 
 /** Top of the current layout (degrees above room.pitch), for the chip. */
+/** An artifact (or a model on the pedestal) is open over the conversation. */
+const overlaid = () => !!(artState.art || pedestal.art);
 function layoutTop() { if (L.mode === 'focus') return ANG.readerH / 2; return Math.max(...LAYOUTS[L.mode].slots.map((s) => s.elev + s.h / 2)); }
 let lowered = 0;
 export const r3 = {
@@ -81,7 +83,7 @@ export const r3 = {
     if (!S.reading) return out;
     if (L.mode === 'focus') {
       const r = A.active;
-      if (r.alpha > 0.5) out.push({id: 'conversation', mesh: r.occ, w: r.occ.geometry.parameters.width, h: r.occ.geometry.parameters.height});
+      if (r.alpha > 0.5 && !overlaid()) out.push({id: 'conversation', mesh: r.occ, w: r.occ.geometry.parameters.width, h: r.occ.geometry.parameters.height});
       for (const p of [nav, context, rail, composer]) if (p.mesh.visible) out.push({id: p.name, mesh: p.mesh, panel: p});
       if (artState.panel?.mesh.visible) out.push({id: 'artifact', mesh: artState.panel.mesh, panel: artState.panel});
       if (pedestal.g.visible) for (const m of pedestal.meshes()) out.push({id: `pedestal:${m.name || 'part'}`, mesh: m, box3: true});
@@ -131,7 +133,9 @@ export const r3 = {
   /** Two grips while panels are open: spreading the hands apart (15 cm) moves to the next layout, closing them to the
    * previous one. The city is not grabbed meanwhile. */
   filterGrabs(grabs) {
-    if (!S.reading || grabs.length < 2) { r3.spread = null; return grabs; }
+    if (!S.reading) { r3.spread = null; return grabs; }
+    // pi-web (usability round 1): while reading, one grip never pans the city (only the two-grip spread counts).
+    if (grabs.length < 2) { r3.spread = null; return []; }
     const d = grabs[0].p.distanceTo(grabs[1].p);
     if (!r3.spread) r3.spread = {d0: d, done: false};
     if (!r3.spread.done && Math.abs(d - r3.spread.d0) > 0.15) { const i = ORDER.indexOf(L.mode) + (d > r3.spread.d0 ? 1 : -1); r3.spread.done = true; setMode(ORDER[clamp(i, 0, ORDER.length - 1)]); }
@@ -152,6 +156,8 @@ export const r3 = {
     syncRail();
     tickArtifacts(focus && r.alpha > 0.5, r.alpha);
     pedestal.tick(focus && r.alpha > 0.5);
+    // pi-web (usability round 1): an artifact opens over the conversation (Close brings it back), not beside it.
+    if (focus && overlaid()) r.g.visible = false;
     tickTiles();
     chip.mesh.visible = S.reading && (L.mode !== 'focus' || r.alpha > 0.5);
     if (chip.mesh.visible) placeRel(chip.mesh, L.mode === 'focus' ? -room.shift : 0, layoutTop() + CHIP.hDeg / 2 + 2.5, FOCUS.D);
