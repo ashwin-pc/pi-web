@@ -1,0 +1,66 @@
+desktop          first-view             {"dock":{"x":0,"y":0,"w":0,"h":0,"shown":false},"scroll":{"sw":0,"cw":0,"sh":0,"ch":0},"buttons":4,"smallest":0,"offscreen":[],"coach":false,"keys":"block","enterVR":"Enter VR no headset found","msg":{"x":12,"y":56,"w":640,"h":60,"shown":true},"docOverflowX":false}
+desktop          tap-avatar             {"opened":true,"tapBox":null}
+desktop          drag-scroll            {"before":8645,"after":9944,"max":10707}
+desktop          short-swipe            {"switched":false}
+desktop          full-swipe             {"switched":true}
+desktop          edge-swipe             {"switched":false}
+inner-landscape  first-view             {"dock":{"x":0,"y":661,"w":832,"h":89,"shown":true},"scroll":{"sw":812,"cw":628,"sh":76,"ch":76},"buttons":15,"smallest":58,"offscreen":[],"coach":true,"keys":"none","enterVR":"Enter VR no headset found","msg":null,"docOverflowX":false}
+inner-landscape  tap-avatar             {"opened":true,"tapBox":{"w":64,"h":76}}
+inner-landscape  drag-scroll            {"before":8645,"after":9589,"max":10707}
+inner-landscape  mid-swipe-held         {}
+inner-landscape  short-swipe            {"switched":false}
+inner-landscape  full-swipe             {"switched":true}
+inner-landscape  edge-swipe             {"switched":false}
+inner-landscape  pinch-out              {"fovBefore":66.4,"fovAfter":30,"stillReading":true}
+inner-landscape  long-press-card        {"sheet":"Current mock session","cardFor":"mock-current","inView":true}
+inner-landscape  beside                 {"r3":"pair"}
+inner-landscape  more-sheet             {"top":74,"bottom":664,"h":590,"scrollH":704,"clientH":588,"rows":["Zoom","Height","Look","Layout","Home","Reduce motion","Vignette","Tabletop","Gestures","Back to chat"]}
+inner-landscape  reply-typing           {"active":"vrComposerInput","field":{"y":532,"h":76,"w":816},"bar":{"y":616,"h":48,"w":816}}
+inner-landscape  needs-you              {"reading":true,"cur":"mock-older"}
+inner-landscape  city-drag-up           {"reading":false,"altBefore":54,"altAfter":69.12,"navX":-134.81}
+inner-landscape  dock-scrolled          {"needed":true,"before":{"l":0,"t":0},"after":{"l":184,"t":0}}
+inner-portrait   first-view             {"dock":{"x":0,"y":743,"w":750,"h":89,"shown":true},"scroll":{"sw":812,"cw":546,"sh":76,"ch":76},"buttons":15,"smallest":58,"offscreen":["avatar:mock-a969905e-5583-4d72-92a4-a31ecd72e9b8","avatar:mock-33f379f7-004d-4c95-ad29-62e895bc3744"],"coach":true,"keys":"none","enterVR":"Enter VR no headset fo
+inner-portrait   tap-avatar             {"opened":true,"tapBox":{"w":64,"h":76}}
+inner-portrait   drag-scroll            {"before":8645,"after":9702,"max":10707}
+inner-portrait   mid-swipe-held         {}
+inner-portrait   short-swipe            {"switched":false}
+inner-portrait   full-swipe             {"switched":true}
+inner-portrait   edge-swipe             {"switched":false}
+inner-portrait   pinch-out              {"fovBefore":77.8,"fovAfter":35.8,"stillReading":true}
+inner-portrait   long-press-card        {"sheet":"Current mock session","cardFor":"mock-current","inView":true}
+inner-portrait   beside                 {"r3":"pair"}
+inner-portrait   more-sheet             {"top":74,"bottom":746,"h":672,"scrollH":704,"clientH":670,"rows":["Zoom","Height","Look","Layout","Home","Reduce motion","Vignette","Tabletop","Gestures","Back to chat"]}
+inner-portrait   reply-typing           {"active":"vrComposerInput","field":{"y":614,"h":76,"w":734},"bar":{"y":698,"h":48,"w":734}}
+inner-portrait   needs-you              {"reading":true,"cur":"mock-66a0f18"}
+inner-portrait   city-drag-up           {"reading":false,"altBefore":54,"altAfter":69.12,"navX":-134.81}
+inner-portrait   dock-scrolled          {"needed":true,"before":{"l":0,"t":0},"after":{"l":266,"t":0}}
+cover-portrait   first-view             {"dock":{"x":0,"y":871,"w":411,"h":89,"shown":true},"scroll":{"sw":812,"cw":207,"sh":76,"ch":76},"buttons":15,"smallest":58,"offscreen":["avatar:mock-4e2affd0-feec-492e-b142-6edbf0523626","avatar:mock-256db33f-2ee1-44ec-a072-c1d823f17c86","avatar:mock-4de83769-9c6b-4952-93e3-0f80bfa16197","avatar:mo
+cover-portrait   tap-avatar             {"opened":true,"tapBox":{"w":64,"h":76}}
+cover-portrait   drag-scroll            {"before":8645,"after":9725,"max":10707}
+cover-portrait   mid-swipe-held         {}
+cover-portrait   short-swipe            {"switched":false}
+cover-portrait   full-swipe             {"switched":true}
+cover-portrait   edge-swipe             {"switched":false}
+cover-portrait   pinch-out              {"fovBefore":78.4,"fovAfter":39.2,"stillReading":true}
+cover-portrait   long-press-card        {"sheet":"Bar layout","cardFor":"mock-ee01d45","inView":true}
+cover-portrait   beside                 {"r3":"pair"}
+cover-portrait   more-sheet             {"top":126,"bottom":874,"h":748,"scrollH":746,"clientH":746,"rows":["Zoom","Height","Look","Layout","Home","Reduce motion","Vignette","Tabletop","Gestures","Back to chat"]}
+cover-portrait   reply-typing           {"active":"vrComposerInput","field":{"y":742,"h":76,"w":395},"bar":{"y":826,"h":48,"w":395}}
+cover-portrait   needs-you              {"reading":true,"cur":"mock-4e2affd"}
+cover-portrait   city-drag-up           {"reading":false,"altBefore":54,"altAfter":69.12,"navX":-134.81}
+cover-portrait   dock-scrolled          {"needed":true,"before":{"l":272,"t":0},"after":{"l":476,"t":0}}
+cover-landscape  first-view             {"dock":{"x":890,"y":56,"w":70,"h":355,"shown":true},"scroll":{"sw":64,"cw":57,"sh":956,"ch":179},"buttons":15,"smallest":50,"offscreen":["avatar:mock-372db15d-5670-4f14-ae23-fa7026a8928e","avatar:mock-66a0f18d-e4ec-4625-bf1b-9daf4b6bdeff","avatar:mock-4e2affd0-feec-492e-b142-6edbf0523626","avatar:m
+cover-landscape  tap-avatar             {"opened":false,"tapBox":{"w":64,"h":76}}
+cover-landscape  drag-scroll            {"before":0,"after":0,"max":0}
+cover-landscape  mid-swipe-held         {}
+cover-landscape  short-swipe            {"switched":false}
+cover-landscape  full-swipe             {"switched":true}
+cover-landscape  edge-swipe             {"switched":false}
+cover-landscape  pinch-out              {"fovBefore":58,"fovAfter":30,"stillReading":true}
+cover-landscape  long-press-card        {"sheet":null,"cardFor":"mock-current","inView":false}
+cover-landscape  beside                 {"r3":"focus"}
+cover-landscape  more-sheet             {"top":152,"bottom":403,"h":251,"scrollH":704,"clientH":249,"rows":["Zoom","Height","Look","Layout","Home","Reduce motion","Vignette","Tabletop","Gestures","Back to chat"]}
+cover-landscape  reply-typing           {"active":"vrComposerInput","field":{"y":291,"h":56,"w":870},"bar":{"y":355,"h":48,"w":870}}
+cover-landscape  needs-you              {"reading":true,"cur":"mock-a969905"}
+cover-landscape  city-drag-up           {"reading":false,"altBefore":54,"altAfter":69.12,"navX":-134.81}
+cover-landscape  dock-scrolled          {"needed":true,"before":{"l":0,"t":720},"after":{"l":0,"t":720}}

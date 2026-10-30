@@ -1,0 +1,2 @@
+inner-portrait {"imageTap":"tapped","image":"image 40x29.3","modelTap":"tapped","pedestal":true,"putBackTap":"tapped","putBack":true,"inputs":5}
+cover-portrait {"imageTap":"tapped","image":"image 40x29.3","modelTap":"tapped","pedestal":true,"putBackTap":"tapped","putBack":true,"inputs":8}

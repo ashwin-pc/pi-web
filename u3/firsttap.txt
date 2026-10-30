@@ -1,0 +1,5 @@
+750x832 first tap on screen-before.png: under the finger screen-before.png; app did ["mouse:press","mouse:click:rail:art:mock-older:vr-crit/screen-before.png","touch:tap"]
+750x832 first tap on nav:fly: under the finger nav:fly; app did ["mouse:press","mouse:click:nav:fly","touch:tap"]
+750x832 first tap on ctx:turn:1: under the finger ctx:turn:1; app did ["mouse:press","mouse:click:ctx:turn:1","touch:tap"]
+832x750 first tap on screen-before.png: under the finger screen-before.png; app did ["mouse:press","mouse:click:rail:art:mock-older:vr-crit/screen-before.png","touch:tap"]
+411x960 first tap on composer:send: under the finger composer:send; app did ["mouse:press","mouse:click:composer:send","touch:tap"]

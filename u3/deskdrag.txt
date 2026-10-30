@@ -1,0 +1,7 @@
+hit at centre null
+mouse drag 10px sideways on the conversation: switched false
+mouse drag 20px sideways on the conversation: switched false
+mouse drag 30px sideways on the conversation: switched false
+mouse drag 40px sideways on the conversation: switched false
+mouse drag 60px sideways on the conversation: switched false
+mouse drag 100px sideways on the conversation: switched false

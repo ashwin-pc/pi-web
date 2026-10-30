@@ -1,0 +1,11 @@
+T1 OK   inputs=1 wrong=0 | Enter VR from the page
+T2 OK   inputs=4 wrong=0 | Find out which sessions need you
+T3 OK   inputs=2 wrong=0 | Open the one that needs you and read its last reply in full
+T4 OK   inputs=9 wrong=0 | Scroll back two turns
+T5 OK   inputs=3 wrong=0 | Reply by dictation or keyboard
+T6 OK   inputs=2 wrong=0 | Switch to another pinned session and back
+T7 OK   inputs=2 wrong=0 | Open two sessions side by side
+T8 OK   inputs=6 wrong=0 | Open an image artifact, then a 3D artifact, and put it back
+T9 FAIL inputs=2 wrong=0 | Find which file a running session is editing
+T10 OK   inputs=1 wrong=0 | Return home
+T11 OK   inputs=2 wrong=0 | Exit VR

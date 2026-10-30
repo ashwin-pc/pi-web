@@ -1,0 +1,66 @@
+=== coldopen
+{"mode":"city","target":"01a12c73","ray":"avatar:01a12c73-6e2f","framesToDrawn":14,"msToDrawn":2620,"blankFrames":1,"worstMs":20,"uploadMB":30.1}
+{"mode":"city","target":"01a18468","ray":"avatar:01a18468-b930","framesToDrawn":9,"msToDrawn":1721,"blankFrames":0,"worstMs":26,"uploadMB":25.2}
+{"mode":"city","target":"01a12c73","ray":"avatar:01a12c73-6e2f","framesToDrawn":10,"msToDrawn":1401,"blankFrames":0,"worstMs":16,"uploadMB":18}
+{"mode":"city","target":"01a131e1","ray":"avatar:01a131e1-dfdf","framesToDrawn":10,"msToDrawn":1307,"blankFrames":0,"worstMs":25,"uploadMB":33.4}
+{"mode":"reading","target":"01a02ae2","ray":"avatar:01a02ae2-927b","framesToDrawn":10,"msToDrawn":1385,"blankFrames":0,"worstMs":12,"uploadMB":15.9}
+{"mode":"reading","target":"01a0da9a","ray":"avatar:01a0da9a-8b3f","framesToDrawn":10,"msToDrawn":1395,"blankFrames":0,"worstMs":14,"uploadMB":20.6}
+{"mode":"reading","target":"01a13831","ray":"avatar:01a13831-abf6","framesToDrawn":8,"msToDrawn":1062,"blankFrames":0,"worstMs":9,"uploadMB":14.9}
+{"mode":"reading","target":"01a0da9a","ray":"avatar:01a0da9a-8b3f","framesToDrawn":10,"msToDrawn":1381,"blankFrames":0,"worstMs":11,"uploadMB":17.4}
+=== popin
+cold {"target":"01a0da9a","frames":265,"blankFrames":0,"worstMs":14,"uploadMB":24.2}
+strip {"ray":"strip","scrollAfter":0,"frames":138,"blankFrames":0,"worstMs":22,"uploadMB":0}
+flicks {"scrollAfter":0,"turnIdx":0,"frames":61,"blankFrames":0,"worstMs":2,"uploadMB":0}
+=== realdata2
+enter {"reading":true,"current":"01a02ae2-927b-73de-9759-ce8dc2089277","framesToDrawn":1,"msToDrawn":7,"worstMs":8,"uploadMB":10.2,"frames":13,"blankFrames":0}
+A {"to":"01a02ae2-927b-73de-9759-ce8dc2089277","wallMs":4677,"framesToDrawn":1,"msToDrawn":5,"worstMs":13,"uploadMB":5.9,"frames":57,"blankFrames":0}
+{"from":"01a02ae2","to":"01a0a474","title":"Review Consistency Across Continuum pi-web Sessions","framesToDrawn":5,"msToDrawn":566,"worstMs":13,"uploadMB":20.7,"frames":51,"blankFrames":0,"sceneTexMB":20,"panels":17,"appTileMB":7.7,"glTextures":12,"cut":0,"pendingLayouts":0}
+{"from":"01a0a474","to":"01a12c73","title":"Workspace UI Pulsar","framesToDrawn":5,"msToDrawn":570,"worstMs":11,"uploadMB":24.5,"frames":49,"blankFrames":0,"sceneTexMB":23,"panels":19,"appTileMB":11.2,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a12c73","to":"01a0da9a","title":"Deleting Decider in CM Workspace","framesToDrawn":5,"msToDrawn":514,"worstMs":22,"uploadMB":16.7,"frames":55,"blankFrames":0,"sceneTexMB":22,"panels":19,"appTileMB":10.4,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a0da9a","to":"01a18468","title":"Review Session Details for Slack Thread","framesToDrawn":5,"msToDrawn":612,"worstMs":9,"uploadMB":18.3,"frames":51,"blankFrames":0,"sceneTexMB":23,"panels":19,"appTileMB":12.5,"glTextures":15,"cut":0,"pendingLayouts":0}
+{"from":"01a18468","to":"01a13831","title":"Briefing on Flagged Slack Thread","framesToDrawn":5,"msToDrawn":550,"worstMs":10,"uploadMB":9.5,"frames":59,"blankFrames":0,"sceneTexMB":19,"panels":18,"appTileMB":7.4,"glTextures":13,"cut":0,"pendingLayouts":0}
+{"from":"01a13831","to":"01a131e1","title":"Trace Validation Output to Deleted Sandbox","framesToDrawn":5,"msToDrawn":620,"worstMs":12,"uploadMB":24.7,"frames":51,"blankFrames":0,"sceneTexMB":22,"panels":19,"appTileMB":10.4,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a131e1","to":"01a13280","title":"Validation Agent to Issue UI Mapping","framesToDrawn":5,"msToDrawn":684,"worstMs":19,"uploadMB":22.8,"frames":51,"blankFrames":0,"sceneTexMB":24,"panels":19,"appTileMB":11.7,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a13280","to":"01a183d8","title":"Continuum Plugins Sprint Epic Setup","framesToDrawn":5,"msToDrawn":646,"worstMs":15,"uploadMB":25.5,"frames":52,"blankFrames":0,"sceneTexMB":24,"panels":19,"appTileMB":11.5,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a183d8","to":"01a0fe3b","title":"Plugins","framesToDrawn":5,"msToDrawn":617,"worstMs":11,"uploadMB":21.1,"frames":53,"blankFrames":0,"sceneTexMB":23,"panels":19,"appTileMB":10.9,"glTextures":14,"cut":0,"pendingLayouts":0}
+{"from":"01a0fe3b","to":"01a164eb","title":"Slack Thread Briefing for Ashwin","framesToDrawn":5,"msToDrawn":609,"worstMs":14,"uploadMB":25.9,"frames":50,"blankFrames":0,"sceneTexMB":24,"panels":19,"appTileMB":12,"glTextures":14,"cut":0,"pendingLayouts":0}
+scroll up {"frames":109,"blankFrames":0,"maxBlank":0,"worstMs":8,"p95Ms":5,"uploadMB":26.2,"jumpsAgainstDirection":0,"jumpsOver1500px":0,"scrollRange":[345691,355858]}
+scroll down {"frames":111,"blankFrames":0,"maxBlank":0,"worstMs":3,"p95Ms":3,"uploadMB":18.5,"jumpsAgainstDirection":0,"jumpsOver1500px":0,"scrollRange":[345664,355858]}
+{"firstFrameS":4.392,"residentEnd":{"sceneTexMB":21,"panels":18,"appTileMB":14.4,"glTextures":16},"logs":["error: Failed to load resource: the server responded with a status of 403 (Forbidden)"]}
+=== trunc2
+{"sid":"01a02ae2-927b-73de-9759-ce8dc2089277","title":"Transitioning from IC to Manager","layMs":5750,"turns":40,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":249569,"max":249569,"lastText":"ting slip in the backup-pruning step (literal ~ inside sed), before the restart. Backup was taken. Fin
+{"sid":"01a0a474-1ab1-731a-a4ba-251a459db2c9","title":"Review Consistency Across Continuum pi-web Sessions","layMs":409,"turns":7,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":95089,"max":95089,"lastText":" for commit. What auto-wiki-sync gets wrong. The cleanup CR for Evan. How cm ws create 
+{"sid":"01a12c73-6e2f-7519-b5bf-de16400f2147","title":"Workspace UI Pulsar","layMs":419,"turns":25,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":355858,"max":355858,"lastText":"+R, or Cmd+Shift+R). If it still looks old after that, tell me what you see, ideally with a screenshot, and I'll dig
+{"sid":"01a0da9a-8b3f-716e-b315-86995bd2de29","title":"Deleting Decider in CM Workspace","layMs":416,"turns":16,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":78797,"max":78797,"lastText":"ne-tree worktree: uncommitted changes, unmerged branches and running processes. I'll delete them only aft
+{"sid":"01a18468-b930-7685-9ec7-6fd20fb173e0","title":"Review Session Details for Slack Thread","layMs":312,"turns":9,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":86252,"max":86252,"lastText":" and delete the CM-pulsar-compliance workspace, after checking for unpushed work. I'll report each 
+{"sid":"01a13831-abf6-7519-b5bf-e0db6222ffc3","title":"Briefing on Flagged Slack Thread","layMs":438,"turns":27,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":117843,"max":117843,"lastText":"The message to Akshay is saved as a draft in your DM with him. Open that DM in Slack and send it from t
+{"sid":"01a131e1-dfdf-7519-b5bf-dedf7a57c645","title":"Trace Validation Output to Deleted Sandbox","layMs":1837,"turns":20,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":134482,"max":134482,"lastText":"cted gates and AutoSDE, and uploads both CRs once, unpublished. I’ll report the CR revision 
+{"sid":"01a13280-c49c-7519-b5bf-df36b5cffc24","title":"Validation Agent to Issue UI Mapping","layMs":2567,"turns":40,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":269218,"max":269218,"lastText":"Its report starts with a table: each predicted blocker, how it was tested, whether it's real, the 
+{"sid":"01a183d8-9fcf-7685-9ec7-6fa2fc2b267a","title":"Continuum Plugins Sprint Epic Setup","layMs":418,"turns":7,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":null,"scroll":49236,"max":49236,"lastText":"rewritten to match this message, or retire it, so you aren't sharing two versions of the vision. Which 
+{"sid":"01a0fe3b-90c2-74dd-8dcd-158ad47a6488","title":"Plugins","layMs":410,"turns":13,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":72386,"max":72386,"lastText":" showing 0 fixes before validation finishes and the duplicate first scan, are in the workstream note for a follow-up CR."}
+{"sid":"01a164eb-2c34-7685-9ec7-6bc81e465992","title":"Slack Thread Briefing for Ashwin","layMs":416,"turns":20,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":124461,"max":124461,"lastText":"s mean the Continuum name is already public, which should make the trademark review easy, though I have
+{"sid":"01a167db-8d4b-7685-9ec7-6cb9b3556c3c","title":"Fix the issues and see whats missing for it","layMs":391,"turns":7,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":null,"scroll":67625,"max":67625,"lastText":"s. Nothing merges. When it's done, you'll get one list: what changes for you, and what the queu
+{"sid":"01a17afb-b75e-7685-9ec7-6d9b2bc5df01","title":"Codex MCP App for Scan Visualization","layMs":405,"turns":28,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":205287,"max":205287,"lastText":"le-page map-and-plan worker is still running, building on top of those commits. I'll show you the r
+{"sid":"01a10c4b-e0a2-724a-81e2-dd31c4fe1456","title":"Floating Session Navigation Mockup","layMs":404,"turns":22,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":null,"scroll":123555,"max":123555,"lastText":"n: keep re-centring. A 22px shift on a short list is small, and a centred rail looks tidier. Want it 
+{"sid":"01a15d65-6964-7685-9ec7-6a44863de278","title":"GitHub Review Worker Simplicity Rules","layMs":402,"turns":6,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":22349,"max":22349,"lastText":"\". history() could move out of service.ts. The listener is still running and will re-review #192 aga
+{"sid":"01a124f1-15aa-7519-b5bf-dcea7d1e700e","title":"Making Pi-Web Compatible with WebVR","layMs":409,"turns":9,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":89673,"max":89673,"lastText":" and the critic left the sessions' working folders empty. I'll delete the copy when the loop ends, or n
+{"sid":"01a17c20-0521-7685-9ec7-6dbb6e858f46","title":"SDLC","layMs":403,"turns":13,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":245927,"max":245927,"lastText":"cess on the three Collector packages. 4. Publish: CR-317808702 (the Admin-role fix) and CR-316908583 (the guidance fix)."}
+{"sid":"01a18a13-6cb8-769a-8046-89ca5978e228","title":"Session Time Breakdown Analysis","layMs":291,"turns":5,"unlaid":0,"cut":0,"atEnd":true,"lastEndOnScreen":true,"bottomDrawn":true,"scroll":32140,"max":32140,"lastText":"& came through intact. Both test messages have now arrived and no watchers are running, so pi-wake-when is 
+SUMMARY: 18 sessions; turns cut 0/314; sessions where the end is not reachable, not on screen or not drawn: 0 
+=== barhit
+reading true
+01a02ae2 hand 1.22 yaw 27 -> avatar:01a02ae2-927b-73de-9759-ce8dc2089277
+01a02ae2 hand 1.05 yaw 27 -> avatar:01a02ae2-927b-73de-9759-ce8dc2089277
+01a0a474 hand 1.22 yaw 21 -> avatar:01a0a474-1ab1-731a-a4ba-251a459db2c9
+01a0a474 hand 1.05 yaw 21 -> avatar:01a0a474-1ab1-731a-a4ba-251a459db2c9
+01a12c73 hand 1.22 yaw 15 -> avatar:01a12c73-6e2f-7519-b5bf-de16400f2147
+01a12c73 hand 1.05 yaw 15 -> avatar:01a12c73-6e2f-7519-b5bf-de16400f2147
+01a0da9a hand 1.22 yaw 9 -> avatar:01a0da9a-8b3f-716e-b315-86995bd2de29
+01a0da9a hand 1.05 yaw 9 -> avatar:01a0da9a-8b3f-716e-b315-86995bd2de29
+01a18468 hand 1.22 yaw 3 -> avatar:01a18468-b930-7685-9ec7-6fd20fb173e0
+01a18468 hand 1.05 yaw 3 -> avatar:01a18468-b930-7685-9ec7-6fd20fb173e0
+01a13831 hand 1.22 yaw -3 -> avatar:01a13831-abf6-7519-b5bf-e0db6222ffc3
+01a13831 hand 1.05 yaw -3 -> avatar:01a13831-abf6-7519-b5bf-e0db6222ffc3
+01a131e1 hand 1.22 yaw -9 -> avatar:01a131e1-dfdf-7519-b5bf-dedf7a57c645
+01a131e1 hand 1.05 yaw -9 -> avatar:01a131e1-dfdf-7519-b5bf-dedf7a57c645
+ALLDONE
