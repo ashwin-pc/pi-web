@@ -218,7 +218,7 @@ function avatarBtn(id) {
   let timer = 0, sx = 0, sy = 0, fired = false;
   // Round 3: swipe an avatar up (out of the dock) to open it beside the one you read; it follows the finger.
   let up = 0, down = false;
-  b.addEventListener('pointerdown', (e) => { b.setPointerCapture?.(e.pointerId); fired = false; down = true; up = 0; sx = e.clientX; sy = e.clientY; clearTimeout(timer); timer = setTimeout(() => { fired = true; navigator.vibrate?.(12); openCard(id); tlog('long-press', {sid: id}); }, LONG_MS); });
+  b.addEventListener('pointerdown', (e) => { fired = false; down = true; up = 0; sx = e.clientX; sy = e.clientY; clearTimeout(timer); timer = setTimeout(() => { fired = true; navigator.vibrate?.(12); openCard(id); tlog('long-press', {sid: id}); }, LONG_MS); });
   b.addEventListener('pointermove', (e) => {
     if (Math.hypot(e.clientX - sx, e.clientY - sy) > SLOP) clearTimeout(timer);
     if (!down || dockVertical()) return;
@@ -227,7 +227,7 @@ function avatarBtn(id) {
   });
   const release = (go) => { clearTimeout(timer); down = false; b.style.transform = ''; b.classList.remove('lift'); if (go && up > 40) { fired = true; closeSheet(); if (!S.reading) UIB.choose(S.currentId === id ? S.pinned.find((x) => x !== id) || id : S.currentId); UIB.beside(id); navigator.vibrate?.(10); tlog('dock:beside', {sid: id}); } up = 0; };
   b.addEventListener('pointerup', () => release(true));
-  for (const ev of ['pointercancel', 'pointerleave']) b.addEventListener(ev, () => release(false));
+  b.addEventListener('pointercancel', () => release(false)); // (a native scroll of the dock takes the touch over)
   b.addEventListener('contextmenu', (e) => e.preventDefault());
   b.addEventListener('click', (e) => {
     if (fired) { e.preventDefault(); fired = false; return; }

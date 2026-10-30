@@ -92,11 +92,15 @@ body.vrTouch.vrTyping #vrTyping:not([hidden]) { display: flex; gap: 8px; left: 8
 
 /* The cover screen held sideways (short): the dock runs down the right edge, within the thumb's reach. */
 @media (orientation: landscape) and (max-height: 500px) {
-  body.vrTouch #vrDock { top: calc(56px + env(safe-area-inset-top)); left: auto; right: 0; bottom: 0; width: 70px; flex-direction: column; padding: 6px max(6px, env(safe-area-inset-right)) 6px 6px; border-top: 0; border-left: 1px solid #1d1d1d; background: rgba(8, 8, 8, 0.9); }
+  /* round 3: the column runs the full height (the top bar stops short of it), so three two-line pins fit */
+  body.vrTouch #topBar.vrChrome { right: 70px; }
+  body.vrTouch #vrDock { top: 0; padding-top: max(6px, env(safe-area-inset-top)) !important; left: auto; right: 0; bottom: 0; width: 70px; flex-direction: column; padding: 6px max(6px, env(safe-area-inset-right)) 6px 6px; border-top: 0; border-left: 1px solid #1d1d1d; background: rgba(8, 8, 8, 0.9); }
   .vrDockScroll { flex-direction: column; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; touch-action: pan-y; scroll-snap-type: y proximity; }
   .vrDockFixed { flex-direction: column; }
-  .vrAv, .vrChip { width: 64px; min-height: 56px; touch-action: pan-y; }
+  .vrAv, .vrChip { width: 58px; min-height: 56px; touch-action: pan-y; }
+  .vrAv .t { max-width: 56px; }
   .vrChip { min-height: 50px; } /* round 3: shorter fixed chips leave the column room for two-line names */
+  .vrChip .l { white-space: nowrap; font-size: 10px; }
   .vrAv { min-height: 76px; }
   body.vrTouch #vrSheet:not([hidden]) { right: 82px; bottom: 8px; }
   body.vrTouch.vrTyping #vrTyping:not([hidden]) { right: 82px; bottom: 8px; }
@@ -106,6 +110,5 @@ body.vrTouch.vrTyping #vrTyping:not([hidden]) { display: flex; gap: 8px; left: 8
 /* Round 3: a sheet closes with a downward drag (the card has no scroll of its own; More drags from its header). */
 #vrSheet[data-kind="card"], #vrSheet header { touch-action: none; }
 /* Round 3: an avatar swiped up out of the dock opens beside; it shows "Beside" once far enough. */
-.vrAv { touch-action: pan-x; }
 .vrAv.lift { border-color: #e2b15f; background: #2a2112; }
 .vrAv.lift::before { content: "Beside"; position: absolute; top: -18px; left: 0; right: 0; font-size: 10.5px; font-weight: 800; color: #e2b15f; }
