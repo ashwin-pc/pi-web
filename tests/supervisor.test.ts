@@ -302,6 +302,12 @@ describe("pi-web supervisor", () => {
         headers: machineHeaders,
       })).status,
     ).toBe(200);
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
+        headers: machineHeaders,
+      })).status,
+    ).toBe(200);
 
     const sessionResponse = await fetch(
       `http://127.0.0.1:${publicPort}/api/state`,
