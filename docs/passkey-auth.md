@@ -98,11 +98,12 @@ The path must be absolute and its existing parent must be owned by the running
 user with no group or other access. The supervisor creates the socket as mode
 0600 with the running user's ownership while continuing to listen on TCP.
 Only requests received on that socket may assert the configured external
-identity header. Because filesystem access authenticates the tunnel process,
-the Unix listener also accepts its single canonical `X-Forwarded-For` and
-strict `X-Forwarded-Host`; the TCP listener still requires an explicit proxy
-peer. The tunnel must remove every caller-supplied copy of these headers and
-set one verified value. Other processes running as
+identity header. The Unix listener deliberately discards `X-Forwarded-For`
+and `X-Forwarded-Host`: filesystem access authenticates the tunnel process,
+but does not prove that it overwrites caller-supplied forwarding headers.
+Tunnel clients therefore share the bounded `unknown` peer bucket. The tunnel
+must remove every caller-supplied copy of the identity header and set one
+verified value. Other processes running as
 the same account remain trusted because they can open the user-owned socket;
 other local accounts cannot open it.
 
@@ -116,8 +117,8 @@ so subprocesses do not inherit it. The child also consumes and clears the tunnel
 socket setting so nested scripts do not try to bind the operator's live socket.
 Restart and status strip the identity header on TCP before authentication and
 preserve it only on the filesystem-protected socket. The child separately
-requires the secret-signed tunnel bit rather than trusting inbound marker headers. WebSocket upgrades through the Unix socket preserve the
-same identity and retain the existing Origin validation.
+requires the secret-signed tunnel bit rather than trusting inbound marker
+headers. WebSocket upgrades through the Unix socket preserve the same identity and retain the existing Origin validation.
 
 Startup fails closed if the parent is not private, the path is occupied by a
 file or live socket, the socket cannot be created, or its mode/owner cannot be

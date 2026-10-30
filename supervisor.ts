@@ -197,8 +197,8 @@ function sanitizeProxyHeaders(
   tunnel: boolean,
 ) {
   stripSupervisorProvenanceHeaders(req.headers);
-  const trustedForwarder = tunnel || trustedProxyPeer(req);
-  const authority = forwardedHost(req, undefined, trustedForwarder);
+  const trustedForwarder = trustedProxyPeer(req);
+  const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
   const forwarded = req.headers["x-forwarded-for"];
   const peer = resolveSupervisorPeer(

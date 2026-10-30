@@ -277,11 +277,20 @@ describe("supervisor tunnel socket identity", () => {
         "content-type": "application/json",
         origin: "https://pi.example.invalid",
         "x-verified-user": "owner@example.invalid",
+        "x-forwarded-for": "127.0.0.1",
+        "x-forwarded-host": "attacker.example.invalid",
       },
       body: "{}",
     });
     expect(login.status).toBe(200);
     const cookie = login.headers["set-cookie"]![0].split(";")[0];
+    const security = await httpRequest({
+      port: instance.publicPort,
+      path: "/api/auth/security",
+      headers: { cookie },
+    });
+    expect(security.status).toBe(200);
+    expect(JSON.parse(security.body).sessions.find((session: { current: boolean }) => session.current).ip).toBe("unknown");
     expect((await httpRequest({
       socketPath: instance.socketPath,
       path: "/__supervisor/status",

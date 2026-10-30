@@ -10,7 +10,6 @@ import {
   UNKNOWN_SUPERVISOR_PEER,
 } from "../../server/auth/supervisorPeer.js";
 import { canonicalIP, isLoopbackAddress } from "../../server/auth/ip.js";
-import { forwardedHost } from "../../server/auth/proxy.js";
 
 function request(
   remoteAddress?: string,
@@ -45,20 +44,6 @@ describe("authenticated supervisor request provenance", () => {
       secretCleared: true,
       socketCleared: true,
     });
-  });
-
-  it("accepts forwarding only when the listener has authenticated the tunnel", () => {
-    const tunnel = request(undefined, {
-      "x-forwarded-for": "192.0.2.44",
-      "x-forwarded-host": "owner.example",
-    });
-    expect(forwardedHost(tunnel)).toBeUndefined();
-    expect(forwardedHost(tunnel, undefined, true)).toBe("owner.example");
-    expect(resolveSupervisorPeer(
-      tunnel.socket.remoteAddress,
-      tunnel.headers["x-forwarded-for"],
-      true,
-    )).toBe("192.0.2.44");
   });
 
   it("canonicalizes peers and resolves only a single trusted forwarded address", () => {
