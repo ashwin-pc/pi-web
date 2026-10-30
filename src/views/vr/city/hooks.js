@@ -5,7 +5,7 @@ import {S, get, indicator, needsYou, fenceLine, nextNeedingYou, DWELL_MS, unread
 import {client} from './client.js';
 import {PPM} from './turns.js';
 import {A, renderer, camera, scene, DEG, READER_POS, animMs, uiRoot} from './core.js';
-import {readers, VIEW_PX} from './reader.js';
+import {readers, VIEW_PX, tileStats, TILE} from './reader.js';
 import {city, bar, pops, switchLog, panelLog, openReader, closeReader, getLastSwitch, switchBy, choose, flyToSession, flyToPath, goHome, setTable, isTable, comfort} from './app.js';
 import {head, updateHead, intersect, inScene, raycaster, effortLog, pointers} from './input.js';
 import {desk} from './desktop.js';
@@ -105,6 +105,22 @@ window.__vrCity = {
   /** pi-web: an artifact's content state (loading | ready | error), without starting a load. */
   artifactState(id) { const a = client.artifacts(id.split(':')[0]).find((x) => x.id === id); return a ? contentOf(a, false)?.state || 'none' : null; },
   cityFiles() { return {files: city.land.files.size, dirs: city.land.byPath.size, home: client.files.home}; },
+  /** pi-web: the active reader's tiles. Is every turn laid out, does the tiling cover each turn's full height (no cut
+   * turns), and is the text at the bottom of the view drawn? Plus resident tile textures and per-frame stats. */
+  readerTiles() {
+    const r = A.active, set = r.set; if (!set) return null;
+    const turns = set.turns.map((t) => ({i: t.i, laid: !!t.lay, h: t.h, tiled: t.tiles.reduce((a, tl) => Math.max(a, tl.y0 + tl.ch), 0), drawn: t.tiles.filter((tl) => tl.panel && !tl.dirty).length, tiles: t.tiles.length}));
+    const bottom = set.tileAt(r.scroll + VIEW_PX - 30), top = set.tileAt(r.scroll + 30);
+    return {sid: r.sid, scroll: Math.round(r.scroll), max: Math.round(r.maxScroll), view: VIEW_PX, pending: set.pending().length, turns, cut: turns.filter((t) => t.laid && t.tiled < t.h).length,
+      bottomDrawn: !!bottom?.drawn, topDrawn: !!top?.drawn, residentMB: +(tileStats.resident / 1e6).toFixed(1), rasters: tileStats.rasters, uploadedMB: +(tileStats.bytes / 1e6).toFixed(1), tile: {...TILE}};
+  },
+  /** The last line of a session's latest turn, as laid out (text), and whether it is on screen and drawn now. */
+  lastLine() {
+    const r = A.active, set = r.set, tt = set?.turns[set.turns.length - 1]; if (!tt?.lay) return null;
+    const it = tt.lay.items[tt.lay.items.length - 1], y = tt.top + it.y + it.h / 2;
+    return {y: Math.round(y), scroll: Math.round(r.scroll), view: VIEW_PX, visible: y >= r.scroll && y <= r.scroll + VIEW_PX, drawn: !!set.tileAt(y)?.drawn};
+  },
+  composerFocus() { const a = document.activeElement; const xs = renderer.xr.getSession?.(); return {active: a?.id || a?.tagName || null, focused: S.composer.focused, keyboard: xs ? xs.isSystemKeyboardSupported ?? null : null, dictationAvailable: V.UI.dictationAvailable}; },
   clientEvents(n = 40) { return (window.__clientEvents || []).slice(-n); },
   header() { return A.active.header.drawn || null; },
   lastTool(id) { const s = get(id); const m = [...s.messages].reverse().find((x) => x.type === 'tool'); return m ? {name: m.name, status: m.status, sum: m.sum} : null; },
@@ -115,5 +131,6 @@ window.__vrCity = {
   vignette() { return {visible: comfort.vig.visible, alpha: +comfort.vig.material.uniforms.uA.value.toFixed(3), blink: +comfort.fade.material.opacity.toFixed(3)}; },
   _ptrs() { return [...pointers].map((p) => ({kind: p.kind, valid: p.valid, hit: p.hit ? (p.hit.region?.id || (p.hit.reader ? 'reader' : p.hit.panel?.name) || null) : null, press: p.press?.mode || null})); },
   _three: {THREE, renderer, scene, camera, city, bar, uiRoot, head, N},
+  _reader: () => A.active,
   ...cityHooks,
 };
