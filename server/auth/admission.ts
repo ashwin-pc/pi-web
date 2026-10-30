@@ -20,7 +20,10 @@ export function browserMutationFailure(
   configuredOrigin: string,
   mockMode = false,
 ): MutationAdmissionFailure | undefined {
-  if (!isAmbientBrowserAuth(via)) return undefined;
+  const hasBrowserSignal =
+    req.headers.origin !== undefined ||
+    req.headers["sec-fetch-site"] !== undefined;
+  if (!isAmbientBrowserAuth(via) && !(via === "token" && hasBrowserSignal)) return undefined;
 
   const mockIntent = mockMode && Boolean(req.headers["x-pi-web-test-client-intent"]);
   const explicitMockOrigin =

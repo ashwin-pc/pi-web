@@ -26,10 +26,12 @@ describe("browser mutation admission", () => {
     }
   });
 
-  it("keeps originless Authorization callers compatible", () => {
+  it("keeps originless Authorization callers compatible and gates browser-signaled Bearer mutations", () => {
     expect(browserMutationFailure(request(), "token", origin)).toBeUndefined();
-    expect(browserMutationFailure(request(), "legacy", origin)).toBeUndefined();
     expect(browserMutationFailure(request(), "extension", origin)).toBeUndefined();
+    expect(browserMutationFailure(request({ origin: "https://other.example.test", "x-pi-web-client-id": "browser" }), "token", origin)).toBe("origin");
+    expect(browserMutationFailure(request({ origin }), "token", origin)).toBe("intent");
+    expect(browserMutationFailure(request({ origin, "x-pi-web-client-id": "browser" }), "token", origin)).toBeUndefined();
   });
 
   it("accepts synthetic intent only in mock mode and never over a hostile browser signal", () => {

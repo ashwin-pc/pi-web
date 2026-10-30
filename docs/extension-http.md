@@ -1,7 +1,7 @@
 # Scoped HTTP access for server-side extensions
 
 Trusted pi-web extensions can use the existing HTTP API without a browser cookie,
-`PI_WEB_TOKEN`, or a user-created integration token. Core issues short-lived,
+or a user-created integration token. Core issues short-lived,
 in-memory credentials and enforces their scope in the normal authentication gate.
 There is no HTTP endpoint for issuing these credentials and no implicit localhost
 trust exemption.
@@ -168,7 +168,7 @@ fetch `Response` exposes the decoded body.
 ## Orchestration migration
 
 The bundled `session-orchestrator.ts` now uses this factory rather than fetching
-localhost with `PI_WEB_TOKEN`. It works with passkey/password-only deployments and
+localhost with a permanent browser token. It works with passkey/password-only deployments and
 needs no additional setup. It explicitly declares session read/create/write/delete
 scopes and cross-session access, disposes the client during `session_shutdown`,
 and gives an actionable error on older hosts instead of restoring legacy auth.
