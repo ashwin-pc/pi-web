@@ -29,6 +29,9 @@ export function updateDeskCamera(dt) {
   const k = S.reduceMotion || desk.instant ? 1 : 1 - Math.exp(-dt / 0.09); // instant: a finger is dragging the view
   // Round 3: while reading, look at the layout's centre (plus any drag-look offset; it resets when you close).
   if (!S.reading) { desk.readYaw = 0; desk.readPitch = 0; }
+  // pi-web (usability round 3): on a touch screen, an artifact or model opened over the conversation stays in view
+  // (a Look toward the rail is eased back to at most 12°, which still shows the rail's inner edge).
+  if (S.reading && desk.frameHfov?.() && A.r3?.overlaid?.() && Math.abs(desk.readYaw || 0) > 12 * DEG) desk.readYaw = Math.sign(desk.readYaw) * 12 * DEG;
   const vc = S.reading ? relDir(A.r3?.viewCentre().yaw || 0, A.r3?.viewCentre().elev || 0) : null;
   const wantPitch = S.reading ? Math.asin(vc.y) + (desk.readPitch || 0) + (desk.framePitch?.() || 0) : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y + Math.atan2(-vc.x, -vc.z) + (desk.readYaw || 0) : desk.lookYaw;
   desk.pitch += (wantPitch - desk.pitch) * k;

@@ -42,6 +42,7 @@ function layoutTop() { if (L.mode === 'focus') return ANG.readerH / 2; return Ma
 let lowered = 0;
 export const r3 = {
   multi: () => S.reading && L.mode !== 'focus',
+  overlaid: () => S.reading && overlaid(),
   mode: () => L.mode,
   setMode, openBeside, pin, isPinned, refocus, closeTile,
   pullOut(a) { if (!S.reading) { openReader(a.sessionId); } if (L.mode !== 'focus') setMode('focus'); return pullOut(a); },
@@ -57,10 +58,11 @@ export const r3 = {
   cycle() { return setMode(ORDER[(ORDER.indexOf(L.mode) + 1) % ORDER.length]); },
   besideNext() { const shown = new Set(L.items.map((it) => it.id).concat(S.currentId)); const id = S.pinned.find((x) => !shown.has(x) && ['running', 'unread', 'asking'].includes(indicatorOf(x))) || S.pinned.find((x) => !shown.has(x)); return id ? openBeside(id) : null; },
   /** The desktop preview looks at the layout's middle (room frame, degrees) with a view wide enough for it. */
+  // pi-web (usability round 3): artifacts open over the conversation since round 1, so the view stays on the cockpit
+  // (it still turned toward where a beside panel used to be, and a portrait screen lost the rail after an open).
   viewCentre() {
     if (L.mode !== 'focus') return {yaw: 0, elev: 0};
-    const side = artState.art ? WIDE[artState.art.kind] || 40 : pedestal.art ? WIDE.model : 0;
-    return {yaw: side ? (1.5 + side) / 2 - room.shift : 0, elev: 0};
+    return {yaw: -room.shift, elev: 0};
   },
   viewHfov() { return L.mode === 'pair' ? 106 : L.mode === 'triptych' || L.mode === 'wall' ? 112 : artState.art || pedestal.art ? 110 : 100; }, // drag to look further
   indexOf(id) { const i = L.items.findIndex((it) => it.kind === 'session' && it.id === id); return i < visibleCount() ? i : -1; },
