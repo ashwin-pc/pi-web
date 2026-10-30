@@ -1534,16 +1534,24 @@ describe("Live session lifecycle", () => {
 describe("session cookie transport security", () => {
   it.each([
     {
-      label: "defaults to Secure when PI_WEB_AUTH_ORIGIN is absent",
+      label: "keeps the default loopback launch usable over plain HTTP",
       declareOrigin: false,
+      proxyPeers: undefined,
+      secure: false,
+    },
+    {
+      label: "defaults to Secure behind a configured proxy when the origin is absent",
+      declareOrigin: false,
+      proxyPeers: "127.0.0.1",
       secure: true,
     },
     {
       label: "permits non-Secure cookies for an explicitly declared HTTP loopback origin",
       declareOrigin: true,
+      proxyPeers: undefined,
       secure: false,
     },
-  ])("$label", async ({ declareOrigin, secure }) => {
+  ])("$label", async ({ declareOrigin, proxyPeers, secure }) => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const env = isolatedAuthEnv();
@@ -1564,6 +1572,7 @@ describe("session cookie transport security", () => {
         PI_WEB_AUTH_MODE: "external",
         PI_WEB_AUTH_POLICY: "authenticated",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
+        ...(proxyPeers ? { PI_WEB_AUTH_PROXY_PEERS: proxyPeers } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
