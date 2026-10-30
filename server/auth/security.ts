@@ -244,14 +244,14 @@ export async function handleSecurityRoute(
       if (body.revokeApiTokens !== false)
         for (const token of s.apiTokens) token.revokedAt = now;
     });
-    kernel.clearSession(res);
+    kernel.clearSession(res, req);
     send(res, 200, { ok: true });
     return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     if (!requireSession()) return true;
     await kernel.revokeSession(req);
-    kernel.clearSession(res);
+    kernel.clearSession(res, req);
     send(res, 200, { ok: true });
     return true;
   }
@@ -297,7 +297,7 @@ export async function handleSecurityRoute(
         return false;
       }
       live.config = {
-        policy: live.config?.policy || kernel.policy,
+        policy: kernel.configurationPolicy(live.config?.policy),
         methods: nextMethods,
       };
     });
@@ -318,7 +318,7 @@ export async function handleSecurityRoute(
         b.password,
         auth.sessionHash!,
         b.revokeApiTokens !== false,
-        { policy: kernel.policy, methods: kernel.methods },
+        { policy: kernel.configurationPolicy(), methods: kernel.methods },
       );
       await kernel.refreshConfig();
       send(res, 200, { ok: true });
@@ -347,7 +347,7 @@ export async function handleSecurityRoute(
         current = item.hash === auth.sessionHash;
       }
     });
-    if (current) kernel.clearSession(res);
+    if (current) kernel.clearSession(res, req);
     send(
       res,
       found ? 200 : 404,
@@ -369,7 +369,7 @@ export async function handleSecurityRoute(
         for (const session of s.sessions) session.revokedAt = now;
       }
     });
-    if (found) kernel.clearSession(res);
+    if (found) kernel.clearSession(res, req);
     send(
       res,
       found ? 200 : 404,
@@ -490,7 +490,7 @@ export async function handleSecurityRoute(
         createdAt: now,
       });
       s.config = {
-        policy: s.config?.policy || kernel.policy,
+        policy: kernel.configurationPolicy(s.config?.policy),
         methods: [...new Set([...(s.config?.methods || kernel.methods), "passkey" as const])],
       };
     });
