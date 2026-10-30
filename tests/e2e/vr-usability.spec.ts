@@ -183,6 +183,10 @@ test.describe("VR view, usability round 1 (emulated Quest 3)", () => {
     await page.request.post("/api/mock/event", { data: { type: "agent_event", sessionId: "mock-older", event: { type: "agent_start", startedAt: since() } } });
     await page.request.post("/api/mock/event", { data: { type: "agent_event", sessionId: "mock-older", event: { type: "tool_execution_start", toolCallId: "u1", toolName: "edit", args: { path: "src/main.ts" } } } });
     await expect.poll(async () => (await vr(page, (city) => city.header()))?.status || "").toMatch(/editing main\.ts/);
+    // The avatar's hover card says the same.
+    await aim(page, "avatar:mock-older", [0.2, 1.05, -0.3]);
+    await expect.poll(async () => (await vr(page, (city) => city.preview()))?.status || "", { timeout: 5_000 }).toMatch(/editing main\.ts/);
+    await rest(page);
     const bar = await vr(page, (city) => city.barCheck());
     expect(bar.drawn?.length ?? 0).toBeGreaterThan(0);
     expect(bar.drawn.every((cell: { lines: string[] }) => cell.lines.length > 0)).toBe(true);

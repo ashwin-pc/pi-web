@@ -46,7 +46,7 @@ function drawRail(ctx, p) {
     icon(ctx, K.icon, lx + 10, y + ch - 36, 24, K.color, 2.2);
     text(ctx, `${K.label} · ${a.turn}`, lx + 30, y + ch - 35, {size: 24, color: C.dim, maxW: W - lx - 44});
     p.region(id, B + 24, y, W - B - 24, ch, {click: () => A.r3?.pullOut(a), art: a.id});
-    p.region(`${id}:thumb`, 0, y, W, th + 16, {click: () => A.r3?.pullOut(a), art: a.id});
+    p.region(id, 0, y, W, th + 16, {click: () => A.r3?.pullOut(a), art: a.id}); // the thumbnail too (same target)
     const pid = `rail:pin:${a.id}`, px = 18, py = y + ch - B - 12, pinned = A.r3?.isPinned(a.id);
     fillRR(ctx, px, py, B, B, 16, pinned ? '#2a2112' : p.isHover(pid) ? '#2a2a2a' : '#161616', pinned ? C.accent : '#2c2c2c', 1.5);
     icon(ctx, 'pin', px + B / 2, py + B / 2, 36, pinned ? C.accent : C.muted, 2.4);

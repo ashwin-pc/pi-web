@@ -42,5 +42,20 @@ live-load probe. The artifact modules read real files:
 | `reader.js` | A turn that is still streaming is built without mipmaps (rebuilt on every update; the tiles do the same) |
 | `xr.js` | The "no headset" note hides after 8 s (Enter VR's tooltip keeps the reason) |
 
+### Usability round 1 (the headset critic's findings, fixed in pi-web; worth taking back into the mock)
+
+| File | Edit |
+|---|---|
+| `reader.js` | Turns drawn in tiles of at most 1024 px for the visible window plus a screen above and below; released off-window (pooled); 4 MB rastered per frame; 120 MB cap; 0.72 texels per layout px; layout time-sliced and anchored; shader warm-up |
+| `turns.js` | `layoutTurnSteps`, a generator version of `layoutTurn` (yields per message); the conversation is 900 px (35°) wide |
+| `draw.js` | Memoised word widths; long tokens break by binary search |
+| `atlas-upload.js` (new), `city-labels.js`, `city-cards.js`, `panel-batch.js` | Changed atlas slots upload alone (texSubImage2D), not the whole atlas |
+| `main.js` | Every shader program compiled and linked up front and on the first XR frame; caret blink at 2 Hz; tileStep |
+| `input.js` | No hand-height gate (a ray more than 45° down is a resting hand); an empty tap opens nothing; slow presses still click |
+| `app.js`, `desktop.js` | A hidden textarea for typing (Quest system keyboard); dictation only on the mic |
+| `views.js`, `focus.js`, `artifacts.js`, `layouts.js`, `tiles.js` | 35° conversation, 61° cockpit, composer row under it, artifacts over it, pair 70°, 3° targets |
+| `bar.js`, `bar-pops.js`, `state.js` | 8 named avatars; follow past 48°, never while pointed at; under the panels and farther out while reading; needs you = finished-and-unread or asking (not workers); "editing reader.js" status |
+| `xr.js`, `city-nav.js`, `r3.js` | Grip and stick dead zones; a low start pose that opens the session that needs you; local-floor fallback, reset, framebuffer log; Exit VR |
+
 Not ported: `record.mjs` (recording), `build.mjs` (pi-web's Vite build bundles three.js as a lazy chunk), the mock's
 test harnesses (pi-web's Playwright specs `tests/e2e/vr-view.spec.ts` and `vr-xr.spec.ts` cover the live view).

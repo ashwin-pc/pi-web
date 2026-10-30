@@ -153,7 +153,7 @@ function stick(p, gp, dt) {
   if (!vert) st.altSince = 0; else if (!st.altSince) st.altSince = t;
   if (vert && t - st.altSince >= 150) { xrInput.climb = -Math.sign(ay) * Math.min(1, (Math.abs(ay) - 0.5) / 0.4); logInput('stick:altitude'); }
   if (st.xDir === 0) {
-    if (Math.abs(ax) > 0.6 && Math.abs(ax) > Math.abs(ay) && (!st.yOn || !S.reading)) { st.xDir = Math.sign(ax); switchBy(st.xDir); haptic(p, 0.4, 20); logInput('stick:flick-x'); st.xCount = 1; st.xNext = t + 420; }
+    if (Math.abs(ax) > 0.6 && Math.abs(ax) > Math.abs(ay) && (!st.yOn || !S.reading)) { st.xDir = Math.sign(ax); switchBy(st.xDir); haptic(p, 0.4, 20); logInput('stick:flick-x'); st.xCount = 1; st.xNext = t + 700; } // pi-web: repeat only after 700 ms (was 420): a slow flick is one session
   } else if (Math.abs(ax) < 0.3) st.xDir = 0;
   else if (t >= st.xNext) { switchBy(st.xDir); haptic(p, 0.25, 12); st.xCount++; st.xNext = t + Math.max(110, 300 * Math.pow(0.8, st.xCount - 2)); }
   const a = Math.abs(ay);

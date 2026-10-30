@@ -112,7 +112,8 @@ window.__vrCity = {
     const turns = set.turns.map((t) => ({i: t.i, laid: !!t.lay, h: t.h, tiled: t.tiles.reduce((a, tl) => Math.max(a, tl.y0 + tl.ch), 0), drawn: t.tiles.filter((tl) => tl.panel && !tl.dirty).length, tiles: t.tiles.length}));
     const bottom = set.tileAt(r.scroll + VIEW_PX - 30), top = set.tileAt(r.scroll + 30);
     return {sid: r.sid, scroll: Math.round(r.scroll), max: Math.round(r.maxScroll), view: VIEW_PX, pending: set.pending().length, turns, cut: turns.filter((t) => t.laid && t.tiled < t.h).length,
-      bottomDrawn: !!bottom?.drawn, topDrawn: !!top?.drawn, residentMB: +(tileStats.resident / 1e6).toFixed(1), rasters: tileStats.rasters, uploadedMB: +(tileStats.bytes / 1e6).toFixed(1), tile: {...TILE}};
+      // No tile there (a gap between turns, or below the end) counts as drawn.
+      bottomDrawn: !bottom || bottom.drawn, topDrawn: !top || top.drawn, residentMB: +(tileStats.resident / 1e6).toFixed(1), rasters: tileStats.rasters, uploadedMB: +(tileStats.bytes / 1e6).toFixed(1), tile: {...TILE}};
   },
   /** The last line of a session's latest turn, as laid out (text), and whether it is on screen and drawn now. */
   lastLine() {

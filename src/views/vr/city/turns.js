@@ -10,7 +10,7 @@ const M = 12; // block margin inside the canvas
 const PAD = 36; // inner padding of a turn block
 const INNER = TURN_W - 2 * M - 2 * PAD;
 const LH = Math.round(BODY * 1.5);
-const CHIP_H = 66;
+const CHIP_H = 80; // pi-web (usability round 1): 2.8° from the eye in the cockpit (was 66 px, 2.3°): a target, it expands the tool card
 
 const htmlCache = new WeakMap();
 const blocksOf = (m) => { let b = htmlCache.get(m); if (!b || b.html !== m.html) { b = {html: m.html, blocks: parseHtml(m.html)}; htmlCache.set(m, b); } return b.blocks; };
