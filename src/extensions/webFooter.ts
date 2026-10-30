@@ -1,4 +1,5 @@
 import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
+import { extensionHostActions } from "./extensionHostActions.js";
 
 type PiWebFooterEntry = {
   key?: unknown;
@@ -23,6 +24,7 @@ function normalizeFooter(value: unknown): NormalizedFooter | undefined {
 }
 
 export function renderWebFooters(container: HTMLElement, value: unknown) {
+  const hostActions = extensionHostActions(container);
   const entries = Array.isArray(value) ? value as PiWebFooterEntry[] : [];
   container.textContent = "";
 
@@ -41,4 +43,5 @@ export function renderWebFooters(container: HTMLElement, value: unknown) {
   }
 
   container.hidden = container.childElementCount === 0;
+  hostActions.refresh();
 }

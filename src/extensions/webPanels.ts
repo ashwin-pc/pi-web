@@ -1,6 +1,7 @@
 import { iconElement, isIconName } from "../app/icons.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { extensionHostActions } from "./extensionHostActions.js";
 import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
 
 type WebPanelEntry = {
@@ -87,6 +88,7 @@ export function createWebPanels(options: {
 
   const body = document.createElement("div");
   body.className = "webPanelBody";
+  const hostActions = extensionHostActions(body);
   panel.append(header, body);
   document.body.append(panel);
 
@@ -120,6 +122,7 @@ export function createWebPanels(options: {
     message.setAttribute("role", "alert");
     message.textContent = error instanceof Error ? error.message : String(error);
     body.append(message);
+    hostActions.refresh();
   }
 
   async function invoke(event?: PiWebPanelEvent) {
@@ -127,7 +130,10 @@ export function createWebPanels(options: {
     if (!entry) return;
     const generation = ++requestGeneration;
     panel.setAttribute("aria-busy", "true");
-    if (!event) body.textContent = "Loading…";
+    if (!event) {
+      body.textContent = "Loading…";
+      hostActions.refresh();
+    }
     try {
       const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",
@@ -140,6 +146,7 @@ export function createWebPanels(options: {
       if (typeof data.html !== "string") throw new Error("Panel returned no content");
       renderHeading(entry, data.title);
       body.replaceChildren(sanitizeExtensionHtml(data.html));
+      hostActions.refresh();
       const autofocus = body.querySelector<HTMLElement>("[autofocus]");
       autofocus?.focus({ preventScroll: event?.action !== "deep-link" });
     } catch (error) {
@@ -218,6 +225,7 @@ export function createWebPanels(options: {
         updatePending = false;
         activeKey = "";
         body.textContent = "";
+        hostActions.refresh();
         if (panelHandle.isOpen()) panelHandle.close(false);
       }
     },

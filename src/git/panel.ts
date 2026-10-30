@@ -4,6 +4,7 @@ import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
+import { extensionHostActions } from "../extensions/extensionHostActions.js";
 import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { ComposerContextAttachment } from "../app/types.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
@@ -34,6 +35,7 @@ export function initGitPanel(options: {
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
   const tabsContainer = statusTab.parentElement!;
+  const hostActions = extensionHostActions(primary);
   let panelHandle: RightPanelHandle | undefined;
   let extensionTabs: GitExtensionTab[] = [];
   let extensionTabView: GitExtensionTabView | undefined;
@@ -415,6 +417,7 @@ export function initGitPanel(options: {
     graphTab.classList.toggle("active", state.primaryView === "graph");
     renderExtensionTabButtons();
     primary.textContent = "";
+    hostActions.refresh();
     detail.textContent = "";
     if (state.primaryView === "graph") renderRepoPicker(primary);
     const primaryContent = document.createElement("div");
@@ -428,6 +431,7 @@ export function initGitPanel(options: {
         primaryContent.innerHTML = `<div class="gitExtensionError">${escapeHtml(extensionTabView.error)}</div>`;
       } else {
         primaryContent.replaceChildren(sanitizeExtensionHtml(extensionTabView.html || ""));
+        hostActions.refresh();
       }
       return;
     }

@@ -18,7 +18,15 @@ export function sanitizeExtensionHtml(html: string): DocumentFragment {
     RETURN_DOM_FRAGMENT: true,
     FORCE_BODY: true,
     USE_PROFILES: { html: true, svg: true, svgFilters: true },
-    ADD_ATTR: ["autofocus", "target"],
+    // Host-delegated extension actions are explicitly part of the sanitizer
+    // contract even though DOMPurify normally allows data-* attributes.
+    ADD_ATTR: [
+      "autofocus",
+      "target",
+      "data-web-copy",
+      "data-web-copy-status",
+      "data-web-scroll-fade",
+    ],
     FORBID_TAGS: ["iframe", "frame", "object", "embed", "portal"],
     FORBID_ATTR: ["srcdoc"],
   });

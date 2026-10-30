@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { extensionHostActions } from "../extensions/extensionHostActions.js";
 import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { SystemInfoSnapshot } from "./types.js";
 
@@ -120,6 +121,7 @@ export function createSystemInfo(options: {
   const status = el("p", "systemInfoStatus");
   status.setAttribute("aria-live", "polite");
   const content = el("div", "systemInfoContent");
+  const hostActions = extensionHostActions(content);
   body.append(status, content);
   panel.append(header, body);
   if (inlineContainer) {
@@ -184,6 +186,7 @@ export function createSystemInfo(options: {
       if (typeof data.html !== "string") throw new Error("System-info contribution returned no content");
       if (data.title?.trim()) section.firstElementChild?.replaceWith(el("h3", undefined, data.title.trim()));
       bodyEl.replaceChildren(sanitizeExtensionHtml(data.html));
+      hostActions.refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       bodyEl.replaceChildren(el("div", "systemInfoError", message));
@@ -295,6 +298,7 @@ export function createSystemInfo(options: {
       ]),
       actions,
     );
+    hostActions.refresh();
     status.textContent = info.piWeb.environment === "mock"
       ? "Updated Jan 15, 2026, 12:00 PM"
       : `Updated ${new Date(info.capturedAt).toLocaleString()}`;
@@ -312,6 +316,7 @@ export function createSystemInfo(options: {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       content.replaceChildren(el("div", "systemInfoError", message));
+      hostActions.refresh();
       status.textContent = "System information unavailable";
       onError(message);
     } finally {

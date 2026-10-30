@@ -175,6 +175,49 @@ Styles and media may load remote resources. Extensions still run server-side
 with the user's permissions, so only install extensions from sources you trust;
 browser contribution HTML is a separate, untrusted boundary.
 
+### Host-delegated HTML actions
+
+Sanitized footer, panel, Git-tab, and system-info HTML can request two small
+browser behaviors from pi-web. These are host actions: pi-web performs them
+after sanitization; they do not run extension-authored browser scripts.
+
+Use `data-web-copy="<text>"` to copy literal text. Put
+`data-web-copy-status` on a descendant whose text pi-web may temporarily
+replace with `Copied` or `Copy failed`. Native buttons already support keyboard
+activation:
+
+```html
+<button type="button" data-web-copy="git status --short">
+  Copy command <span data-web-copy-status aria-live="polite"></span>
+</button>
+```
+
+A non-button control must use accessible button semantics. Pi-web handles both
+Enter and Space:
+
+```html
+<span role="button" tabindex="0" data-web-copy="feature/my-branch">
+  feature/my-branch <span data-web-copy-status></span>
+</span>
+```
+
+Use `data-web-scroll-fade` on a horizontally scrollable element to have pi-web
+maintain edge fades as its scroll and layout change:
+
+```html
+<div data-web-scroll-fade tabindex="0"
+     style="display:flex;gap:8px;overflow-x:auto">
+  <!-- wide strip content -->
+</div>
+```
+
+The host sets `data-web-scroll-fade-state` to `right` at the start, `both` in
+the middle, `left` at the end, or `none` when the element does not overflow.
+It also owns the element's CSS mask while this attribute is present. The
+`data-web-copy`, `data-web-copy-status`, and `data-web-scroll-fade` attributes
+are explicitly preserved by the extension HTML sanitizer. They are independent
+of `data-web-action`, which continues to invoke the server-side extension.
+
 ## Header action API
 
 `ctx.ui.web.setHeaderAction(key, action)` contributes an icon button to the status bar. Clicking it invokes your extension handler and renders returned Markdown in a shared dismissible popover.

@@ -36,6 +36,95 @@ async function openGitExtension(page: Page) {
   await page.locator(".gitExtensionTab", { hasText: "Security test" }).click();
 }
 
+const hostActionHtml = (render: number) => `
+  <div class="host-actions" data-render="${render}">
+    <button type="button" class="copy-click" data-web-copy="clicked value">
+      Copy click <span data-web-copy-status>ready</span>
+    </button>
+    <span class="copy-keyboard" role="button" tabindex="0" data-web-copy="keyboard value">
+      Copy keyboard <span data-web-copy-status>ready</span>
+    </span>
+    <div class="overflow-strip" data-web-scroll-fade tabindex="0"
+         style="display:flex;width:160px;overflow-x:auto">
+      <span style="display:block;flex:0 0 480px">Wide strip</span>
+    </div>
+    <div class="fitting-strip" data-web-scroll-fade
+         style="display:flex;width:160px;overflow-x:auto">
+      <span style="display:block;flex:0 0 80px">Short strip</span>
+    </div>
+    <button type="button" class="rerender" data-web-action="rerender">Rerender</button>
+  </div>
+`;
+
+test("host-delegated copy and scroll fades survive sanitization and rerenders", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.request.post("/api/mock/state", { data: {
+    webContributions: [
+      { version: 1, key: "host-panel", slot: "panel", kind: "rendered", title: "Host actions", label: "Host actions", icon: "copy" },
+      { version: 1, key: "host-panel-launcher", slot: "fab", kind: "static", title: "Host actions", label: "Host actions", icon: "copy", opens: "host-panel" },
+    ],
+  } });
+
+  const invocations: Array<Record<string, any>> = [];
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    const input = route.request().postDataJSON();
+    invocations.push(input);
+    await route.fulfill({ json: {
+      ok: true,
+      title: "Host actions",
+      html: hostActionHtml(invocations.length),
+    } });
+  });
+
+  await page.goto("/");
+  await page.locator(".actionLauncherToggle").click();
+  await page.locator(".actionLauncherItem", { hasText: "Host actions" }).click();
+
+  const panel = page.locator("#webExtensionPanel");
+  const clickCopy = panel.locator(".copy-click");
+  const keyboardCopy = panel.locator(".copy-keyboard");
+  const overflow = panel.locator(".overflow-strip");
+  const fitting = panel.locator(".fitting-strip");
+
+  await expect(clickCopy).toHaveAttribute("data-web-copy", "clicked value");
+  await expect(clickCopy.locator("[data-web-copy-status]")).toHaveText("ready");
+  await clickCopy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("clicked value");
+  await expect(clickCopy.locator("[data-web-copy-status]")).toHaveText("Copied");
+
+  await keyboardCopy.focus();
+  await keyboardCopy.press("Space");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("keyboard value");
+  await expect(keyboardCopy.locator("[data-web-copy-status]")).toHaveText("Copied");
+
+  await expect(overflow).toHaveAttribute("data-web-scroll-fade", "");
+  await expect(overflow).toHaveAttribute("data-web-scroll-fade-state", "right");
+  await expect(overflow).toHaveCSS("mask-image", /linear-gradient/);
+  await expect(fitting).toHaveAttribute("data-web-scroll-fade-state", "none");
+  await expect(fitting).toHaveCSS("mask-image", "none");
+
+  await overflow.evaluate((element) => {
+    element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
+  });
+  await expect(overflow).toHaveAttribute("data-web-scroll-fade-state", "both");
+
+  await overflow.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect(overflow).toHaveAttribute("data-web-scroll-fade-state", "left");
+
+  await panel.locator(".rerender").click();
+  await expect.poll(() => invocations.some((input) =>
+    input.slot === "panel" && input.event?.action === "rerender")).toBe(true);
+  await expect(panel.locator(".host-actions")).toHaveAttribute("data-render", "2");
+  await expect(panel.locator(".overflow-strip")).toHaveAttribute("data-web-scroll-fade-state", "right");
+
+  await panel.locator(".copy-keyboard").focus();
+  await panel.locator(".copy-keyboard").press("Enter");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("keyboard value");
+  await expect(panel.locator(".copy-keyboard [data-web-copy-status]")).toHaveText("Copied");
+});
+
 test("sanitizes every privileged extension HTML sink without breaking contributions", async ({ page }, testInfo) => {
   const capture = async (name: string) => {
     const body = await page.screenshot({ path: testInfo.outputPath(`${name}-layout.png`) });
