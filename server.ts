@@ -1513,7 +1513,12 @@ const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:n
     return;
   }
   if (url.pathname !== "/ws") {
-    viteUpgrades.handle(req, socket, head);
+    const protocol = req.headers["sec-websocket-protocol"];
+    if (isDev && url.pathname === "/" && (protocol === "vite-hmr" || protocol === "vite-ping")) {
+      viteUpgrades.handle(req, socket, head);
+    } else {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
     return;
   }
 
