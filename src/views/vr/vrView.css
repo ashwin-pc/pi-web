@@ -96,6 +96,7 @@ body.vrTouch.vrTyping #vrTyping:not([hidden]) { display: flex; gap: 8px; left: 8
   .vrDockScroll { flex-direction: column; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; touch-action: pan-y; scroll-snap-type: y proximity; }
   .vrDockFixed { flex-direction: column; }
   .vrAv, .vrChip { width: 64px; min-height: 56px; touch-action: pan-y; }
+  .vrChip { min-height: 50px; } /* round 3: shorter fixed chips leave the column room for two-line names */
   .vrAv { min-height: 76px; }
   body.vrTouch #vrSheet:not([hidden]) { right: 82px; bottom: 8px; }
   body.vrTouch.vrTyping #vrTyping:not([hidden]) { right: 82px; bottom: 8px; }

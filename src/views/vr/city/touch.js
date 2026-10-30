@@ -262,7 +262,9 @@ function syncDock() {
   needsBtn.classList.toggle('on', need > 0);
   replyBtn.hidden = !S.reading; homeBtn.hidden = S.reading;
   const cur = avatarBtns.get(S.currentId);
-  if (cur && cur !== touch.lastCur) { touch.lastCur = cur; cur.scrollIntoView({inline: 'nearest', block: 'nearest', behavior: S.reduceMotion ? 'auto' : 'smooth'}); }
+  // Keep the current pin in view: at once the first time (round 3: a smooth scroll at load moved the dock under a
+  // finger that was already landing on another pin), smoothly when you switch.
+  if (cur && cur !== touch.lastCur) { const first = !touch.lastCur; touch.lastCur = cur; cur.scrollIntoView({inline: 'nearest', block: 'nearest', behavior: S.reduceMotion || first ? 'auto' : 'smooth'}); }
 }
 coarse.addEventListener?.('change', () => syncDock());
 on((topic) => { if (topic === 'sessions' || topic === 'current' || topic === 'tick') syncDock(); });
