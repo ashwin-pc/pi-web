@@ -11,25 +11,39 @@ function isLoopbackHost(hostname: string): boolean {
   return !!mapped && (parseInt(mapped[1], 16) >>> 8) === 127;
 }
 
+function requestHostname(host: string | undefined): string | undefined {
+  if (!host) return undefined;
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Cookies are Secure unless the declared public URL and listener are both
- * demonstrably loopback HTTP. The unspecialized local CLI default is also
- * loopback HTTP; configuring proxy peers makes an omitted public origin
- * ambiguous and therefore Secure.
+ * Cookies are Secure unless an explicit or request-derived public URL and the
+ * listener are both demonstrably loopback HTTP. Forwarding headers are
+ * intentionally irrelevant.
  */
 export function secureSessionCookies(
   configuredOrigin: string | undefined,
   listenerHost: string,
-  configuredProxyPeers: string | undefined,
+  requestHost?: string,
 ): boolean {
   if (!configuredOrigin) {
-    return !!configuredProxyPeers?.trim() || !isLoopbackHost(listenerHost);
+    const hostname = requestHostname(requestHost);
+    return !hostname || !isLoopbackHost(hostname) || !isLoopbackHost(listenerHost);
   }
   let publicUrl: URL;
   try {
     publicUrl = new URL(configuredOrigin);
   } catch {
     return true;
+  }
+  if (publicUrl.protocol === "http:" && !isLoopbackHost(publicUrl.hostname)) {
+    throw new Error(
+      "PI_WEB_AUTH_ORIGIN must use HTTPS for non-loopback access; set it to the exact public https:// origin",
+    );
   }
   return !(
     publicUrl.protocol === "http:" &&
