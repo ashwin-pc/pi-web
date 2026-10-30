@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
-import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
+import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { readBytes } from "./server/shared/requestBody.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
@@ -50,16 +52,15 @@ const staticDir = distDir;
 const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
-const token = process.env.PI_WEB_TOKEN || "";
-const authConfig = resolveAuthConfig(process.env);
-const authMode = authConfig.legacyMode;
+const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
+const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
+const authMode = authConfig.mode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
-const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
+const authKernel = new AuthKernel(authMode, authStore, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -68,6 +69,8 @@ let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
+const bundledExtensionPaths = resolveBundledExtensionPaths({ bundledExtensionsDir });
+const workspaceExtensionTrust = new WorkspaceExtensionTrust(agentDir, bundledExtensionPaths);
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const systemInfoSnapshot = createSystemInfoProvider({
   appDir,
@@ -392,10 +395,11 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
-function additionalExtensionPaths(cwd = piCwd) {
+function additionalExtensionPaths(cwd = piCwd, projectTrusted?: boolean) {
   return [
-    ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
-    ...resolvePiWebExtensionPaths(cwd),
+    ...bundledExtensionPaths,
+    ...resolveGlobalPiWebExtensionPaths(),
+    ...(workspaceExtensionTrust?.extensionPaths(cwd, projectTrusted) ?? []),
   ];
 }
 
@@ -578,6 +582,7 @@ function withAccessLog(
 }
 
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { requestIntentFailure } from "./server/auth/requestIntent.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
@@ -626,7 +631,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
-        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
+        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, { mode: "redirect", url: "/api/auth/login" });
         passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
@@ -639,15 +644,19 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
-      if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+      if (auth.via === "external" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const validOrigin = trustedOrigin(req, authOrigin);
-        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
-      }
+      const intentFailure = requestIntentFailure(req, url, auth.via, authOrigin);
+      if (intentFailure) return sendJson(res, 403, { ok: false, error: intentFailure });
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (await handleWorkspaceExtensionTrustRoute(req, res, url, auth, {
+        trust: workspaceExtensionTrust,
+        sessions: sessionService,
+        readBody,
+        broadcast,
+      })) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
@@ -879,7 +888,6 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           // Candidate validation only needs the session snapshot. Keep the full
           // response as the default for existing API consumers and bootstrap.
           ...(url.searchParams.get("includeSessionUiState") === "false" ? {} : await readOptionalSessionUiState()),
-          tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
 
@@ -1542,6 +1550,6 @@ server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  console.log(`Auth policy: ${authKernel.policy}; methods: ${[...authKernel.methods].join(", ") || "none configured"}`);
   if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });
