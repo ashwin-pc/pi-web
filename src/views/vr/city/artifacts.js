@@ -5,7 +5,7 @@
 // (pedestal.js). The pin puts the artifact on the wall (layouts.js), next to other sessions' artifacts.
 import * as THREE from 'three';
 import {Panel} from './panel.js';
-import {S, get} from './state.js';
+import {S, get, on} from './state.js';
 import {C, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {client} from './client.js';
 import {drawArtifact, drawThumb, KIND, aspectOf, onArtifactContent} from './artifact-draw.js';
@@ -119,5 +119,7 @@ onArtifactContent((a) => {
   rail.invalidate();
   if (artState.art?.id === a.id) pullOut(artState.art);
 });
+// pi-web: a session's artifacts arrive with its transcript (loaded lazily): redraw the rail when the current one's do.
+on((topic, sid) => { if (topic === 'transcript' && sid === S.currentId) rail.invalidate(); });
 export function syncRail() { const s = S.currentId; if (railState.sid !== s) { railState.sid = s; railState.page = 0; rail.invalidate(); } }
 export {THREE};

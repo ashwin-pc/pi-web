@@ -16,10 +16,10 @@ export const TURN_X = -RW / 2 + 0.006;
 // and uploaded hundreds of MB per switch on real transcripts. Now every turn is laid out in full (cheap, no pixels),
 // and drawn only where you can see it: in TILE.h-tall tiles (one texture each, so scrolling still never re-rasters a
 // tile), for the visible window plus one screen above and below. Tiles off that window are released. Rastering is
-// budgeted per frame (TILE.budget bytes, at least one tile), and the resident tile textures are capped (TILE.cap),
+// budgeted per frame (TILE.budget bytes, at least one tile, leaving room for the other panels' uploads), and the resident tile textures are capped (TILE.cap),
 // least recently seen first. Tiles raster at TILE.raster texels per layout px: the text stays well above the
 // headset's rendered pixel density (see the PR's legibility note).
-export const TILE = {h: 1024, raster: 0.72, budget: 4e6, cap: 120e6, margin: 1, layMs: 6};
+export const TILE = {h: 1024, raster: 0.72, budget: 2.5e6, cap: 120e6, margin: 1, layMs: 5};
 const scratch = document.createElement('canvas').getContext('2d');
 export const sets = new Map(); // sid -> TurnSet
 export const expandedBySid = new Map();
