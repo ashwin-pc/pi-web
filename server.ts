@@ -67,10 +67,12 @@ const authConfig = resolveAuthConfig(process.env, (await authStore.read()).confi
 const authMode = authConfig.mode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || process.env.PI_WEB_AUTH_INTERNAL_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
+const reportOriginRejection = createOriginRejectionReporter(process.env.PI_WEB_AUTH_ORIGIN);
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
+secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host);
+const authKernel = new AuthKernel(authMode, authStore, (req) => secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, req?.headers.host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -603,7 +605,7 @@ function withAccessLog(
 }
 
 import { browserMutationFailure, isAmbientBrowserAuth, isIdempotentMethod } from "./server/auth/admission.js";
-import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { requestIntentFailure } from "./server/auth/requestIntent.js";
 
 async function loginPresentation() {
@@ -660,7 +662,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         "/api/auth/bootstrap/options",
         "/api/auth/bootstrap/verify",
       ].includes(url.pathname);
-      if (publicAuthMutation && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
+      if (publicAuthMutation && !trustedOrigin(req, authOrigin)) {
+        reportOriginRejection(req);
+        return sendJson(res, 403, { error: originFailureHint });
+      }
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, { mode: "redirect", url: "/api/auth/login" });
@@ -670,9 +675,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
         const failure = browserMutationFailure(req, "session", authOrigin, mockMode);
-        if (failure) return sendJson(res, 403, { error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
+        if (failure) {
+          if (failure === "origin") reportOriginRejection(req);
+          return sendJson(res, 403, { error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
+        }
         await authKernel.revokeSession(req);
-        authKernel.clearSession(res);
+        authKernel.clearSession(res, req);
         return sendJson(res, 200, { ok: true });
       }
       const auth = extensionAuth || await authKernel.gate(req);
@@ -682,7 +690,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       if (!isIdempotentMethod(method)) {
         const failure = browserMutationFailure(req, auth.via, authOrigin, mockMode);
-        if (failure) return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
+        if (failure) {
+          if (failure === "origin") reportOriginRejection(req);
+          return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
+        }
       } else {
         const intentFailure = requestIntentFailure(req, url, auth.via, authOrigin);
         if (intentFailure) return sendJson(res, 403, { ok: false, error: intentFailure });
@@ -1527,7 +1538,7 @@ const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:n
     if (!ticket) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     const identity = ticket.identity;
     if (!(await webSocketRevocation.validForUpgrade(ticket))) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    if (isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { reportOriginRejection(req); socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     wss.handleUpgrade(req, socket, head, (ws) => { webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
