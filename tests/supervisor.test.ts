@@ -263,6 +263,7 @@ describe("pi-web supervisor", () => {
         authorization: `Bearer ${token.secret}`,
         origin: "https://owner.example",
         "x-forwarded-host": "owner.example",
+        "x-pi-web-client-id": "deployment-contract",
       },
     });
     expect(restart.status).toBe(202);
