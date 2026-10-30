@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import WebSocket from "ws";
 import { AuthStore } from "../server/auth/kernel.js";
 import { mintStoredApiToken } from "./auth-fixture.js";
@@ -31,12 +31,20 @@ async function mockWebSocket(baseUrl: string, query = "", options: { autoPong?: 
   return new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws?ticket=${encodeURIComponent(ticket)}${suffix}`, { origin, ...options });
 }
 
-function rawGet(port: number, path: string): Promise<{ status: number; body: string }> {
+function rawGet(
+  port: number,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string; headers: IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET" }, (res) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString() }));
+      res.on("end", () => resolve({
+        status: res.statusCode || 0,
+        body: Buffer.concat(chunks).toString(),
+        headers: res.headers,
+      }));
     });
     req.on("error", reject);
     req.end();
@@ -88,6 +96,27 @@ async function waitForCondition(predicate: () => Promise<boolean> | boolean, tim
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("Timed out waiting for condition");
+}
+
+async function stopOwnedChild(child: ChildProcess) {
+  const running = () => child.exitCode === null && child.signalCode === null;
+  const waitForExit = (timeoutMs: number) =>
+    new Promise<void>((resolve) => {
+      if (!running()) return resolve();
+      const done = () => {
+        clearTimeout(timer);
+        child.off("exit", done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      child.once("exit", done);
+    });
+  if (!running()) return;
+  child.kill();
+  await waitForExit(2_000);
+  if (!running()) return;
+  child.kill("SIGKILL");
+  await waitForExit(1_000);
 }
 
 // API-only suites do not need a Vite optimizer for every ephemeral port.
@@ -1502,7 +1531,162 @@ describe("Live session lifecycle", () => {
   }, 10_000);
 });
 
+describe("session cookie transport security", () => {
+  it.each([
+    {
+      label: "defaults to Secure when PI_WEB_AUTH_ORIGIN is absent",
+      declareOrigin: false,
+      secure: true,
+    },
+    {
+      label: "permits non-Secure cookies for an explicitly declared HTTP loopback origin",
+      declareOrigin: true,
+      secure: false,
+    },
+  ])("$label", async ({ declareOrigin, secure }) => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const env = isolatedAuthEnv();
+    const fixtureHome = env.PI_WEB_HOME!;
+    delete env.PI_WEB_AUTH_ORIGIN;
+    if (declareOrigin) env.PI_WEB_AUTH_ORIGIN = origin;
+    const store = new AuthStore(env.PI_WEB_AUTH_STORE!);
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
+    const child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: {
+        ...env,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "0",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const headers = {
+      "x-test-user": "cookie-owner",
+      "x-pi-web-client-id": "synthetic-cookie-client",
+    };
+    try {
+      await waitForCondition(async () => {
+        try {
+          return (await rawGet(port, "/api/state", headers)).status === 200;
+        } catch {
+          return false;
+        }
+      }, 15_000);
+      const response = await rawGet(port, "/api/state", headers);
+      expect(response.status).toBe(200);
+      const setCookie = response.headers["set-cookie"]?.join("; ") || "";
+      expect(setCookie).toContain("pi_web_session=");
+      if (secure) expect(setCookie).toMatch(/;\s*Secure(?:;|$)/i);
+      else expect(setCookie).not.toMatch(/;\s*Secure(?:;|$)/i);
+    } finally {
+      await stopOwnedChild(child);
+      await rm(fixtureHome, { recursive: true, force: true });
+    }
+  }, 25_000);
+});
+
 describe("WebSocket authentication", () => {
+  it("revokes a browser-session socket on sign-out-all and permits a fresh authenticated reconnect", async () => {
+    const port = await freePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const authEnv = isolatedAuthEnv();
+    await new AuthStore(authEnv.PI_WEB_AUTH_STORE!).update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
+    const child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: {
+        ...authEnv,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "0",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_ORIGIN: origin,
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const authenticate = async () => {
+      const response = await fetch(`${origin}/api/state`, {
+        headers: {
+          "x-test-user": "socket-owner",
+          "x-pi-web-client-id": "browser",
+        },
+      });
+      expect(response.status).toBe(200);
+      return response.headers.get("set-cookie")!.split(";")[0];
+    };
+    const openSocket = async (cookie: string) => {
+      const ticketResponse = await fetch(`${origin}/api/ws-ticket`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin,
+          "x-pi-web-client-id": "browser",
+        },
+      });
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      return new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(
+          `${origin.replace("http:", "ws:")}/ws?ticket=${encodeURIComponent(ticket)}`,
+          { origin, headers: { cookie } },
+        );
+        ws.once("message", () => resolve(ws));
+        ws.once("error", reject);
+      });
+    };
+    try {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          const ready = await fetch(`${origin}/api/state`, {
+            headers: {
+              "x-test-user": "socket-owner",
+              "x-pi-web-client-id": "browser",
+            },
+          });
+          if (ready.ok) break;
+        } catch { /* retry */ }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const cookie = await authenticate();
+      const ws = await openSocket(cookie);
+      const closed = new Promise<number>((resolve) =>
+        ws.once("close", (code) => resolve(code)),
+      );
+      const revoke = await fetch(`${origin}/api/auth/sessions`, {
+        method: "DELETE",
+        headers: {
+          cookie,
+          origin,
+          "content-type": "application/json",
+          "x-pi-web-client-id": "browser",
+        },
+        body: "{}",
+      });
+      expect(revoke.status).toBe(200);
+      await expect(Promise.race([
+        closed,
+        new Promise<number>((_resolve, reject) => setTimeout(() => reject(new Error("Socket was not revoked")), 10_000)),
+      ])).resolves.toBe(1008);
+
+      const reconnected = await openSocket(await authenticate());
+      reconnected.close();
+    } finally {
+      await stopOwnedChild(child);
+      await rm(authEnv.PI_WEB_HOME!, { recursive: true, force: true });
+    }
+  }, 25_000);
+
   it("requires a stored API token and accepts its Bearer exchange without an Origin header", async () => {
     const port = await freePort();
     const authEnv = isolatedAuthEnv();

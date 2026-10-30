@@ -17,6 +17,7 @@ const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
 const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
+const childAuthOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 const supervisorSecret = randomBytes(32).toString("base64url");
 const authStorePath = resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE);
@@ -32,12 +33,12 @@ const intentionalStops = new Set<number>();
 
 async function authorization(req: IncomingMessage, mutation = false): Promise<"allowed" | "unauthorized" | MutationAdmissionFailure> {
   try {
-    const kernel = new AuthKernel(authConfig.mode, new AuthStore(authStorePath), true, authConfig.trustedHeader, authConfig.policy, authConfig.methods);
+    const kernel = new AuthKernel(authConfig.mode, new AuthStore(authStorePath), true, authConfig.trustedHeader, authConfig.policy, authConfig.methods, undefined, authConfig.explicitOpenPolicy);
     await kernel.refreshConfig();
     const auth = await kernel.gate(req);
     if (!auth.ok) return "unauthorized";
     if (mutation) {
-      const failure = browserMutationFailure(req, auth.via, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`, process.env.PI_WEB_MOCK === "1");
+      const failure = browserMutationFailure(req, auth.via, childAuthOrigin, process.env.PI_WEB_MOCK === "1");
       if (failure) return failure;
     }
     return "allowed";
@@ -66,7 +67,7 @@ function startChild(): void {
     PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
     PI_WEB_SUPERVISED: "1",
     PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
-    PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
+    PI_WEB_AUTH_INTERNAL_ORIGIN: childAuthOrigin,
   };
 
   console.log(`[supervisor] starting child #${generation} on ${childHost}:${childPort}`);
@@ -155,7 +156,7 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  const originValidated = trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
+  const originValidated = trustedOrigin(req, childAuthOrigin);
   sanitizeProxyHeaders(req, originValidated);
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
@@ -172,8 +173,7 @@ function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
 
 supervisor.on("upgrade", (req, socket, head) => {
   stripSupervisorOriginHeaders(req.headers);
-  const configuredOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
-  const originValidated = trustedOrigin(req, configuredOrigin);
+  const originValidated = trustedOrigin(req, childAuthOrigin);
   sanitizeProxyHeaders(req, originValidated);
   const upstream = net.connect(childPort, childHost);
   let closed = false;

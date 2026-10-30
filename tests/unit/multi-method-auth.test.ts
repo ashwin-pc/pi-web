@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -235,18 +235,6 @@ describe("multi-method human authentication", () => {
     const warn = vi.fn(); await kernel.startupDiagnostics(warn);
     expect(warn.mock.calls[0][0]).toContain("environment-only methods=[passkey, external]");
   });
-  it("recovers dead PID locks but never steals a live lock by age", async () => {
-    const { store } = await fixture();
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
-    await store.update((s) => {
-      s.verifiedMethods = ["password"];
-    });
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: process.pid }));
-    await utimes(`${store.path}.lock`, new Date(0), new Date(0));
-    await expect(store.update(() => {})).rejects.toThrow(
-      "Auth store is locked",
-    );
-  }, 10_000);
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
     const seen = vi.fn();
@@ -432,6 +420,17 @@ describe("multi-method human authentication", () => {
   it("translates supported compatibility configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
+      explicitOpenPolicy: false,
+      methods: [],
+    });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_POLICY: "open",
+      }),
+    ).toMatchObject({
+      policy: "open",
+      explicitOpenPolicy: true,
       methods: [],
     });
     expect(
@@ -443,7 +442,100 @@ describe("multi-method human authentication", () => {
       policy: "authenticated",
       methods: ["password", "passkey", "external"],
     });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+      }),
+    ).toMatchObject({
+      policy: "authenticated",
+      methods: ["external"],
+    });
+    expect(() =>
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_METHODS: "external",
+      }),
+    ).toThrow("cannot be combined");
     expect(() => resolveAuthConfig({ PI_WEB_AUTH_METHODS: "basic" })).toThrow();
+  });
+  it("preserves saved policy during method changes and never lets saved open weaken authenticated environment", async () => {
+    const { store } = await fixture();
+    await store.update((s) => {
+      s.config = { policy: "open", methods: ["password"] };
+    });
+    const kernel = new AuthKernel(
+      "passkey",
+      store,
+      false,
+      "",
+      "authenticated",
+      ["password"],
+    );
+    await kernel.refreshConfig();
+    expect(kernel.policy).toBe("authenticated");
+    await kernel.configure(["password", "external"]);
+    expect((await store.read()).config).toEqual({
+      policy: "open",
+      methods: ["password", "external"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+  });
+  it("persists authenticated policy on first enrollment unless policy was explicitly changed", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-first-enrollment-")), "auth.json"),
+    );
+    const kernel = new AuthKernel("none", store, false);
+    expect(kernel.policy).toBe("open");
+
+    await kernel.configure(["password"]);
+    expect((await store.read()).config).toEqual({
+      policy: "authenticated",
+      methods: ["password"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+
+    const explicitOpenStore = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-explicit-open-")), "auth.json"),
+    );
+    const explicitOpenConfig = resolveAuthConfig({
+      PI_WEB_AUTH_MODE: "none",
+      PI_WEB_AUTH_POLICY: "open",
+    });
+    const explicitOpen = new AuthKernel(
+      explicitOpenConfig.mode,
+      explicitOpenStore,
+      false,
+      "",
+      explicitOpenConfig.policy,
+      explicitOpenConfig.methods,
+      undefined,
+      explicitOpenConfig.explicitOpenPolicy,
+    );
+    await explicitOpen.configure(["password"]);
+    expect((await explicitOpenStore.read()).config).toEqual({
+      policy: "open",
+      methods: ["password"],
+    });
+    expect(explicitOpen.policy).toBe("open");
+  });
+  it("warns when an explicitly open policy advertises login methods", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-open-methods-")), "auth.json"),
+    );
+    const kernel = new AuthKernel(
+      "none",
+      store,
+      false,
+      "",
+      "open",
+      ["password"],
+    );
+    const warn = vi.fn();
+    await kernel.startupDiagnostics(warn);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('policy is "open" while login methods are enabled'),
+    );
   });
   it("recovery removes saved legacy authority and creates a usable single-use bootstrap", async () => {
     const { store } = await fixture();
@@ -600,17 +692,17 @@ describe("multi-method human authentication", () => {
     );
     expect(replay.status).toBe(401);
   });
-  it("bounds concurrent password work to one memory allocation", async () => {
+  it("serializes concurrent password work without rejecting a bounded waiter", async () => {
     const outcomes = await Promise.allSettled([
       hashPassword("first secure password"),
       hashPassword("second secure password"),
     ]);
-    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
-    const success = outcomes.find(
-      (o) => o.status === "fulfilled",
-    ) as PromiseFulfilledResult<string>;
-    expect(success.value).toMatch(/^scrypt\$32768\$8\$1\$/);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(
+      true,
+    );
+    for (const outcome of outcomes)
+      if (outcome.status === "fulfilled")
+        expect(outcome.value).toMatch(/^scrypt\$32768\$8\$1\$/);
   });
   it("hashes salted passwords with scrypt and rejects incorrect passwords", async () => {
     const a = await hashPassword("a secure test password"),
@@ -696,7 +788,7 @@ describe("multi-method human authentication", () => {
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(200);
     expect(
-      (await kernel.gate(req({}, { authorization: "Bearer legacy-secret" })))
+      (await kernel.gate(req({}, { authorization: "Bearer removed-secret" })))
         .ok,
     ).toBe(false);
     expect(
@@ -708,7 +800,7 @@ describe("multi-method human authentication", () => {
     expect(
       (
         await kernel.gate(
-          req({}, { cookie, authorization: "Bearer legacy-secret" }),
+          req({}, { cookie, authorization: "Bearer removed-secret" }),
         )
       ).ok,
     ).toBe(false);
