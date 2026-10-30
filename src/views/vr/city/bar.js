@@ -7,18 +7,20 @@
 // Every avatar cell is a 6.1° × 6.6° target.
 import * as THREE from 'three';
 import {Panel} from './panel.js';
-import {S, get, indicator, unreadTurns, waitingCount, fenceLine, needsAttention} from './state.js';
+import {S, get, indicator, unreadTurns, waitingCount, fenceLine, needsAttention, needsYou} from './state.js';
 import {C, SANS, MONO, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {drawAvatar} from './avatars.js';
 import {wrapWhole} from './city-text.js';
-import {animMs, clamp, DEG} from './core.js';
+import {A, animMs, clamp, DEG} from './core.js';
 
 const QB = new URLSearchParams(location.search);
 // pi-web (usability round 1): 8 avatars plus Home and More (61°, was 74°: its ends sit within ±30°); every avatar is
 // named (titles 0.95°); it follows your head only past 48° (more than its half width plus 10°), never while you point
 // at it; drawn at 1400 px per metre (about 23 px per degree, above the headset's ~15), a third of the upload.
-export const BAR = {D: 0.95, READ_SCALE: 1.85, CELL: 6.1, ROW: 6.6, COLS: 10, ROWS: 1, VIS: 8, ELEV: -26.5, FOLLOW: 48, PPM: 1400, TITLE_DEG: 0.95, STATUS_DEG: 0.9,
-  BELOW: +(QB.get('barbelow') || 24), CITY_GAZE: +(QB.get('barcity') || 26), PITCH_FOLLOW: 12, ELEV_MIN: -50, ELEV_MAX: -16};
+// pi-web (usability round 2): 7 avatars, then Needs you, Home and More (the same 61°): "what needs me" is a button
+// within reach (it replaces the hand-tracking double pinch on empty space, which a re-pinch after a miss set off).
+export const BAR = {D: 0.95, READ_SCALE: 1.85, CELL: 6.1, ROW: 6.6, COLS: 10, ROWS: 1, VIS: 7, ELEV: -26.5, FOLLOW: 48, PPM: 1400, TITLE_DEG: 0.95, STATUS_DEG: 0.9,
+  BELOW: +(QB.get('barbelow') || 24), CITY_GAZE: +(QB.get('barcity') || 26), PITCH_FOLLOW: 12, ELEV_MIN: -50, ELEV_MAX: -16, READ_MIN: -28};
 const M_PER_DEG = BAR.D * DEG;
 const CELL_M = BAR.CELL * M_PER_DEG, ROW_M = BAR.ROW * M_PER_DEG, PAD_M = 0.004;
 export const PAGE = BAR.VIS; // avatars visible at once (the row scrolls past them)
@@ -74,17 +76,18 @@ function drawBar(ctx, p) {
     if (bar.dragUp?.id === id && bar.dragUp.up >= 5) { fillRR(ctx, x + 10, y + 8, cw - 20, px(1.3), px(0.65), C.accent); text(ctx, 'Beside', cx, y + 8 + px(0.65), {size: px(BAR.STATUS_DEG), weight: 800, color: '#111', align: 'center'}); }
     p.region(`avatar:${id}`, x, y, cw, rh, {session: id, click: () => UIB.choose(id), drag: {
       move: (pt, pr) => { const up = (Math.asin(clamp(pt.ray.direction.y, -1, 1)) - Math.asin(clamp(pr.dir0.y, -1, 1))) / DEG; const was = bar.dragUp?.up >= 5; bar.dragUp = {id, up}; if (was !== up >= 5) bar.invalidate(); },
-      end: (pt, pr, tapped) => { const up = bar.dragUp?.up || 0; bar.dragUp = null; bar.invalidate(); if (!tapped && up >= 5) UIB.beside?.(id); },
+      end: (pt, pr, tapped) => { const up = bar.dragUp?.up || 0; bar.dragUp = null; bar.invalidate(); if (!tapped && up >= 5) { if (A.pops) A.pops.suppress = id; UIB.beside?.(id); } },
     }});
   });
   // The chips at the end of the row: Home, and More (what is off the row, settings, back to chat, scrolling).
-  const off = offRow(start), chips = [
+  const off = offRow(start), nNeed = needsYou().length, chips = [
+    {id: 'bar:needs', icon: 'bell', label: nNeed ? 'Needs you' : 'Nobody', sub: nNeed ? `${nNeed} waiting` : 'needs you', click: () => UIB.needsYou?.(), need: nNeed, accent: nNeed > 0},
     {id: 'bar:home', icon: 'house', label: 'Home', sub: 'H · Y', click: () => UIB.home()},
     {id: 'bar:more', icon: 'layers', label: 'More', sub: off.n ? `+${off.n} more${off.need ? ` · ${off.need} need you` : ''}` : 'settings', click: () => UIB.toggleMore(), need: off.need},
   ];
   chips.forEach((c, j) => {
     const x = pad + (PAGE + j) * cw, y = pad, hov = p.isHover(c.id) || (c.id === 'bar:more' && bar.moreOpen);
-    fillRR(ctx, x + 8, y + 8, cw - 16, rh - 16, 22, hov ? '#202020' : '#141414', hov ? 'rgba(226,177,95,0.6)' : '#2c2c2c', 2);
+    fillRR(ctx, x + 8, y + 8, cw - 16, rh - 16, 22, hov ? '#202020' : '#141414', hov || c.accent ? 'rgba(226,177,95,0.6)' : '#2c2c2c', 2);
     icon(ctx, c.icon, x + cw / 2, y + px(1.9), px(1.9), C.accent, 3);
     text(ctx, c.label, x + cw / 2, y + px(4.3), {size: px(BAR.TITLE_DEG), weight: 700, align: 'center'});
     ctx.font = font(px(BAR.STATUS_DEG), 600, SANS);
@@ -185,7 +188,8 @@ export class Bar {
       const pl = this.panelCap == null ? 1e9 : this.panelCap;
       // pi-web (usability round 1): while panels are open the bar sits just under them (it no longer follows your gaze
       // down to −70°, where pointing at it meant a steep, resting-like ray); in the city it stays above −50°.
-      const want = this.panelCap != null ? clamp(pl, BAR.ELEV_MIN, BAR.ELEV_MAX) : clamp(Math.min(gaze - BAR.BELOW, low == null ? 1e9 : low - top), BAR.ELEV_MIN, BAR.ELEV_MAX);
+      // pi-web (usability round 2): while reading never below READ_MIN (−28°): the cockpit is placed so it clears it.
+      const want = this.panelCap != null ? clamp(pl, BAR.READ_MIN, BAR.ELEV_MAX) : clamp(Math.min(gaze - BAR.BELOW, low == null ? 1e9 : low - top), BAR.ELEV_MIN, BAR.ELEV_MAX);
 
       const covering = (low != null && this.elevTarget + top > low + 1 || this.panelCap != null && this.elevTarget > this.panelCap + 0.3) && want < this.elevTarget - 1;
       // Your gaze has to rest (0.5 s within 4°) somewhere new, and not on or just above the bar (looking at the bar
@@ -219,7 +223,7 @@ export class Bar {
       this.g.updateMatrix();
       S.pinned.slice(this.start, this.start + PAGE).forEach((id, i) => { const d = this.cellLocal(i, 0).p.clone().applyMatrix4(this.g.matrix).sub(this.pos).normalize(); if (d.angleTo(fwd) < BAR.CELL / 2 * DEG) this.gaze = id; });
     }
-    const sig = S.pinned.slice(this.start, this.start + PAGE).map((id) => { const s = get(id); return `${id}:${indicator(s)}:${unreadTurns(s)}:${waitingCount(s)}:${indicator(s) === 'running' ? currentToolName(s) : ''}`; }).join('|') + `|${S.currentId}|${this.start}|${this.gaze}|${this.flashId}|${performance.now() < (this.flashUntil || 0)}|${this.moreOpen}|${offRow(this.start).need}|${S.pinned.length}`;
+    const sig = S.pinned.slice(this.start, this.start + PAGE).map((id) => { const s = get(id); return `${id}:${indicator(s)}:${unreadTurns(s)}:${waitingCount(s)}:${indicator(s) === 'running' ? currentToolName(s) : ''}`; }).join('|') + `|${S.currentId}|${this.start}|${this.gaze}|${this.flashId}|${performance.now() < (this.flashUntil || 0)}|${this.moreOpen}|${offRow(this.start).need}|${S.pinned.length}|${needsYou().length}`;
     if (sig !== this.sig) { this.sig = sig; this.invalidate(); }
     this.panel.update();
     // Rings: one per visible avatar.

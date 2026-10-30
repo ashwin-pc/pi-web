@@ -55,8 +55,31 @@ function setRayFromPose(p, pose) {
   p.ray.origin.copy(p4); p.ray.direction.set(0, 0, -1).applyQuaternion(q4); p.valid = true;
 }
 function poseNow(e, p) { try { setRayFromPose(p, e.frame.getPose(e.inputSource.targetRaySpace, renderer.xr.getReferenceSpace())); } catch { /* last pose */ } }
-function onSelectStart(e) { const p = pointerFor(e.inputSource); poseNow(e, p); pressStart(p); }
-function onSelectEnd(e) { const p = pointerFor(e.inputSource); poseNow(e, p); pressEnd(p); }
+// pi-web (usability round 2): the Quest Browser may raise its system keyboard only for a focus() made under user
+// activation, which WebXR grants in the 'select' event (selectend may be too late). So a select whose press started on
+// the composer's box focuses the text field right there; selectend still runs the click (focusComposer is idempotent).
+export const activationLog = [];
+const activation = () => (navigator.userActivation ? navigator.userActivation.isActive : null);
+// The spec sends select between selectstart and selectend; IWER (the emulator) sends it just before selectstart, so a
+// select that arrives with no press marks the next selectstart (the same task) as the activated one.
+function onSelectStart(e) {
+  const p = pointerFor(e.inputSource); poseNow(e, p); pressStart(p);
+  const id = p.press?.reg?.id || null;
+  activationLog.push({event: 'selectstart', active: activation(), region: id}); if (activationLog.length > 50) activationLog.shift();
+  if (p.orphanSelect && id === 'composer:input') UI.focusComposer?.('select');
+  p.orphanSelect = false;
+}
+function onSelect(e) {
+  const p = pointerFor(e.inputSource), id = p.press?.reg?.id || null;
+  activationLog.push({event: 'select', active: activation(), region: id}); if (activationLog.length > 50) activationLog.shift();
+  if (!p.press) { p.orphanSelect = true; return; }
+  if (id === 'composer:input') UI.focusComposer?.('select');
+}
+function onSelectEnd(e) {
+  const p = pointerFor(e.inputSource); poseNow(e, p);
+  activationLog.push({event: 'selectend', active: activation(), region: p.press?.reg?.id || null}); if (activationLog.length > 50) activationLog.shift();
+  pressEnd(p);
+}
 function onSourcesChange(e) { for (const src of e.removed || []) { const p = xrPointers.get(src); if (p) { if (p.vis) for (const o of Object.values(p.vis)) xrVisuals.remove(o); pointers.delete(p); xrPointers.delete(src); } } }
 const QX = new URLSearchParams(location.search);
 // Render scale 0.8 by default (measured: the biggest single gain after the far level of detail); MSAA stays on.
@@ -72,6 +95,8 @@ export async function enterVR() {
     // leaves an immersive session running with no frames (a black view you cannot leave).
     session.addEventListener('end', () => {
       xrSession = null;
+      // pi-web (usability round 2): a 'local' fallback is for that session only; the next one asks for the floor again.
+      if (xrStatus.space === 'local') { renderer.xr.setReferenceSpaceType('local-floor'); xrStatus.space = null; xrStatus.spaceRestored = true; }
       for (const p of [...xrPointers.values()]) { if (p.vis) for (const o of Object.values(p.vis)) xrVisuals.remove(o); pointers.delete(p); }
       xrPointers.clear();
       uiRoot.position.set(0, 0, 0); uiRoot.rotation.set(0, 0, 0);
@@ -92,6 +117,7 @@ export async function enterVR() {
       xrStatus.space = 'local';
     }
     session.addEventListener('selectstart', onSelectStart);
+    session.addEventListener('select', onSelect);
     session.addEventListener('selectend', onSelectEnd);
     session.addEventListener('inputsourceschange', onSourcesChange);
     // Holding the Meta button recentres the headset: the reference space fires 'reset'; follow it like a new start.
@@ -169,6 +195,7 @@ function stick(p, gp, dt) {
         else A.active.drag = false; // inertia carries on
       } else if (S.reading && !(st.yPeak > 0.7 && t - st.y0 < 200)) {
         const r = A.active;
+        if (r.noteStickScroll?.(t - st.y0)) logInput('tip:jump');
         r.anim = null; r.drag = false;
         r.vel = Math.sign(ay) * Math.pow(clamp((a - 0.15) / 0.85, 0, 1), 1.6) * 2600;
       }
@@ -183,7 +210,7 @@ export function xrFrame(frame, dt) {
   const vpose = frame.getViewerPose(ref);
   if (vpose) { m4.fromArray(vpose.transform.matrix); m4.decompose(p4, q4, s4); (A.viewer ||= {pos: new THREE.Vector3(), quat: new THREE.Quaternion()}).pos.copy(p4); A.viewer.quat.copy(q4); }
   if (needRecenter) { const vp = frame.getViewerPose(ref); if (vp) { recenterTo(vp); needRecenter = false; } }
-  if (openOnEnter && !needRecenter && A.frames >= openOnEnter) { openOnEnter = 0; if (!S.reading) openReader(nextNeedingYou()?.id || S.currentId); }
+  if (openOnEnter && !needRecenter && A.frames >= openOnEnter) { openOnEnter = 0; if (!S.reading) { S.dwellHold = true; openReader(nextNeedingYou()?.id || S.currentId); } }
   for (const src of frame.session.inputSources) {
     const p = pointerFor(src);
     const v = visualsFor(p);
@@ -262,33 +289,42 @@ function showMsg(html, autoHideMs = 0) {
   msgEl.querySelector('.close')?.addEventListener('click', () => { msgEl.hidden = true; });
   if (html && autoHideMs) msgTimer = setTimeout(() => { msgEl.hidden = true; }, autoHideMs);
 }
-function setStatus() { btn.textContent = xrSession ? 'Exit VR' : 'Enter VR'; btn.disabled = !xrStatus.supported && !xrSession; btn.title = xrStatus.supported || xrSession ? '' : xrStatus.summary; }
+// pi-web (usability round 2): why Enter VR is unavailable is visible text on the button (a tooltip never shows on a
+// touch screen), in a few words; the message below it has the details.
+const WHY = {iframe: 'blocked in a frame', https: 'needs HTTPS', nowebxr: 'no WebXR here', nodevice: 'no headset found'};
+function setStatus() {
+  const off = !xrStatus.supported && !xrSession, why = off ? WHY[xrStatus.why] || '' : '';
+  btn.innerHTML = `<span>${xrSession ? 'Exit VR' : 'Enter VR'}</span>${why ? `<small class="why">${why}</small>` : ''}`;
+  btn.disabled = off; btn.title = xrStatus.supported || xrSession ? '' : xrStatus.summary;
+  btn.setAttribute('aria-label', why ? `Enter VR: unavailable, ${why}` : btn.textContent);
+}
+const coarseNoHeadset = () => window.matchMedia('(pointer: coarse)').matches;
 /** Why Enter VR is unavailable, and the desktop preview message. WebXR needs a secure context (HTTPS or localhost) and
  * a top-level page; the desktop preview (mouse and keyboard) works everywhere. */
 async function detectXR() {
-  statusEl.textContent = 'Desktop preview';
+  statusEl.textContent = coarseNoHeadset() ? 'Touch preview' : 'Desktop preview';
   if (inIframe) {
-    xrStatus.summary = 'inside an iframe: immersive sessions are blocked here';
+    xrStatus.summary = 'inside an iframe: immersive sessions are blocked here'; xrStatus.why = 'iframe';
     showMsg(`<b>VR can't start inside a frame.</b> The desktop preview runs instead. <a id="openFull" href="${fullPageUrl()}" target="_blank" rel="noopener">Open the full page to enter VR ↗</a>`);
     setStatus();
     return;
   }
   if (!window.isSecureContext) {
-    xrStatus.summary = 'WebXR needs a secure context (HTTPS or localhost)';
+    xrStatus.summary = 'WebXR needs a secure context (HTTPS or localhost)'; xrStatus.why = 'https';
     showMsg('<b>Enter VR needs HTTPS or localhost.</b> This page was opened over plain HTTP, so the browser hides WebXR. The desktop preview works with the keyboard and mouse. Open pi-web over HTTPS (for example through your tunnel) on the headset.');
     setStatus();
     return;
   }
   if (!('xr' in navigator) || !navigator.xr) {
-    xrStatus.summary = 'WebXR is not available in this browser';
-    showMsg('<b>WebXR isn\'t available in this browser.</b> The desktop preview works with the keyboard and mouse. Open this page in Meta Quest Browser or Safari on Apple Vision Pro to enter VR.');
+    xrStatus.summary = 'WebXR is not available in this browser'; xrStatus.why = 'nowebxr';
+    if (!coarseNoHeadset()) showMsg('<b>WebXR isn\'t available in this browser.</b> The desktop preview works with the keyboard and mouse. Open this page in Meta Quest Browser or Safari on Apple Vision Pro to enter VR.');
     setStatus();
     return;
   }
   try { xrStatus.supported = await navigator.xr.isSessionSupported('immersive-vr'); } catch (err) { xrStatus.supported = false; xrStatus.error = String(err?.message || err); }
-  xrStatus.summary = xrStatus.supported ? 'immersive-vr supported' : 'no immersive-vr device';
+  xrStatus.summary = xrStatus.supported ? 'immersive-vr supported' : 'no immersive-vr device'; xrStatus.why = xrStatus.supported ? null : 'nodevice';
   if (xrStatus.supported) { showMsg(''); statusEl.textContent = 'Headset ready'; }
-  else showMsg('<b>No VR headset detected.</b> This is the desktop preview. On Quest or Vision Pro, open this page and select Enter VR.', 8000);
+  else if (!coarseNoHeadset()) showMsg('<b>No VR headset detected.</b> This is the desktop preview. On Quest or Vision Pro, open this page and select Enter VR.', 8000);
   setStatus();
 }
 btn.addEventListener('click', () => { if (xrStatus.supported || xrSession) enterVR(); });

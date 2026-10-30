@@ -66,6 +66,7 @@ function markdown(c, a, W, H, e) {
   const k = W / 1000, lines = mdLines(e.content.text);
   let y = 70 * k;
   for (const ln of lines) {
+    if (y > H + 60 * k) break; // pi-web (usability round 2): stop below the bottom (a long report cost a 16 ms frame)
     const h1 = ln.startsWith('# '), h2 = ln.startsWith('## '), li = ln.startsWith('- ');
     const size = (h1 ? 46 : h2 ? 34 : 28) * k, t = ln.replace(/^#+ |^- /, '');
     c.font = font(size, h1 || h2 ? 700 : 400);
@@ -188,10 +189,17 @@ export const aspectOf = (a) => {
 };
 /** A thumbnail with the kind's frame (cached per artifact, size and content version). */
 const thumbs = new Map();
+// pi-web (usability round 2): a new thumbnail is drawn at 1.5× (was 3×: a rail of four cost an 18 ms frame), and at
+// most one a frame (THUMB_GAP_MS apart); the others show an empty frame and `thumbPending` asks for a redraw. Its
+// canvas stays in memory (willReadFrequently): copying a GPU-backed thumbnail into the rail cost 14 ms every redraw.
+const THUMB_GAP_MS = 12;
+let lastThumbAt = -1e9;
+export const thumbState = {pending: false};
 export function drawThumb(c, a, x, y, w, h) {
   const e = cache.get(a.id), key = `${a.id}|${w}|${h}|${e?.state || 'none'}`;
   let cv = thumbs.get(key);
-  if (!cv) { cv = document.createElement('canvas'); const s = 3; const ar = aspectOf(a); cv.width = Math.round(Math.max(w, h * ar) * s); cv.height = Math.round(cv.width / ar); drawArtifact(cv.getContext('2d'), a, cv.width, cv.height, 0, {thumb: true}); if (cache.get(a.id)?.state === 'ready' || !THUMB_LOADS.has(a.kind)) thumbs.set(key, cv); }
+  if (!cv && performance.now() - lastThumbAt < THUMB_GAP_MS) { thumbState.pending = true; fillRR(c, x, y, w, h, 10, '#0b0b0b', '#2c2c2c', 2); return; }
+  if (!cv) { lastThumbAt = performance.now(); cv = document.createElement('canvas'); const s = 1.5; const ar = aspectOf(a); cv.width = Math.round(Math.max(w, h * ar) * s); cv.height = Math.round(cv.width / ar); drawArtifact(cv.getContext('2d', {willReadFrequently: true}), a, cv.width, cv.height, 0, {thumb: true}); thumbs.set(key, cv); } // keyed by its content state: a loaded one draws anew
   c.save(); fillRR(c, x, y, w, h, 10, '#0b0b0b', '#2c2c2c', 2); c.beginPath(); c.rect(x + 2, y + 2, w - 4, h - 4); c.clip();
   const sc = Math.max(w / cv.width, h / cv.height); c.drawImage(cv, x + (w - cv.width * sc) / 2, y + (h - cv.height * sc) / 2, cv.width * sc, cv.height * sc); c.restore();
 }

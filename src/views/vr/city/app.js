@@ -11,7 +11,7 @@ import * as N from './city-nav.js';
 import {Bar, UIB, PAGE, pages} from './bar.js';
 import {BarPops} from './bar-pops.js';
 import {PanelBatch} from './panel-batch.js';
-import {readers, sets, setFor, VIEW_PX, prefetch} from './reader.js';
+import {readers, sets, setFor, VIEW_PX, prefetch, HOLD, frameCount} from './reader.js';
 import {A, world, uiRoot, renderer, scene, camera, nowMs, animMs, clamp, easeOut, applyStatus, READER_POS, RH, DEG, FOCUS} from './core.js';
 import {restPos, setAnchor, faceRoom, context} from './focus.js';
 import {rail} from './artifacts.js';
@@ -53,6 +53,13 @@ export const panelLog = [];
 export function tickReaders() {
   for (const r of readers) {
     if (!r.pose) { r.setAlpha(0); continue; }
+    // pi-web (usability round 2): a panel that appears waits (invisible, at its starting place) until the text it
+    // will show is drawn, at most HOLD.ms (and HOLD.frames frames); then it opens as before. No blank-then-text pop-in.
+    if (r.held()) {
+      const P = r.pose; P.h0 ??= animMs(); P.hf ??= frameCount();
+      if (r.viewReady() || (animMs() - P.h0 >= HOLD.ms && frameCount() - P.hf >= HOLD.frames)) { P.go = true; P.t0 = animMs(); P.heldMs = Math.round(animMs() - P.h0); }
+      else { r.g.position.copy(P.from.pos); r.g.scale.setScalar(P.from.scale); faceRoom(r.g); r.setAlpha(0); r.syncFrameGeo(); continue; }
+    }
     const {from, to, t0, dur} = r.pose;
     const u = clamp((animMs() - t0) / dur, 0, 1), e = easeOut(u);
     r.g.position.lerpVectors(from.pos, to.pos, e);
@@ -188,7 +195,7 @@ export function setTable(onT) {
 export const isTable = () => table && N.nav.scale > 5;
 Object.assign(UIB, {choose, home: goHome, flyToSession, toggleMore: () => { bar.moreOpen = !bar.moreOpen; bar.invalidate(); }, setReduceMotion: (v) => UI.setReduceMotion(v),
   setVignette: (v) => { S.vignette = v; }, toggleTable: () => setTable(!isTable()), isTable, exit: () => host.exit(), page: () => bar.page,
-  start: () => bar.start, turnPage: (d) => bar.scroll(d * PAGE), beside: (id) => A.r3?.openBeside(id)});
+  start: () => bar.start, turnPage: (d) => bar.scroll(d * PAGE), beside: (id) => A.r3?.openBeside(id), needsYou: () => UI.needsYou()});
 Object.assign(A, {flyToSession, flyToPath, goHome, setTable});
 UI.goHome = goHome; UI.flyCurrent = () => flyToSession(S.currentId);
 
@@ -210,20 +217,23 @@ Object.assign(input.style, {position: 'fixed', left: '0', bottom: '0', width: '2
 UI.composerInput = input;
 input.addEventListener('input', () => { S.composer.text = input.value; S.composer.note = ''; composer.invalidate(); });
 input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); UI.send(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !S.composer.newline) { e.preventDefault(); UI.send(); }
   else if (e.key === 'Escape') { e.preventDefault(); UI.blurComposer(); }
   e.stopPropagation(); // the City's own keys (WASD, arrows) stay out of your reply
 });
 input.addEventListener('blur', () => { if (S.composer.focused && !S.composer.dictating) { S.composer.focused = false; composer.invalidate(); } });
-UI.focusComposer = () => {
+UI.focusComposer = (from = 'click') => {
   const c = S.composer;
+  const again = c.focused && document.activeElement === input;
   c.focused = true; c.note = '';
-  input.value = c.text;
-  try { input.focus({preventScroll: true}); } catch { input.focus(); }
+  if (!again) input.value = c.text;
+  if (!again) { try { input.focus({preventScroll: true}); } catch { input.focus(); } }
+  UI.focusLog = [...(UI.focusLog || []).slice(-20), {from, active: navigator.userActivation ? navigator.userActivation.isActive : null, focused: document.activeElement === input}];
   const xs = renderer.xr.getSession?.();
   UI.keyboardHint = xs && xs.isSystemKeyboardSupported === false ? 'Type on a connected keyboard, or use the mic' : 'Type your reply…';
   composer.invalidate();
 };
+UI.toggleNewline = () => { const c = S.composer; c.newline = !c.newline; input.enterKeyHint = c.newline ? 'enter' : 'send'; if (c.focused) { try { input.focus({preventScroll: true}); } catch { /* optional */ } } composer.invalidate(); };
 UI.blurComposer = () => { S.composer.focused = false; input.blur(); composer.invalidate(); };
 let recognition = null;
 UI.toggleDictation = () => {

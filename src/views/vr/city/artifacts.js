@@ -8,7 +8,7 @@ import {Panel} from './panel.js';
 import {S, get, on} from './state.js';
 import {C, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {client} from './client.js';
-import {drawArtifact, drawThumb, KIND, aspectOf, onArtifactContent} from './artifact-draw.js';
+import {drawArtifact, drawThumb, KIND, aspectOf, onArtifactContent, thumbState} from './artifact-draw.js';
 import {host} from './host.js';
 import {COL, ANG, room, placeRel} from './focus.js';
 import {wrapWhole} from './city-text.js';
@@ -35,6 +35,8 @@ function drawRail(ctx, p) {
     p.region(id, x - 4, 6, B + 8, B + 8, {click: () => { railState.page = (railState.page + d + pages) % pages; p.invalidate(); }});
   }
   const ch = (H - top - 8) / RAIL.perPage;
+  thumbState.pending = false;
+  queueMicrotask(() => { if (thumbState.pending) p.invalidate(); }); // a thumbnail still to draw: next frame
   arts.slice(railState.page * RAIL.perPage, railState.page * RAIL.perPage + RAIL.perPage).forEach((a, i) => {
     const y = top + i * ch, id = `rail:art:${a.id}`, on = artState.art?.id === a.id || A.pedestal?.art?.id === a.id, hov = p.isHover(id), K = KIND[a.kind] || KIND.other;
     fillRR(ctx, 10, y + 4, W - 20, ch - 8, 16, on ? '#1f1a10' : hov ? '#1a1a1a' : '#121212', on ? C.accent : '#2a2a2a', on ? 3 : 2);
@@ -120,6 +122,8 @@ onArtifactContent((a) => {
   if (artState.art?.id === a.id) pullOut(artState.art);
 });
 // pi-web: a session's artifacts arrive with its transcript (loaded lazily): redraw the rail when the current one's do.
-on((topic, sid) => { if (topic === 'transcript' && sid === S.currentId) rail.invalidate(); });
+// Only when the list changed (a streaming reply sends many transcript updates).
+let railSig = '';
+on((topic, sid) => { if (topic === 'transcript' && sid === S.currentId) { const sig = `${sid}|${client.artifacts(sid).map((a) => a.id).join()}`; if (sig !== railSig) { railSig = sig; rail.invalidate(); } } });
 export function syncRail() { const s = S.currentId; if (railState.sid !== s) { railState.sid = s; railState.page = 0; rail.invalidate(); } }
 export {THREE};

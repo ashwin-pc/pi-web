@@ -19,11 +19,19 @@ export const TURN_X = -RW / 2 + 0.006;
 // budgeted per frame (TILE.budget bytes, at least one tile, leaving room for the other panels' uploads), and the resident tile textures are capped (TILE.cap),
 // least recently seen first. Tiles raster at TILE.raster texels per layout px: the text stays well above the
 // headset's rendered pixel density (see the PR's legibility note).
-export const TILE = {h: 1024, raster: 0.72, budget: 2.5e6, cap: 120e6, margin: 1, layMs: 5};
+export const TILE = {h: 1024, raster: 0.72, budget: 2.5e6, cap: 120e6, margin: 1, layMs: 3, urgentLayMs: 4, urgentMs: 3, frameMs: 6};
+// pi-web (usability round 2): a panel that appears (a cold open) stays invisible until the text in view is drawn, and a
+// far jump (the strip, the outline, a turn flick) waits at the old place until the new one is drawn, then cuts: for
+// at most HOLD.ms, and at least HOLD.frames frames (which only matters where frames are slow, as in an emulator). The
+// text in view of a held panel or jump is "urgent": it may use up to TILE.urgentMs of raster time in a frame, beyond the
+// byte budget. Anything still undrawn after the hold shows grey placeholder lines, never an empty panel.
+export const HOLD = {ms: 150, frames: 4};
+let frameNo = 0;
+export const frameCount = () => frameNo;
 const scratch = document.createElement('canvas').getContext('2d');
 export const sets = new Map(); // sid -> TurnSet
 export const expandedBySid = new Map();
-export const tileStats = {rasters: 0, bytes: 0, resident: 0, dropped: 0, frameBytes: 0};
+export const tileStats = {rasters: 0, bytes: 0, resident: 0, dropped: 0, frameBytes: 0, maxStep: 0, maxStepAt: null};
 function turnKey(s, t, i, exp, mark) {
   const parts = [i, t.start, t.end, mark != null && mark >= t.start && mark < t.end ? mark : -1];
   for (let j = t.start; j < t.end; j++) { const m = s.messages[j]; parts.push(m.type[0] + (m.status || '') + (m.sum || '') + (m.src != null ? m.src.length : m.html?.length || m.text?.length || 0) + (m.streaming ? 's' : '') + (exp.has(j) ? 'x' : '')); }
@@ -136,9 +144,11 @@ export class TurnSet {
     for (const tt of todo) {
       // A turn's layout runs as a generator, message by message, and resumes next frame when the budget is spent.
       const w = tt.want;
-      if (!tt.gen || tt.genKey !== w.key) { tt.gen = layoutTurnSteps(scratch, s, w.t, {index: tt.i, expanded: this.expanded, newMark: w.mark, width: TURN_W}); tt.genKey = w.key; }
-      let r = tt.gen.next();
-      while (!r.done && performance.now() - t0 < ms) r = tt.gen.next();
+      if (!tt.gen || tt.genKey !== w.key) { tt.genOpts = {index: tt.i, expanded: this.expanded, newMark: w.mark, width: TURN_W}; tt.gen = layoutTurnSteps(scratch, s, w.t, tt.genOpts); tt.genKey = w.key; }
+      let ts = performance.now(), r = tt.gen.next();
+      const step = () => { const d = performance.now() - ts; if (d > tileStats.maxStep) { tileStats.maxStep = d; tileStats.maxStepAt = `${this.sid.slice(0, 8)}:${tt.i}`; } ts = performance.now(); };
+      step();
+      while (!r.done && performance.now() - t0 < ms) { r = tt.gen.next(); step(); }
       if (!r.done) break;
       tt.want = null; tt.gen = null;
       Object.assign(tt, this.relayTurn(s, w.t, tt.i, w.mark, w.key, tt, r.value));
@@ -243,6 +253,7 @@ export const prefetch = {sids: []};
  * prefetched neighbours' landing screens), raster the most important within the per-frame budget, and release the rest.
  */
 export function tileStep() {
+  frameNo++;
   const t = nowMs(), wanted = [], keep = new Set();
   const want = (set, y0, y1, v0, v1, prio) => {
     for (const [tt, tl, a, b] of set.tilesIn(y0, y1)) {
@@ -252,29 +263,38 @@ export function tileStep() {
     }
   };
   // Layout first, time-sliced: the readers' sets around what they show, then the prefetched ones.
-  let layMs = TILE.layMs;
+  let layMs = TILE.layMs; const tl0 = performance.now();
   for (const r of readers) {
     if (!r.set || r.set.reader !== r || !r.set.pending().length) continue;
-    const t1 = performance.now(); r.layout(layMs); layMs -= performance.now() - t1;
+    const urgent = r.held() || !!r.jump;
+    const t1 = performance.now(); r.layout(urgent ? Math.max(layMs, TILE.urgentLayMs) : layMs); layMs -= performance.now() - t1;
   }
   for (const sid of prefetch.sids) { const set = sets.get(sid); if (!set || set.reader || layMs <= 0) continue; const t1 = performance.now(); set.layStep(layMs, landingOf(set)); layMs -= performance.now() - t1; }
   for (const r of readers) {
-    if (!r.set || r.set.reader !== r || r.alpha < 0.01) continue;
+    if (!r.set || r.set.reader !== r || (r.alpha < 0.01 && !(r.pose && r.pose.to.alpha > 0.5))) continue; // opening: its tiles count
     const v0 = r.scroll, v1 = r.scroll + VIEW_PX, m = VIEW_PX * TILE.margin;
-    want(r.set, v0 - m, v1 + m, v0, v1, 0);
+    if (r.jump) { const j = r.jumpY(); want(r.set, j, j + VIEW_PX, j, j + VIEW_PX, -1); }
+    want(r.set, v0 - m, v1 + m, v0, v1, r.held() ? -1 : 0);
   }
   for (const sid of prefetch.sids) {
     const set = sets.get(sid); if (!set || set.reader) continue;
     const y = landingOf(set);
     want(set, y, y + VIEW_PX, y, y + VIEW_PX, 2);
   }
+  tileStats.layMs = +(performance.now() - tl0).toFixed(1);
   wanted.sort((a, b) => a.pr - b.pr || a.d - b.d);
-  let used = 0;
+  let used = 0, nr = 0;
+  const tr0 = performance.now();
   for (const w of wanted) {
-    if (used > 0 && used + w.tl.ch * TURN_W * TILE.raster * TILE.raster * 4 * 1.34 > TILE.budget) break;
-    used += w.set.rasterTile(w.tt, w.tl);
+    // Within the byte budget and (pi-web, round 2) the frame's tile time (TILE.frameMs, layout included); the text in
+    // view always gets at least one tile, and urgent text up to TILE.urgentMs of rastering.
+    const over = used > 0 && (used + w.tl.ch * TURN_W * TILE.raster * TILE.raster * 4 * 1.34 > TILE.budget || performance.now() - tl0 > TILE.frameMs);
+    if (over && !(w.pr < 0 && performance.now() - tr0 < TILE.urgentMs)) break;
+    if (!used && w.pr > 0 && performance.now() - tl0 > TILE.frameMs) break; // nothing in view is missing: wait
+    used += w.set.rasterTile(w.tt, w.tl); nr++;
   }
-  tileStats.frameBytes = used;
+  tileStats.frameBytes = used; tileStats.rasterMs = +(performance.now() - tr0).toFixed(1); tileStats.frameRasters = nr;
+  for (const r of readers) if (r.jump) r.commitJump();
   // Release: every tile outside its set's window, then (if still over the cap) the least recently seen.
   const all = [];
   for (const set of sets.values()) for (const tt of set.turns) for (const tl of tt.tiles) if (tl.panel) { if (!keep.has(tl)) set.releaseTile(tl); else all.push([set, tl]); }
@@ -282,13 +302,38 @@ export function tileStep() {
     all.sort((a, b) => a[1].seen - b[1].seen);
     for (const [set, tl] of all) { if (tileStats.resident <= TILE.cap) break; if (tl.seen === t && set.reader) continue; set.releaseTile(tl); }
   }
-  // Show only the drawn tiles that intersect each reader's viewport.
+  // Show only the drawn tiles that intersect each reader's viewport; grey lines where nothing is drawn yet.
   for (const r of readers) {
-    if (!r.set || r.set.reader !== r) continue;
+    if (!r.set || r.set.reader !== r) { r.holes.count = 0; continue; }
     const v0 = r.scroll - 40, v1 = r.scroll + VIEW_PX + 40;
-    for (const tt of r.set.turns) for (const tl of tt.tiles) if (tl.panel) { const a = tt.top + tl.y0; tl.panel.mesh.visible = a + tl.ch > v0 && a < v1; }
+    let n = 0;
+    for (const tt of r.set.turns) {
+      if (tt.top > v1 || tt.top + tt.h < v0) { for (const tl of tt.tiles) if (tl.panel) tl.panel.mesh.visible = false; continue; }
+      if (!tt.lay) { n = r.hole(n, tt.top, tt.h); continue; }
+      for (const tl of tt.tiles) { const a = tt.top + tl.y0, vis = a + tl.ch > v0 && a < v1; if (tl.panel) tl.panel.mesh.visible = vis; else if (vis) n = r.hole(n, a, Math.min(tl.ch, tt.h - tl.y0)); }
+    }
+    r.holes.count = n; r.holes.instanceMatrix.needsUpdate = n > 0; r.holes.visible = n > 0;
   }
 }
+/** Grey placeholder lines (a procedural shader, so no texture to raster): one instance per undrawn piece of the stream. */
+const holeMat = (clip) => new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, toneMapped: false, clipping: true, clippingPlanes: clip,
+  uniforms: {uOpacity: {value: 1}, uPPM: {value: PPM}, uW: {value: TURN_W}},
+  vertexShader: `#include <clipping_planes_pars_vertex>
+    varying vec2 vP; uniform float uPPM;
+    void main() { vec4 lp = instanceMatrix * vec4(position, 1.0); vP = vec2(lp.x, -lp.y) * uPPM; vec4 mvPosition = modelViewMatrix * lp; gl_Position = projectionMatrix * mvPosition;
+      #include <clipping_planes_vertex>
+    }`,
+  fragmentShader: `#include <clipping_planes_pars_fragment>
+    varying vec2 vP; uniform float uOpacity, uW;
+    float h(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+    void main() {
+      #include <clipping_planes_fragment>
+      float line = floor(vP.y / 52.0), f = fract(vP.y / 52.0), len = 0.45 + 0.5 * h(line);
+      float on = step(0.32, f) * step(f, 0.68) * step(48.0, vP.x) * step(vP.x, 48.0 + len * (uW - 96.0));
+      gl_FragColor = vec4(vec3(0.16), 0.9 * on * uOpacity);
+    }`,
+});
 /** Where a reader would land in a set (the same rule as Reader.landing, without a reader). */
 function landingOf(set) {
   const s = get(set.sid), max = Math.max(0, set.height - VIEW_PX);
@@ -351,12 +396,41 @@ export class Reader {
     this.frame.raycast = (rc, out) => { const g = this.frame.geometry; this.frame.geometry = this.frameGeo.full; THREE.Mesh.prototype.raycast.call(this.frame, rc, out); this.frame.geometry = g; };
     this.g.add(this.occ, this.frame, this.header.mesh, this.view, this.strip.mesh, this.ind, ...this.fades, this.pill.mesh);
     this.clip = [new THREE.Plane(), new THREE.Plane()];
+    this.holes = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).translate(0.5, -0.5, 0), holeMat(this.clip), 24);
+    this.holes.count = 0; this.holes.renderOrder = 2; this.holes.frustumCulled = false; this.holes.name = `${name}:placeholders`; this.holes.visible = false;
+    this.view.add(this.holes);
+    this.jump = null;
     this.sid = null; this.set = null;
     this.scroll = 0; this.vel = 0; this.anim = null; this.drag = false; this.scrubbing = false;
     this.turnIdx = 0; this.newOutput = false; this.alpha = 1;
   }
   get maxScroll() { return Math.max(0, (this.set?.height || 0) - VIEW_PX); }
-  get dest() { return this.anim ? this.anim.to : this.scroll; }
+  get dest() { return this.jump ? this.jumpY() : this.anim ? this.anim.to : this.scroll; }
+  /** Placeholder piece n at stream y..y+h (px); returns the next index. */
+  hole(n, y, h) {
+    if (n >= 24) return n;
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(0, -y / PPM, -0.0005), new THREE.Quaternion(), new THREE.Vector3(TURN_W / PPM, Math.max(1, h) / PPM, 1));
+    this.holes.setMatrixAt(n, m); return n + 1;
+  }
+  /** Is everything in the window at y (default: the view) laid out and drawn? */
+  viewReady(y = this.scroll) {
+    const set = this.set; if (!set) return true;
+    const v1 = y + VIEW_PX;
+    for (const tt of set.turns) {
+      if (tt.top > v1 || tt.top + tt.h < y) continue;
+      if (!tt.lay || tt.want) return false;
+      for (const tl of tt.tiles) { const a = tt.top + tl.y0; if (a + tl.ch >= y && a <= v1 && (!tl.panel || tl.dirty)) return false; }
+    }
+    return true;
+  }
+  /** Appearing (a pose to visible, from invisible) and still held back until its text is drawn. */
+  held() { const P = this.pose; return !!P && P.to.alpha > 0.5 && P.from.alpha < 0.05 && !P.go; }
+  /** The target of a pending far jump, in stream px (a turn and an offset, so it follows re-layouts above it). */
+  jumpY() { const j = this.jump, tt = this.set?.turns[j.turn]; return clamp(tt ? tt.top + j.off : j.y, 0, this.maxScroll); }
+  commitJump() {
+    const j = this.jump; if (!j) return;
+    if (this.viewReady(this.jumpY()) || (animMs() - j.t0 >= HOLD.ms && frameNo - j.f0 >= HOLD.frames)) { this.scroll = this.jumpY(); this.jump = null; this.vel = 0; this.anim = null; }
+  }
   attachClip(set) { for (const t of set.turns) for (const tl of t.tiles) if (tl.panel) tl.panel.mat.clippingPlanes = this.clip; }
   setSession(sid) {
     if (this.set && this.set.reader === this) { this.set.reader = null; this.view.remove(this.set.group); }
@@ -366,7 +440,7 @@ export class Reader {
     this.set.reader = this;
     this.view.add(this.set.group);
     this.attachClip(this.set);
-    this.anim = null; this.vel = 0; this.newOutput = false;
+    this.anim = null; this.vel = 0; this.newOutput = false; this.jump = null;
     // pi-web: lay out the turns you land on first (the "new since you looked" one, else the latest), within the
     // frame budget; the rest follow a few milliseconds a frame, with the view anchored to what you are reading.
     this.scroll = this.landing();
@@ -377,10 +451,12 @@ export class Reader {
   /** Time-sliced layout of the rest of the set, keeping the view (or its scroll target) on the same content. */
   layout(ms) {
     const set = this.set; if (!set) return;
-    const y = this.dest, ai = set.turns.findIndex((tt) => tt.top + tt.h + TURN_GAP > y);
+    // The view (or its scroll target) stays on the same content; a pending jump keeps the current view anchored and
+    // lays out around its destination first.
+    const y = this.jump ? this.scroll : this.dest, ai = set.turns.findIndex((tt) => tt.top + tt.h + TURN_GAP > y);
     const anchor = ai >= 0 ? {i: ai, off: y - set.turns[ai].top} : null;
-    const wasBottom = this.dest >= this.maxScroll - 2 && this.maxScroll > 0;
-    if (!set.layStep(ms, y + VIEW_PX / 2)) return;
+    const wasBottom = !this.jump && this.dest >= this.maxScroll - 2 && this.maxScroll > 0;
+    if (!set.layStep(ms, this.dest + VIEW_PX / 2)) return;
     if (wasBottom && ai === set.turns.length - 1) { const d = this.maxScroll - this.dest; this.scroll += d; if (this.anim) { this.anim.from += d; this.anim.to += d; } }
     else if (anchor) { const d = set.turns[anchor.i].top + anchor.off - y; if (d) { this.scroll += d; if (this.anim) { this.anim.from += d; this.anim.to += d; } } }
     // The strip's ticks follow the real heights: redraw it when the layout is done, or at most every 400 ms meanwhile.
@@ -395,6 +471,14 @@ export class Reader {
   to(y, ms = 260) {
     y = clamp(y, 0, this.maxScroll);
     this.vel = 0;
+    // A far jump (more than a screen and a half) waits for its destination to be drawn, then cuts to it.
+    const set = this.set;
+    if (set && ms > 0 && !S.reduceMotion && Math.abs(y - this.scroll) > VIEW_PX * 1.5 && !this.viewReady(y)) {
+      let i = set.turns.findIndex((tt) => tt.top + tt.h + TURN_GAP > y); if (i < 0) i = set.turns.length - 1;
+      this.anim = null; this.jump = {turn: i, off: y - (set.turns[i]?.top || 0), y, t0: animMs(), f0: frameNo};
+      return;
+    }
+    this.jump = null;
     if (S.reduceMotion || ms === 0) { this.anim = null; this.scroll = y; return; }
     this.anim = {from: this.scroll, to: y, t0: animMs(), dur: ms};
   }
@@ -406,8 +490,11 @@ export class Reader {
       const i = set.turns.findIndex((t, k) => set.snapPos(k) > cur + 4);
       if (i >= 0 && set.snapPos(i) <= this.maxScroll) this.to(set.snapPos(i)); else this.to(this.maxScroll);
     } else {
+      // pi-web (usability round 2): back means the turn before the one you are reading (the header's "Turn n"), so
+      // two flicks are two turns back. It used to stop first at the start of the current turn.
       let i = -1;
       for (let k = set.turns.length - 1; k >= 0; k--) if (set.snapPos(k) < cur - 4) { i = k; break; }
+      if (i >= 0 && i === this.turnIdx && i > 0) i -= 1;
       this.to(i >= 0 ? set.snapPos(i) : 0);
     }
   }
@@ -463,8 +550,18 @@ export class Reader {
     const ya = yOf(f0), yb = yOf(Math.max(f1, f0 + 0.02));
     setFrameSize(this.ind, 0.03, Math.max(0.02, ya - yb));
     this.ind.position.set(RW / 2 - R.gutter + (V.STRIP.ppm * R.gutter / 2 + 18) / V.STRIP.ppm, (ya + yb) / 2, 0.004);
-    this.pill.mesh.visible = this.newOutput && this.alpha > 0.5;
+    const tip = this.tipOn();
+    if (tip !== this.tipWas) { this.tipWas = tip; this.pill.invalidate(); }
+    this.pill.mesh.visible = (this.newOutput || tip) && this.alpha > 0.5;
   }
+  /** pi-web (usability round 2): the "jump faster" tip, once per session per visit, after HOLD_SCROLL_MS of stick scrolling
+   * in a session longer than LONG_VIEWS screens. */
+  noteStickScroll(ms) {
+    if (!this.set || this.set.height < VIEW_PX * 8 || ms < 1200 || tipShown.has(this.sid)) return false;
+    tipShown.add(this.sid); this.tipUntil = animMs() + 6000; return true;
+  }
+  tipOn() { return animMs() < (this.tipUntil || 0); }
+  hideTip() { this.tipUntil = 0; }
   updateClip() {
     this.g.updateMatrixWorld(true);
     this.clip[0].set(new THREE.Vector3(0, -1, 0), STREAM_TOP).applyMatrix4(this.g.matrixWorld);
@@ -484,9 +581,11 @@ export class Reader {
     this.frame.material.uniforms.uOpacity.value = op;
     this.ind.material.uniforms.uOpacity.value = op;
     for (const f of this.fades) f.material.uniforms.uOpacity.value = op;
+    this.holes.material.uniforms.uOpacity.value = op;
     for (const p of [this.header, this.strip, this.pill]) p.mat.opacity = op;
     if (this.set?.reader === this) for (const t of this.set.turns) for (const tl of t.tiles) if (tl.panel) tl.panel.mat.opacity = op;
   }
 }
+const tipShown = new Set();
 export const readers = [new Reader('rA'), new Reader('rB')];
 

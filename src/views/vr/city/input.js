@@ -127,7 +127,7 @@ const GC = {mouse: {flick: 0.1, scroll: 0.012, gain: PPM}, hand: {flick: 0.06, s
 const gcfg = (p) => GC[p.kind] || GC.hand;
 export const FLICK_MS = 450, PAN_START = 0.025; // a pinch that moves sideways fast is a flick; any other drag pans
 export const effortLog = [];
-export function logInput(kind) { effortLog.push({t: Math.round(nowMs()), kind}); if (effortLog.length > 400) effortLog.shift(); }
+export function logInput(kind) { if (S.dwellHold && !kind.startsWith('xr:')) S.dwellHold = false; effortLog.push({t: Math.round(nowMs()), kind}); if (effortLog.length > 400) effortLog.shift(); }
 export function pressStart(p) {
   p.hit = intersect(p);
   if (S.composer.focused && p.hit?.panel !== composer) UI.blurComposer?.();
@@ -211,7 +211,7 @@ export function pressEnd(p) {
   if (pr.mode === 'look-or-tap' && pr.moved) return;
   tap(p, pr.hit);
 }
-let lastEmptyTap = -1e9, pendingOpen = null;
+let pendingOpen = null;
 /** A select (click, trigger, pinch) on whatever was under the pointer at the press. */
 function tap(p, hit) {
   const reg = hit?.region;
@@ -219,14 +219,10 @@ function tap(p, hit) {
   if (hit?.card) { cancelPending(); choose(hit.card); logInput(`${p.kind}:card`); return; }
   if (hit?.label) { cancelPending(); const c = hit.label.click; if (c?.fly) flyToPath(c.fly); logInput(`${p.kind}:sign`); return; }
   if (hit?.reader) return;
-  // pi-web (usability round 1): a tap on nothing does nothing but a short "nothing here" pulse. It used to open the
-  // current session after 330 ms, so a near miss on an avatar opened a different session. For hands only (they have
-  // no buttons), a quick double tap on empty space is still "what needs me".
+  // pi-web (usability rounds 1 and 2): a tap on nothing does nothing but a short "nothing here" pulse. It used to open
+  // the current session, and later (hands only) a double tap on empty space was "what needs me", so re-pinching after
+  // a miss jumped to another session. "Needs you" is a button on the bar instead.
   haptic(p, 0.08, 8);
-  if (p.kind === 'hand' || p.kind === 'transient') {
-    if (nowMs() - lastEmptyTap < 450) { lastEmptyTap = -1e9; UI.needsYou(); logInput(`${p.kind}:double-tap`); return; }
-    lastEmptyTap = nowMs();
-  }
   logInput(`${p.kind}:empty-tap`);
 }
 function cancelPending() { if (pendingOpen) { clearTimeout(pendingOpen); pendingOpen = null; } }

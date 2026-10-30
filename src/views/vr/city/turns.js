@@ -111,6 +111,7 @@ export function* layoutTurnSteps(ctx, s, turn, opts) {
           add(lay.height, (c, top) => { drawRuns(c, lay, M + PAD, top, BODY, C.text); if (caret) drawCaret(c, lay, M + PAD, top); });
           gap(16);
         }
+        yield; // pi-web (usability round 2): a long reply yields per block too, so no frame lays out a whole reply
       }
       gap(8);
     } else if (m.type === 'code') {
