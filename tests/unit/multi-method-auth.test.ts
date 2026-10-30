@@ -143,22 +143,22 @@ describe("multi-method human authentication", () => {
         ),
       ).toBe(false);
   });
-  it("trusts only exact canonical proxy peers and a single strict forwarded authority", () => {
+  it("does not treat trusted forwarded authorities as browser Origin grants", () => {
     const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
     try {
       process.env.PI_WEB_AUTH_PROXY_PEERS = "::ffff:127.0.0.1";
       const headers = { host: "internal:9300", origin: "https://public.example", "x-forwarded-host": "public.example" };
-      expect(trustedOrigin(req({}, headers), config.origin)).toBe(true);
-      for (const [origin, authority, accepted] of [
-        ["https://public.example", "public.example:443", true],
-        ["http://public.example", "public.example:80", true],
-        ["https://public.example", "public.example:80", false],
-        ["http://public.example", "public.example:443", false],
-        ["https://public.example:8443", "public.example:8443", true],
-        ["https://public.example", "public.example:8443", false],
+      expect(trustedOrigin(req({}, headers), config.origin)).toBe(false);
+      for (const [origin, authority] of [
+        ["https://public.example", "public.example:443"],
+        ["http://public.example", "public.example:80"],
+        ["https://public.example", "public.example:80"],
+        ["http://public.example", "public.example:443"],
+        ["https://public.example:8443", "public.example:8443"],
+        ["https://public.example", "public.example:8443"],
       ] as const) {
         const request = req({}, { ...headers, origin, "x-forwarded-host": authority });
-        expect(trustedOrigin(request, config.origin)).toBe(accepted);
+        expect(trustedOrigin(request, config.origin)).toBe(false);
         expect(forwardedHost(request)).toBe(authority);
         request.socket.remoteAddress = "192.0.2.1";
         expect(trustedOrigin(request, config.origin)).toBe(false);
