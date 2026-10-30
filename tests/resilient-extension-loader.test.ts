@@ -5,7 +5,7 @@ import { ResilientResourceLoader } from "../server/extensions/resilientLoader.js
 function fakeLoader(options: {
   extensions?: string[];
   errors?: Array<{ path: string; error: string }>;
-  reload?: () => Promise<void>;
+  reload?: ResourceLoader["reload"];
 } = {}): ResourceLoader {
   const extensionNames = options.extensions || [];
   return {
@@ -119,5 +119,108 @@ describe("ResilientResourceLoader", () => {
       extensionCount: 1,
       errors: [{ path: "/agent/extensions/models.ts", error: "provider timed out" }],
     });
+  });
+
+  it("records an applied trust policy when the primary reload reports extension errors", async () => {
+    let trusted = false;
+    let factoryCalls = 0;
+    const errors = [{ path: "/project/.pi/extensions/failing.ts", error: "failed" }];
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      resolveProjectTrust: () => trusted,
+      resolveAdditionalExtensionPaths: (value) => [String(value)],
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        return fakeLoader(factoryCalls === 3
+          ? { errors }
+          : {});
+      },
+    });
+
+    await loader.reload();
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+
+    trusted = true;
+    await loader.reload();
+
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.getAppliedProjectTrust()).toBe(true);
+
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.getAppliedProjectTrust()).toBe(true);
+  });
+
+  it("keeps grants pending after fallback, clears denied fallback, and preserves prior state when both fail", async () => {
+    let trusted = false;
+    let factoryCalls = 0;
+    const decisions: boolean[] = [];
+    const reload = (fail: boolean): ResourceLoader["reload"] => async (options) => {
+      decisions.push(await options!.resolveProjectTrust!({ extensionsResult: {} as any }));
+      if (fail) throw new Error("reload failed");
+    };
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      resolveProjectTrust: () => trusted,
+      resolveAdditionalExtensionPaths: (value) => [String(value)],
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        if ([3, 5, 7, 8].includes(factoryCalls)) {
+          return fakeLoader({ reload: reload(true) });
+        }
+        return fakeLoader({ reload: reload(false) });
+      },
+    });
+
+    await loader.reload();
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+
+    trusted = true;
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("degraded");
+    expect({
+      desiredTrusted: trusted,
+      appliedTrusted: loader.getAppliedProjectTrust(),
+      pendingReload: loader.getAppliedProjectTrust() !== trusted,
+    }).toEqual({
+      desiredTrusted: true,
+      appliedTrusted: false,
+      pendingReload: true,
+    });
+
+    trusted = false;
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+
+    trusted = true;
+    await expect(loader.reload()).rejects.toThrow("reload failed");
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+    expect(decisions).toEqual([false, true, true, false, false, true, true]);
+  });
+
+  it("passes the explicit project-trust resolver to both primary and fallback reloads", async () => {
+    const decisions: boolean[] = [];
+    let factoryCalls = 0;
+    const reload = async (options?: Parameters<ResourceLoader["reload"]>[0]) => {
+      decisions.push(await options!.resolveProjectTrust!({ extensionsResult: {} as any }));
+      if (factoryCalls === 2) throw new Error("primary failed");
+    };
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      resolveProjectTrust: () => false,
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        return fakeLoader({ reload });
+      },
+    });
+
+    await loader.reload();
+
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(decisions).toEqual([false, false]);
   });
 });
