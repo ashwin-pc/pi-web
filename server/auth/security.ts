@@ -313,10 +313,14 @@ export async function handleSecurityRoute(
     if (!requireSession()) return true;
     const b = (await input(req)) as { password?: unknown; revokeApiTokens?: boolean };
     try {
-      await changePassword(store, b.password, auth.sessionHash!, b.revokeApiTokens !== false);
-      await kernel.configure([
-        ...new Set([...kernel.methods, "password" as const]),
-      ]);
+      await changePassword(
+        store,
+        b.password,
+        auth.sessionHash!,
+        b.revokeApiTokens !== false,
+        { policy: kernel.policy, methods: kernel.methods },
+      );
+      await kernel.refreshConfig();
       send(res, 200, { ok: true });
     } catch (error) {
       const busy = error instanceof PasswordWorkUnavailableError;
@@ -485,10 +489,12 @@ export async function handleSecurityRoute(
         name: pending.name,
         createdAt: now,
       });
+      s.config = {
+        policy: s.config?.policy || kernel.policy,
+        methods: [...new Set([...(s.config?.methods || kernel.methods), "passkey" as const])],
+      };
     });
-    await kernel.configure([
-      ...new Set([...kernel.methods, "passkey" as const]),
-    ]);
+    await kernel.refreshConfig();
     send(res, 201, { ok: true });
     return true;
   }
