@@ -84,9 +84,9 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
   if (req.method === "POST" && url.pathname === "/api/auth/bootstrap/options") {
     if (bootstrapRequiresLoopback(config.origin) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access" }); return true; }
     const peer = `${store.path}:${loginPeer(req)}`;
-    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const input = await body(req) as { token?: string; name?: string }; const state = await store.read();
     if (!input.token || !state.bootstrap || state.bootstrap.usedAt || state.bootstrap.expiresAt < Date.now() || hashSecret(input.token) !== state.bootstrap.hash) { json(res, 401, { ok: false, error: "Invalid bootstrap token" }); return true; }
+    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const options = await generateRegistrationOptions({ rpName: config.rpName, rpID: config.rpID, userName: "pi-web-owner", userDisplayName: "Pi Web Owner", attestationType: "none", authenticatorSelection: { residentKey: "preferred", userVerification: "required" }, excludeCredentials: state.credentials.filter(c => !c.revokedAt).map(c => ({ id: c.id })) });
     if (!rememberChallenge(peer, options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "register", bootstrapHash: state.bootstrap.hash })) { res.setHeader("retry-after", "2"); json(res, 429, { ok: false, error: "Too many pending ceremonies" }); return true; }
     json(res, 200, options); return true;
