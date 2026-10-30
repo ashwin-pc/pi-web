@@ -19,9 +19,10 @@ import {UIB} from './bar.js';
 import {drawAvatar} from './avatars.js';
 import {previewText} from './city-text.js';
 import {switchBy, isTable, setTable, goHome, flyToSession} from './app.js';
-import {mouse, pressStart, pressMove, pressEnd, logInput, head} from './input.js';
+import {mouse, pressStart, pressMove, pressEnd, logInput, head, intersect} from './input.js';
 import {desk, setPointerAt, pointerGone, updateMouseRay, fitCamera} from './desktop.js';
 import * as N from './city-nav.js';
+import {readers} from './reader.js';
 
 const UI = V.UI;
 const EDGE = 24, LONG_MS = 450, SLOP = 8;
@@ -114,6 +115,22 @@ el.addEventListener('pointermove', (e) => {
   }
   if (g.mode === 'alt') { const step = (g.lastY - e.clientY) / Math.max(1, window.innerHeight); g.lastY = e.clientY; if (step) N.fly(head.yaw, 0, 0, step * 3, 1, head.local); } // drag up: higher
 });
+/** A tap that lands just beside a small 3D button takes it: the nearest clickable target within SLOP_PX (a 33 px button
+ * then answers like a 48+ px one; the cover screen held sideways draws the cockpit's buttons that small). */
+const SLOP_PX = 14;
+const clickable = (h) => !!(h && (h.region?.click || h.card || h.label));
+function nearTap(x, y) {
+  let best = null;
+  for (const r of [7, SLOP_PX]) for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    setPointerAt({clientX: x + Math.cos(a) * r, clientY: y + Math.sin(a) * r}); updateMouseRay();
+    const h = intersect(mouse);
+    if (clickable(h) && (!best || r < best.r)) best = {h, r};
+    if (best && best.r === 7 && k === 7) break;
+  }
+  setPointerAt({clientX: x, clientY: y}); updateMouseRay();
+  return best?.h || null;
+}
 function up(e, cancelled) {
   if (e.pointerType !== 'touch' || !pts.has(e.pointerId)) return;
   pts.delete(e.pointerId);
@@ -122,6 +139,7 @@ function up(e, cancelled) {
   cancelLong();
   const dx = e.clientX - g.x0, dt = Math.max(1, performance.now() - g.t0);
   if (!cancelled) {
+    if (!g.mode && mouse.press && !clickable(mouse.press.hit) && !mouse.press.hit?.region?.strip) { const n = nearTap(e.clientX, e.clientY); if (n) { mouse.press.hit = n; mouse.press.reg = n.region; tlog('tap-near', {target: n.region?.id}); } }
     if (g.mode === 'press' || !g.mode) { setPointerAt(e); updateMouseRay(); if (!g.mode && touch.dock && g.hit?.region?.session === S.currentId && S.reading) openCard(S.currentId); else pressEnd(mouse); if (!g.mode) tlog('tap', {target: g.hit?.region?.id || (g.hit?.reader ? 'reader' : null)}); }
     else if (g.mode === 'swipe') {
       // Fast: the last ~100 ms of the finger's motion (px/ms), not the whole gesture's average.
@@ -186,7 +204,7 @@ function avatarBtn(id) {
 let dockSig = '';
 function syncDock() {
   const show = coarse.matches && !renderer.xr.isPresenting;
-  if (show !== touch.dock) { touch.dock = show; document.body.classList.toggle('vrTouch', show); dockSig = ''; fitCamera(); }
+  if (show !== touch.dock) { touch.dock = show; UI.touch = show; document.body.classList.toggle('vrTouch', show); dockSig = ''; fitCamera(); for (const r of readers) r.header.invalidate(); }
   if (!show) return;
   const need = needsYou().length;
   const sig = S.pinned.map((id) => { const s = get(id); return `${id}:${indicator(s)}:${unreadTurns(s)}:${s.title}`; }).join('|') + `|${S.currentId}|${S.reading}|${need}`;
@@ -256,7 +274,8 @@ function openMore() {
   showZ();
   sheet.querySelectorAll('[data-z]').forEach((b) => b.addEventListener('click', () => { desk.zoom = clamp(desk.zoom * +b.dataset.z, 0.45, 1.8); fitCamera(); showZ(); tlog('zoom', {zoom: +desk.zoom.toFixed(2)}); }));
   sheet.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { if (S.reading) UI.closeReader(); N.fly(head.yaw, 0, 0, +b.dataset.h * 0.6, 1, head.local); tlog('height', {dir: +b.dataset.h}); }));
-  sheet.querySelectorAll('[data-l]').forEach((b) => b.addEventListener('click', () => { desk.readYaw = -(+b.dataset.l) * 26 * DEG; desk.readPitch = 0; tlog('look', {to: +b.dataset.l}); }));
+  // Look closes the sheet (round 3: it stayed open over what it had just turned to).
+  sheet.querySelectorAll('[data-l]').forEach((b) => b.addEventListener('click', () => { desk.readYaw = -(+b.dataset.l) * 26 * DEG; desk.readPitch = 0; closeSheet(); tlog('look', {to: +b.dataset.l}); }));
   sheet.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { A.r3?.setMode(b.dataset.m); closeSheet(); tlog('layout', {mode: b.dataset.m}); }));
   sheet.querySelectorAll('[data-t]').forEach((b) => b.addEventListener('click', () => {
     const t = b.dataset.t;

@@ -46,7 +46,8 @@ body.vrTouch #vrDock { display: flex; left: 0; right: 0; bottom: 0; gap: 6px; pa
 .vrAv[data-state="idle"] .t { color: #8a8a8a; }
 .vrAv.cur { background: #1b1813; border-color: #5a4626; }
 .vrAv.cur::after { content: ""; position: absolute; bottom: 2px; left: 30%; right: 30%; height: 3px; border-radius: 2px; background: #e2b15f; }
-.vrAv .t { font-size: 10.5px; font-weight: 650; line-height: 1.2; max-width: 56px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; }
+.vrAv .t { font-size: 10.5px; font-weight: 650; line-height: 1.2; max-width: 60px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-align: center; overflow-wrap: anywhere; } /* round 3: two lines of the name (was one, about 7 characters) */
+.vrAv { width: 64px; min-height: 76px; }
 .vrAv .badge, .vrChip .n { position: absolute; top: 2px; right: 6px; min-width: 18px; height: 18px; border-radius: 9px; background: #e2b15f; color: #111; font-size: 11px; font-weight: 800; line-height: 18px; text-align: center; padding: 0 4px; box-sizing: border-box; }
 .vrAv .badge[hidden], .vrChip .n:empty { display: none; }
 .vrChip { width: 58px; justify-content: center; }
@@ -94,7 +95,8 @@ body.vrTouch.vrTyping #vrTyping:not([hidden]) { display: flex; gap: 8px; left: 8
   body.vrTouch #vrDock { top: calc(56px + env(safe-area-inset-top)); left: auto; right: 0; bottom: 0; width: 70px; flex-direction: column; padding: 6px max(6px, env(safe-area-inset-right)) 6px 6px; border-top: 0; border-left: 1px solid #1d1d1d; background: rgba(8, 8, 8, 0.9); }
   .vrDockScroll { flex-direction: column; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; touch-action: pan-y; scroll-snap-type: y proximity; }
   .vrDockFixed { flex-direction: column; }
-  .vrAv, .vrChip { width: 58px; min-height: 56px; touch-action: pan-y; }
+  .vrAv, .vrChip { width: 64px; min-height: 56px; touch-action: pan-y; }
+  .vrAv { min-height: 76px; }
   body.vrTouch #vrSheet:not([hidden]) { right: 82px; bottom: 8px; }
   body.vrTouch.vrTyping #vrTyping:not([hidden]) { right: 82px; bottom: 8px; }
   body.vrTouch.vrTyping #vrComposerInput { right: 82px !important; bottom: 64px !important; height: 56px !important; }

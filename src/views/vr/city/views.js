@@ -50,11 +50,12 @@ export function drawHeader(ctx, p) {
   const hovC = p.isHover('header:town'), hovF = p.isHover('header:fly');
   fillRR(ctx, W - BW - 10, 12, BW, H - 24, (H - 24) / 2, hovC ? '#2c2c2c' : '#161616', '#333', 2);
   icon(ctx, 'house', W - BW + 30, H / 2, 30, C.accent, 2.4);
-  text(ctx, UI.xr ? 'City (B)' : 'City (Esc)', W - BW + 54, H / 2 + 1, {size: 25, weight: 700, color: C.text});
+  // pi-web (round 3): key hints only where there are keys (B in the headset, Esc on a desktop; none on touch).
+  text(ctx, UI.xr ? 'City (B)' : UI.touch ? 'City' : 'City (Esc)', W - BW + 54, H / 2 + 1, {size: 25, weight: 700, color: C.text});
   p.region('header:town', W - BW - 14, 0, BW + 14, H, {click: () => UI.closeReader()});
   fillRR(ctx, W - BW - FW - 22, 12, FW, H - 24, (H - 24) / 2, hovF ? '#2c2c2c' : '#161616', 'rgba(226,177,95,0.55)', 2);
   icon(ctx, 'locate-fixed', W - BW - FW + 8, H / 2, 30, C.accent, 2.4);
-  text(ctx, UI.xr ? 'Fly to' : 'Fly to (F)', W - BW - FW + 32, H / 2 + 1, {size: 25, weight: 700, color: C.text});
+  text(ctx, UI.xr || UI.touch ? 'Fly to' : 'Fly to (F)', W - BW - FW + 32, H / 2 + 1, {size: 25, weight: 700, color: C.text});
   p.region('header:fly', W - BW - FW - 26, 0, FW + 10, H, {click: () => UI.flyCurrent()});
   const n = r.set?.turns.length || 0;
   const y1 = H * 0.34;
