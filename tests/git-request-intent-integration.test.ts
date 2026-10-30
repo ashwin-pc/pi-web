@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { hashSecret } from "../server/auth/kernel.js";
+import { originFailureHint } from "../server/auth/origin.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
 
 const execFileAsync = promisify(execFile);
@@ -144,7 +145,6 @@ describe("Git fetch request intent at the HTTP route", () => {
         PI_WEB_AUTH_METHODS: "external",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
         PI_WEB_AUTH_ORIGIN: browserOrigin,
-        PI_WEB_TOKEN: "",
         PI_WEB_SETTINGS_FILE: join(root, "settings.json"),
         PI_WEB_SESSION_UI_STATE_FILE: join(root, "session-ui-state.json"),
         HOST: "127.0.0.1",
@@ -191,7 +191,7 @@ describe("Git fetch request intent at the HTTP route", () => {
     ]) {
       const rejected = await get(port, "/api/git/status?fetch=1", headers);
       expect(rejected.status, via).toBe(403);
-      expect(rejected.body.error, via).toContain("Origin does not match Host");
+      expect(rejected.body.error, via).toBe(originFailureHint);
     }
 
     const stillUnfetched = await get(port, "/api/git/status", { cookie });

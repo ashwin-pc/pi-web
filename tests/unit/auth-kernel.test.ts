@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { AuthKernel, AuthStore, hashSecret } from "../../server/auth/kernel.js";
+import { AuthKernel, AuthStore, bumpRevocationEpoch, hashSecret } from "../../server/auth/kernel.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
 
 function req(headers: Record<string, string> = {}, url = "/") { return { headers, url } as any; }
@@ -13,9 +13,7 @@ async function store() { return new AuthStore(join(await mkdtemp(join(tmpdir(), 
 describe("auth kernel", () => {
   it("never accepts query or arbitrary bearer credentials", async () => {
     const s = await store();
-    // Reflect.construct keeps this regression runnable against the old constructor:
-    // base accepts the query in legacy mode; the remediated kernel rejects it.
-    const k = Reflect.construct(AuthKernel, ["legacy", s, "secret", false]) as AuthKernel;
+    const k = new AuthKernel("passkey", s, false);
     expect((await k.gate(req({}, "/?token=secret"))).ok).toBe(false);
     expect((await k.gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
   });
@@ -168,9 +166,35 @@ describe("auth kernel", () => {
   });
 
   it("mints hashed single-use WebSocket tickets with identity propagation", async () => {
-    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" });
-    expect(k.redeemWsTicket(ticket)?.identity).toEqual({ id: "token:automation" });
+    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ ok: true, identity: { id: "token:automation" }, via: "token", revocationEpoch: 2 });
+    expect(k.redeemWsTicket(ticket)).toMatchObject({ identity: { id: "token:automation" }, via: "token", revocationEpoch: 2 });
     expect(k.redeemWsTicket(ticket)).toBeUndefined();
+  });
+
+  it("enrolls successful extension authentication in the current revocation epoch", async () => {
+    const s = await store();
+    const extension = { ok: true, identity: { id: "extension:parent:test" }, via: "extension" } as const;
+    const k = new AuthKernel("none", s, false, "", "open", [], async () => extension, true);
+    const extensionReq = req({ authorization: "PiWebExtension synthetic" });
+
+    const initial = await k.gate(extensionReq);
+    expect(initial).toEqual({ ...extension, revocationEpoch: 0 });
+    if (!initial.ok) return;
+    expect(k.redeemWsTicket(k.mintWsTicket(initial))?.revocationEpoch).toBe(0);
+
+    await s.update((state) => bumpRevocationEpoch(state));
+    const reconnected = await k.gate(extensionReq);
+    expect(reconnected).toEqual({ ...extension, revocationEpoch: 1 });
+    if (!reconnected.ok) return;
+    expect(k.redeemWsTicket(k.mintWsTicket(reconnected))?.revocationEpoch).toBe(1);
+  });
+
+  it("does not let failed extension credentials fall through to open access", async () => {
+    const extensionReq = req({ authorization: "PiWebExtension invalid" });
+    const rejected = new AuthKernel("none", await store(), false, "", "open", [], async () => ({ ok: false, status: 403 }), true);
+    const unavailable = new AuthKernel("none", await store(), false, "", "open", [], undefined, true);
+    expect(await rejected.gate(extensionReq)).toEqual({ ok: false, status: 403 });
+    expect(await unavailable.gate(extensionReq)).toEqual({ ok: false });
   });
 
   it("serializes atomic updates", async () => {

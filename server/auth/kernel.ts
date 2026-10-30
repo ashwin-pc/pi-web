@@ -6,20 +6,28 @@ import {
 } from "node:crypto";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
+  authenticatedTunnelRequest,
+  effectivePeerAddress,
+  isLoopbackPeer,
+  isReservedSupervisorHeader,
+  tunnelSocketIdentityEnabled,
+} from "./supervisorPeer.js";
+import {
   mkdir,
-  open,
   readFile,
   rename,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  authenticatedTunnelRequest,
-  isReservedSupervisorHeader,
-  tunnelSocketIdentityEnabled,
-} from "./supervisorPeer.js";
+  PasswordWorkUnavailableError,
+  runPasswordWork,
+} from "./passwordWork.js";
+import {
+  acquireAuthStoreLock,
+  releaseAuthStoreLock,
+} from "./storeLock.js";
 
 export type AuthMode = "none" | "passkey" | "external";
 export type Identity = { id: string; displayName?: string };
@@ -70,6 +78,7 @@ export type DeviceGrantRecord = {
 };
 export type AuthState = {
   config?: { policy: AccessPolicy; methods: HumanAuthMethod[] };
+  revocationEpoch?: number;
   verifiedMethods?: HumanAuthMethod[];
   version: 1;
   credentials: CredentialRecord[];
@@ -102,42 +111,33 @@ const safeEqual = (a: string, b: string) => {
   const bb = Buffer.from(b);
   return aa.length === bb.length && timingSafeEqual(aa, bb);
 };
-let passwordWorkActive = false;
 const scrypt = (
   password: string,
   salt: Buffer,
   length: number,
   options: { N: number; r: number; p: number },
+  lane: "login" | "credential",
 ): Promise<Buffer> =>
-  new Promise((resolve, reject) => {
-    if (passwordWorkActive) {
-      reject(new Error("Password verification busy; retry shortly"));
-      return;
-    }
-    passwordWorkActive = true;
-    try {
-      nodeScrypt(
-        password,
-        salt,
-        length,
-        { ...options, maxmem: 160 * 1024 * 1024 },
-        (error, key) => {
-          passwordWorkActive = false;
-          error ? reject(error) : resolve(key);
-        },
-      );
-    } catch (error) {
-      passwordWorkActive = false;
-      reject(error);
-    }
-  });
+  runPasswordWork(
+    lane,
+    () =>
+      new Promise((resolve, reject) => {
+        nodeScrypt(
+          password,
+          salt,
+          length,
+          { ...options, maxmem: 160 * 1024 * 1024 },
+          (error, key) => (error ? reject(error) : resolve(key)),
+        );
+      }),
+  );
 export async function hashPassword(password: string) {
   const salt = randomBytes(16);
   const derived = (await scrypt(password, salt, 64, {
     N: 32768,
     r: 8,
     p: 1,
-  })) as Buffer;
+  }, "credential")) as Buffer;
   return `scrypt$32768$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
 }
 export async function verifyPassword(password: string, encoded: string) {
@@ -152,55 +152,27 @@ export async function verifyPassword(password: string, encoded: string) {
     Buffer.from(expected, "base64url").length !== 64
   )
     return false;
-  try {
-    const actual = (await scrypt(
-      password,
-      Buffer.from(salt, "base64url"),
-      Buffer.from(expected, "base64url").length,
-      { N: Number(n), r: Number(r), p: Number(p) },
-    )) as Buffer;
-    return safeEqual(actual.toString("base64url"), expected);
-  } catch {
-    return false;
-  }
+  const actual = (await scrypt(
+    password,
+    Buffer.from(salt, "base64url"),
+    Buffer.from(expected, "base64url").length,
+    { N: Number(n), r: Number(r), p: Number(p) },
+    "login",
+  )) as Buffer;
+  return safeEqual(actual.toString("base64url"), expected);
 }
 
-/** Serialize reapers so a second reaper cannot unlink a newly acquired lock.
- * Missing/malformed owner metadata and EPERM are deliberately not evidence of death.
- * A crash during recovery itself requires operator cleanup of .recovery. */
-async function recoverDeadLock(path: string) {
-  let guard: Awaited<ReturnType<typeof open>>;
-  try {
-    guard = await open(`${path}.recovery`, "wx", 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw error;
-  }
-  try {
-    let pid: unknown;
-    try {
-      pid = JSON.parse(await readFile(path, "utf8")).pid;
-    } catch {
-      return;
-    }
-    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
-      return;
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH")
-        await unlink(path).catch((error) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-    }
-  } finally {
-    await guard.close();
-    await unlink(`${path}.recovery`);
+export class AuthStoreBusyError extends Error {
+  readonly status = 503;
+  constructor(message = "Auth store busy; retry shortly") {
+    super(message);
+    this.name = "AuthStoreBusyError";
   }
 }
 
 export class AuthStore {
   private queue = Promise.resolve();
+  private pendingUpdates = 0;
   readonly listeners = new Set<(state: AuthState) => void>();
   constructor(readonly path: string) {}
   async read(): Promise<AuthState> {
@@ -216,30 +188,27 @@ export class AuthStore {
     }
   }
   async update(
-    mutator: (state: AuthState) => void | Promise<void>,
+    mutator: (state: AuthState) => void | false | Promise<void | false>,
   ): Promise<AuthState> {
+    if (this.pendingUpdates >= 64) throw new AuthStoreBusyError();
+    this.pendingUpdates++;
     let result!: AuthState;
     const operation = this.queue
       .catch(() => undefined)
       .then(async () => {
         await mkdir(dirname(this.path), { recursive: true });
         const lockPath = `${this.path}.lock`;
-        let lock: Awaited<ReturnType<typeof open>> | undefined;
-        for (let attempt = 0; attempt < 100; attempt++) {
-          try {
-            lock = await open(lockPath, "wx", 0o600);
-            await lock.writeFile(JSON.stringify({ pid: process.pid }));
-            break;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-            await recoverDeadLock(lockPath);
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
+        let lock;
+        try {
+          lock = await acquireAuthStoreLock(lockPath);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === `Auth store is locked: ${lockPath}`
+          )
+            throw new AuthStoreBusyError(error.message);
+          throw error;
         }
-        if (!lock)
-          throw new Error(
-            `Auth store is locked: ${lockPath}. If a writer crashed, stop writers before removing the lock.`,
-          );
         try {
           const state = await this.read();
           const now = Date.now();
@@ -250,14 +219,15 @@ export class AuthStore {
             (grant) =>
               !grant.usedAt && !grant.cancelledAt && grant.expiresAt > now,
           );
-          await mutator(state);
+          const changed = await mutator(state);
+          result = state;
+          if (changed === false) return;
           await mkdir(dirname(this.path), { recursive: true });
           const temp = `${this.path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
           await writeFile(temp, JSON.stringify(state, null, 2), {
             mode: 0o600,
           });
           await rename(temp, this.path);
-          result = state;
           for (const listener of this.listeners) {
             try {
               listener(state);
@@ -269,9 +239,11 @@ export class AuthStore {
             }
           }
         } finally {
-          await lock.close();
-          await unlink(lockPath);
+          await releaseAuthStoreLock(lock);
         }
+      })
+      .finally(() => {
+        this.pendingUpdates--;
       });
     this.queue = operation.catch(() => undefined);
     await operation;
@@ -294,16 +266,37 @@ function cookies(req: IncomingMessage) {
 }
 export type AuthVia = "session" | "token" | "external" | "open" | "extension";
 export type GateResult =
-  | { ok: true; identity: Identity; via: AuthVia; sessionHash?: string }
+  | {
+      ok: true;
+      identity: Identity;
+      via: AuthVia;
+      sessionHash?: string;
+      revocationEpoch?: number;
+    }
   | { ok: false; status?: 401 | 403 };
 
+export type WsTicket = {
+  identity: Identity;
+  via: AuthVia;
+  expiresAt: number;
+  sessionHash?: string;
+  revocationEpoch: number;
+};
+
+export function bumpRevocationEpoch(state: AuthState): void {
+  state.revocationEpoch = (state.revocationEpoch || 0) + 1;
+}
+
 export class AuthKernel {
-  private wsTickets = new Map<
-    string,
-    { identity: Identity; expiresAt: number; sessionHash?: string }
-  >();
+  private wsTickets = new Map<string, WsTicket>();
+  private readonly configuredPolicy: AccessPolicy;
   policy: AccessPolicy;
   methods: ReadonlySet<HumanAuthMethod>;
+  effectivePolicy(saved?: AccessPolicy) {
+    return this.configuredPolicy === "authenticated" || saved === "authenticated"
+      ? "authenticated"
+      : "open";
+  }
   async refreshConfig() {
     const state = await this.store.read();
     if (state.config) {
@@ -311,7 +304,7 @@ export class AuthKernel {
         throw new Error(
           "Saved authentication settings still enable removed legacy token authentication. Run `pi-web auth recover` to migrate the store and create a one-time password/passkey setup URL.",
         );
-      this.policy = state.config.policy;
+      this.policy = this.effectivePolicy(state.config.policy);
       this.methods = new Set(state.config.methods);
     }
   }
@@ -337,27 +330,56 @@ export class AuthKernel {
           [...state.config.methods].sort().join())
     )
       warn(
-        `Auth environment/store disagreement: saved store takes precedence. Policy env=${this.policy}, saved=${state.config.policy}; environment-only methods=[${[...this.methods].filter(m => !state.config!.methods.includes(m)).join(", ")}]; store-only methods=[${state.config.methods.filter(m => !this.methods.has(m)).join(", ")}]. Environment neither enables nor retires saved methods; use Settings or terminal recovery.`,
+        `Auth environment/store disagreement. Authenticated policy is fail-closed and takes precedence; saved methods remain authoritative. Policy env=${this.policy}, saved=${state.config.policy}; environment-only methods=[${[...this.methods].filter(m => !state.config!.methods.includes(m)).join(", ")}]; store-only methods=[${state.config.methods.filter(m => !this.methods.has(m)).join(", ")}]. Use Settings or terminal recovery to change saved methods.`,
       );
     await this.refreshConfig();
     if (this.policy === "authenticated" && !(await this.readyMethods()).length)
       warn(
-        "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store policy takes precedence.",
+        "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store methods remain authoritative.",
+      );
+    if (this.policy === "open" && this.methods.size)
+      warn(
+        `Auth policy is "open" while login methods are enabled (${[...this.methods].join(", ")}). Requests are not required to authenticate; set PI_WEB_AUTH_POLICY=authenticated or clear the methods.`,
       );
   }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
-      state.config = { policy: this.policy, methods };
+      state.config = {
+        policy:
+          state.config?.policy ??
+          (this.explicitOpenPolicy ? "open" : "authenticated"),
+        methods,
+      };
     });
     await this.refreshConfig();
   }
-  async revokeSession(req: IncomingMessage) {
+  async revokeSession(req: IncomingMessage): Promise<boolean> {
     const raw = cookies(req)[SESSION_COOKIE];
-    if (raw)
-      await this.store.update((state) => {
-        const session = state.sessions.find((s) => s.hash === hashSecret(raw));
-        if (session) session.revokedAt = Date.now();
-      });
+    if (!raw) return false;
+    const hash = hashSecret(raw);
+    const now = Date.now();
+    if (
+      !(await this.store.read()).sessions.some(
+        (session) =>
+          session.hash === hash &&
+          !session.revokedAt &&
+          session.expiresAt > now,
+      )
+    )
+      return false;
+    let revoked = false;
+    await this.store.update((state) => {
+      const session = state.sessions.find(
+        (candidate) =>
+          candidate.hash === hash &&
+          !candidate.revokedAt &&
+          candidate.expiresAt > Date.now(),
+      );
+      if (!session) return false;
+      session.revokedAt = Date.now();
+      revoked = true;
+    });
+    return revoked;
   }
 
   constructor(
@@ -368,11 +390,14 @@ export class AuthKernel {
     policy?: AccessPolicy,
     methods?: HumanAuthMethod[],
     private readonly extensionResolver?: (req: IncomingMessage) => Promise<GateResult>,
+    private readonly explicitOpenPolicy = false,
   ) {
-    this.policy = policy || (mode === "none" ? "open" : "authenticated");
+    this.configuredPolicy =
+      policy || (mode === "none" ? "open" : "authenticated");
+    this.policy = this.configuredPolicy;
     this.methods = new Set(methods || (mode === "none" ? [] : [mode]));
   }
-  mintWsTicket(identity: Identity, sessionHash?: string) {
+  mintWsTicket(auth: Extract<GateResult, { ok: true }>) {
     const now = Date.now();
     for (const [key, ticket] of this.wsTickets)
       if (ticket.expiresAt <= now) this.wsTickets.delete(key);
@@ -380,8 +405,10 @@ export class AuthKernel {
       this.wsTickets.delete(this.wsTickets.keys().next().value!);
     const secret = randomSecret();
     this.wsTickets.set(hashSecret(secret), {
-      identity,
-      sessionHash,
+      identity: auth.identity,
+      via: auth.via,
+      sessionHash: auth.sessionHash,
+      revocationEpoch: auth.revocationEpoch || 0,
       expiresAt: now + 30_000,
     });
     return secret;
@@ -395,14 +422,22 @@ export class AuthKernel {
   async gate(req: IncomingMessage): Promise<GateResult> {
     // Reserved credential class: never fall through to open/browser/machine auth.
     if (/^PiWebExtension(?:\s|$)/i.test(req.headers.authorization || "")) {
-      try { return await this.extensionResolver?.(req) || { ok: false }; }
-      catch { return { ok: false }; }
+      try {
+        const extension = await this.extensionResolver?.(req);
+        if (!extension?.ok) return extension || { ok: false };
+        const state = await this.store.read();
+        return {
+          ...extension,
+          revocationEpoch: state.revocationEpoch || 0,
+        };
+      } catch { return { ok: false }; }
     }
     const state = await this.store.read();
     // Credential and policy decisions use one snapshot, never a stale refresh
     // that could restore retired authority during concurrent configuration changes.
     const methods = new Set(state.config?.methods || this.methods);
-    const policy = state.config?.policy || this.policy;
+    const policy = this.effectivePolicy(state.config?.policy);
+    const revocationEpoch = state.revocationEpoch || 0;
     const now = Date.now();
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw) {
@@ -426,6 +461,7 @@ export class AuthKernel {
           identity: record.identity,
           via: "session",
           sessionHash: record.hash,
+          revocationEpoch,
         };
       }
       // A revoked browser must explicitly sign in again, not silently re-exchange ambient credentials.
@@ -446,6 +482,7 @@ export class AuthKernel {
           ok: true,
           identity: { id: `external:${user}`, displayName: user },
           via: "external",
+          revocationEpoch,
         };
     }
     if (auth.startsWith("Bearer ")) {
@@ -458,10 +495,16 @@ export class AuthKernel {
           ok: true,
           identity: { id: `token:${api.id}`, displayName: api.name },
           via: "token",
+          revocationEpoch,
         };
     }
     return policy === "open"
-      ? { ok: true, identity: { id: "none" }, via: "open" }
+      ? {
+          ok: true,
+          identity: { id: "none" },
+          via: "open",
+          revocationEpoch,
+        }
       : { ok: false };
   }
   async establishSession(
@@ -475,7 +518,7 @@ export class AuthKernel {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
     const device = req?.headers["user-agent"]?.slice(0, 200),
-      ip = req?.socket?.remoteAddress;
+      ip = req ? effectivePeerAddress(req) : undefined;
     if (!method) {
       const prefix = identity.id.split(":")[0];
       if (["passkey", "password", "external"].includes(prefix))
@@ -545,9 +588,10 @@ export class AuthKernel {
 }
 
 export function isLoopback(req: IncomingMessage) {
-  const ip = req.socket.remoteAddress || "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  return isLoopbackPeer(effectivePeerAddress(req));
 }
 export function randomSecret() {
   return randomBytes(32).toString("base64url");
 }
+
+export { PasswordWorkUnavailableError };

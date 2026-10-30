@@ -7,14 +7,17 @@ import type { Duplex } from "node:stream";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
+import { browserMutationFailure, type MutationAdmissionFailure } from "./server/auth/admission.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
-  isLocalTunnelRequest,
   markTunnelRequest,
-  stampSupervisorTunnel,
+  UNKNOWN_SUPERVISOR_PEER,
+  resolveSupervisorPeer,
+  stampSupervisorProvenance,
   stripSupervisorPeerHeaders,
 } from "./server/auth/supervisorPeer.js";
+import { stampSupervisorOrigin, stripSupervisorOriginHeaders } from "./server/auth/supervisorOrigin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import {
   closeTunnelSocket,
@@ -26,6 +29,7 @@ const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
 const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
+const childAuthOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 const tunnelSocketPath = process.env.PI_WEB_TUNNEL_SOCKET || "";
 const supervisorSecret = randomBytes(32).toString("base64url");
@@ -40,14 +44,18 @@ let childStarting = false;
 let childGeneration = 0;
 const intentionalStops = new Set<number>();
 
-async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
+async function authorization(req: IncomingMessage, mutation = false): Promise<"allowed" | "unauthorized" | MutationAdmissionFailure> {
   try {
-    const kernel = new AuthKernel(authConfig.mode, new AuthStore(authStorePath), true, authConfig.trustedHeader, authConfig.policy, authConfig.methods);
+    const kernel = new AuthKernel(authConfig.mode, new AuthStore(authStorePath), true, authConfig.trustedHeader, authConfig.policy, authConfig.methods, undefined, authConfig.explicitOpenPolicy);
     await kernel.refreshConfig();
     const auth = await kernel.gate(req);
-    if (!auth.ok) return false;
-    return !mutation || auth.via !== "session" || (!!req.headers["x-pi-web-client-id"] && trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`));
-  } catch { return false; }
+    if (!auth.ok) return "unauthorized";
+    if (mutation) {
+      const failure = browserMutationFailure(req, auth.via, childAuthOrigin, process.env.PI_WEB_MOCK === "1");
+      if (failure) return failure;
+    }
+    return "allowed";
+  } catch { return "unauthorized"; }
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -65,14 +73,16 @@ function startChild(): void {
   childGeneration += 1;
   const generation = childGeneration;
 
+  const devMode = process.env.PI_WEB_DEV === "1";
+  if (devMode) console.warn("[supervisor] development mode explicitly enabled");
   const env = {
     ...process.env,
     HOST: childHost,
     PORT: String(childPort),
-    PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
+    PI_WEB_DEV: devMode ? "1" : "0",
     PI_WEB_SUPERVISED: "1",
     PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
-    PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
+    PI_WEB_AUTH_INTERNAL_ORIGIN: childAuthOrigin,
   };
 
   console.log(`[supervisor] starting child #${generation} on ${childHost}:${childPort}`);
@@ -134,21 +144,30 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
   socket.destroy?.(error);
 }
 
-async function handleRequest(req: IncomingMessage, res: ServerResponse) {
-  sanitizeProxyHeaders(req, isLocalTunnelRequest(req));
+async function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  tunnel: boolean,
+) {
+  if (tunnel) markTunnelRequest(req);
+  const originValidated = trustedOrigin(req, childAuthOrigin);
+  sanitizeProxyHeaders(req, originValidated, tunnel);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
     if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
-    if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
-    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    const auth = await authorization(req, true);
+    if (auth !== "allowed") return sendJson(res, auth === "unauthorized" ? 401 : 403, {
+      ok: false,
+      error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
+    });
     sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
     void restartChild();
     return;
   }
 
   if (url.pathname === "/__supervisor/status") {
-    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    if (await authorization(req) !== "allowed") return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     return sendJson(res, 200, {
       ok: true,
       childPid: child?.pid,
@@ -161,27 +180,42 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 }
 
-function sanitizeProxyHeaders(req: IncomingMessage, tunnel: boolean) {
+function sanitizeProxyHeaders(
+  req: IncomingMessage,
+  originValidated: boolean,
+  tunnel: boolean,
+) {
+  stripSupervisorOriginHeaders(req.headers);
+  stripSupervisorPeerHeaders(req.headers);
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
-  if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
-  if (tunnelSocketPath) {
-    stripSupervisorPeerHeaders(req.headers);
-    const trustedHeader = (process.env.PI_WEB_AUTH_TRUSTED_HEADER || "").toLowerCase();
-    if (tunnel) {
-      stampSupervisorTunnel(req, supervisorSecret);
-    } else {
-      if (trustedHeader) delete req.headers[trustedHeader];
-    }
+  const trustedForwarder = trustedProxyPeer(req);
+  const forwarded = req.headers["x-forwarded-for"];
+  const peer = resolveSupervisorPeer(
+    req.socket.remoteAddress,
+    forwarded,
+    trustedForwarder,
+  );
+  if (peer !== UNKNOWN_SUPERVISOR_PEER) {
+    req.headers["x-forwarded-for"] = peer;
+  } else {
+    delete req.headers["x-forwarded-for"];
   }
+  if (tunnelSocketPath && !tunnel) {
+    const trustedHeader = (process.env.PI_WEB_AUTH_TRUSTED_HEADER || "").toLowerCase();
+    if (trustedHeader) delete req.headers[trustedHeader];
+  }
+  stampSupervisorProvenance(req, peer, tunnel, supervisorSecret);
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
+  if (originValidated) stampSupervisorOrigin(req, supervisorSecret);
 }
 
-const supervisor = createServer(handleRequest);
+const supervisor = createServer((req, res) => {
+  void handleRequest(req, res, false);
+});
 const tunnelSupervisor = createServer((req, res) => {
-  markTunnelRequest(req);
-  void handleRequest(req, res);
+  void handleRequest(req, res, true);
 });
 const acceptedSockets = new Set<net.Socket>();
 
@@ -199,11 +233,8 @@ function handleUpgrade(
   tunnel: boolean,
 ): void {
   if (tunnel) markTunnelRequest(req);
-  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
-    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
-    return;
-  }
-  sanitizeProxyHeaders(req, tunnel);
+  const originValidated = trustedOrigin(req, childAuthOrigin);
+  sanitizeProxyHeaders(req, originValidated, tunnel);
   proxyUpgrade(req, socket, head);
 }
 
