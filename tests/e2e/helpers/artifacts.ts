@@ -16,7 +16,7 @@ const previewHtml = `<!doctype html><html><body>
     statuses.push("parent blocked");
   }
   try {
-    localStorage.getItem("pi-web-token");
+    localStorage.getItem("sandbox-probe");
     statuses.push("localStorage accessible");
   } catch (error) {
     statuses.push("localStorage blocked");

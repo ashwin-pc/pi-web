@@ -25,8 +25,6 @@ function isActive(
         token.expiresAt > now,
     );
   const methods = new Set(state.config?.methods || kernel.methods);
-  if (ticket.via === "legacy")
-    return methods.has("legacy") && !!kernel.legacyToken;
   if (ticket.via === "external")
     return methods.has("external") && !!kernel.trustedHeader;
   if (ticket.via === "extension") return true;

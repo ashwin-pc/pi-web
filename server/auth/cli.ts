@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStore, bumpRevocationEpoch, hashSecret, randomSecret } from "./kernel.js";
+import { AuthStore, bumpRevocationEpoch, hashSecret, isLegacySession, randomSecret } from "./kernel.js";
 import { resolveAuthConfig } from "./config.js";
 import { resolveWebHomePath } from "../shared/webHome.js";
 
@@ -11,7 +11,27 @@ const store = new AuthStore(resolveWebHomePath("web/auth.json", join(process.env
 const value = (flag: string, fallback = "") => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] || fallback : fallback; };
 if (command === "bootstrap" || command === "recover") {
   const token = randomSecret(), minutes = Math.max(1, Math.min(30, Number(value("--minutes", "10"))));
-  await store.update(s => { s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + minutes * 60_000 }; const initial = resolveAuthConfig(process.env); s.config = { policy: "authenticated", methods: s.config?.methods || initial.methods }; });
+  await store.update(s => {
+    const initial = resolveAuthConfig(process.env, s.config);
+    const now = Date.now();
+    const legacySessionHashes = new Set(
+      s.sessions.filter(isLegacySession).map(session => session.hash),
+    );
+    for (const session of s.sessions) {
+      if (isLegacySession(session)) session.revokedAt = now;
+    }
+    for (const grant of s.deviceGrants || []) {
+      if (
+        legacySessionHashes.has(grant.createdBySessionHash) ||
+        grant.createdBy.id === "legacy:token"
+      )
+        grant.cancelledAt = now;
+    }
+    s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + minutes * 60_000 };
+    const saved = (s.config?.methods || initial.methods).filter(method => (method as string) !== "legacy");
+    s.config = { policy: "authenticated", methods: saved };
+    s.verifiedMethods = s.verifiedMethods?.filter(method => (method as string) !== "legacy");
+  });
   const origin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${process.env.PORT || "8787"}`;
   const url = new URL("/api/auth/bootstrap", origin); url.searchParams.set("token", token);
   console.log(`${command === "recover" ? "Recovery" : "Enrollment"} URL (single-use, expires in ${minutes}m):\n${url}`);

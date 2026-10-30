@@ -1,24 +1,44 @@
 import type { AuthMode } from "./kernel.js";
 
 export type AccessPolicy = "open" | "authenticated";
-export type HumanAuthMethod = "passkey" | "password" | "legacy" | "external";
+export type HumanAuthMethod = "passkey" | "password" | "external";
 export type AuthConfig = {
   policy: AccessPolicy;
   explicitOpenPolicy: boolean;
   methods: HumanAuthMethod[];
-  legacyMode: AuthMode;
+  mode: AuthMode;
   trustedHeader: string;
 };
 
 const methods = new Set<HumanAuthMethod>([
   "passkey",
   "password",
-  "legacy",
   "external",
 ]);
+type SavedAuthConfig = {
+  policy: unknown;
+  methods: unknown;
+};
 
-/** One translation boundary keeps PI_WEB_AUTH_MODE compatible without maintaining mode-specific gates. */
-export function resolveAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
+export const legacyAuthMigration =
+  "Legacy token authentication has been removed. Unset PI_WEB_TOKEN, remove legacy from PI_WEB_AUTH_MODE/PI_WEB_AUTH_METHODS, then run `pi-web auth recover` to create a one-time password/passkey setup URL.";
+
+function isSupportedSavedConfig(
+  config: SavedAuthConfig | undefined,
+): config is { policy: AccessPolicy; methods: HumanAuthMethod[] } {
+  return !!config &&
+    (config.policy === "open" || config.policy === "authenticated") &&
+    Array.isArray(config.methods) &&
+    new Set(config.methods).size === config.methods.length &&
+    config.methods.every((method) => methods.has(method));
+}
+
+/** One translation boundary keeps supported PI_WEB_AUTH_MODE presets compatible. */
+export function resolveAuthConfig(
+  env: NodeJS.ProcessEnv,
+  savedConfig?: SavedAuthConfig,
+  warn: (message: string) => void = console.warn,
+): AuthConfig {
   const explicitPolicy = env.PI_WEB_AUTH_POLICY;
   if (
     explicitPolicy &&
@@ -26,21 +46,36 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     explicitPolicy !== "authenticated"
   )
     throw new Error(`Invalid PI_WEB_AUTH_POLICY: ${explicitPolicy}`);
-  const mode = (env.PI_WEB_AUTH_MODE || "legacy") as AuthMode;
-  if (!["none", "legacy", "passkey", "external"].includes(mode))
+  if (env.PI_WEB_AUTH_MODE === "legacy")
+    throw new Error(legacyAuthMigration);
+  const mode = (env.PI_WEB_AUTH_MODE || "") as AuthMode | "";
+  if (mode && !["none", "passkey", "external"].includes(mode))
     throw new Error(`Invalid PI_WEB_AUTH_MODE: ${mode}`);
   const configured =
     env.PI_WEB_AUTH_METHODS?.split(",")
       .map((value) => value.trim())
       .filter(Boolean) || [];
-  for (const method of configured)
-    if (!methods.has(method as HumanAuthMethod))
+  for (const method of configured) {
+    if (method === "legacy") {
+      throw new Error(legacyAuthMigration);
+    }
+    if (!methods.has(method as HumanAuthMethod)) {
       throw new Error(`Invalid PI_WEB_AUTH_METHODS entry: ${method}`);
+    }
+  }
   if (mode === "none" && configured.length)
     throw new Error(
       "Invalid auth configuration: PI_WEB_AUTH_MODE=none cannot be combined with non-empty PI_WEB_AUTH_METHODS",
     );
-  const translated: HumanAuthMethod[] = mode === "none" ? [] : [mode];
+  if (env.PI_WEB_TOKEN) {
+    if (!isSupportedSavedConfig(savedConfig))
+      throw new Error(legacyAuthMigration);
+    warn(
+      "PI_WEB_TOKEN is ignored because saved authentication settings have retired legacy token authentication. Unset PI_WEB_TOKEN.",
+    );
+  }
+  const translated: HumanAuthMethod[] =
+    mode === "passkey" || mode === "external" ? [mode] : [];
   return {
     policy:
       (explicitPolicy as AccessPolicy | undefined) ||
@@ -51,7 +86,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
         (configured.length ? configured : translated) as HumanAuthMethod[],
       ),
     ],
-    legacyMode: mode,
+    mode: mode || "passkey",
     trustedHeader: env.PI_WEB_AUTH_TRUSTED_HEADER || "",
   };
 }

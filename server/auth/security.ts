@@ -251,7 +251,7 @@ export async function handleSecurityRoute(
     if (
       !Array.isArray(methods) ||
       methods.some(
-        (m) => !["passkey", "password", "legacy", "external"].includes(m),
+        (m) => !["passkey", "password", "external"].includes(m),
       )
     ) {
       send(res, 400, { error: "Invalid methods" });
@@ -261,10 +261,6 @@ export async function handleSecurityRoute(
       send(res, 400, {
         error: "Configure a trusted proxy header on the server first",
       });
-      return true;
-    }
-    if (methods.includes("legacy") && !kernel.legacyToken) {
-      send(res, 400, { error: "No legacy token configured" });
       return true;
     }
     const retiring = [...kernel.methods].some((m) => !methods.includes(m));

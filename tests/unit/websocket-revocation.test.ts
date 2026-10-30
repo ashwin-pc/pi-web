@@ -25,19 +25,18 @@ async function fixture() {
     join(await mkdtemp(join(tmpdir(), "pi-ws-revocation-")), "auth.json"),
   );
   const kernel = new AuthKernel(
-    "legacy",
+    "external",
     store,
-    "legacy-secret",
     false,
     "x-amzn-tunnel-user",
     "authenticated",
-    ["legacy", "external"],
+    ["external"],
   );
   const now = Date.now();
   await store.update((state) => {
     state.config = {
       policy: "authenticated",
-      methods: ["legacy", "external"],
+      methods: ["external"],
     };
     state.sessions.push({
       hash: "session-hash",
@@ -66,9 +65,7 @@ function ticket(via: AuthVia): WsTicket {
           ? "token:machine"
           : via === "external"
             ? "external:owner"
-            : via === "legacy"
-              ? "legacy:token"
-              : via === "open"
+            : via === "open"
                 ? "none"
                 : "owner",
     },
@@ -79,7 +76,7 @@ function ticket(via: AuthVia): WsTicket {
 }
 
 describe("WebSocket revocation", () => {
-  it.each(["session", "token", "legacy", "external", "extension"] as const)(
+  it.each(["session", "token", "external", "extension"] as const)(
     "closes a %s-authenticated socket when sign-out-all advances the revocation epoch",
     async (via) => {
       const { store, revocation } = await fixture();
@@ -90,7 +87,7 @@ describe("WebSocket revocation", () => {
     },
   );
 
-  it.each(["session", "token", "legacy", "external", "extension"] as const)(
+  it.each(["session", "token", "external", "extension"] as const)(
     "keeps live %s credentials connected and accepts a fresh reconnect ticket",
     async (via) => {
       const { revocation } = await fixture();
@@ -137,7 +134,6 @@ describe("WebSocket revocation", () => {
       const kernel = new AuthKernel(
         "none",
         store,
-        "",
         false,
         "",
         "open",
