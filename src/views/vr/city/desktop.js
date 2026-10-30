@@ -12,7 +12,7 @@ import * as N from './city-nav.js';
 import {relDir} from './focus.js';
 
 const UI = V.UI;
-export const desk = {yaw: 0, pitch: -34 * DEG, hfov: 90, lookYaw: 0, lookPitch: -34 * DEG, view: 'city', keys: new Set()};
+export const desk = {yaw: 0, pitch: -34 * DEG, hfov: 90, lookYaw: 0, lookPitch: -34 * DEG, view: 'city', keys: new Set(), zoom: 1, frameHfov: null, instant: false};
 window.__desk = desk;
 export function fitCamera() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -26,14 +26,15 @@ window.addEventListener('resize', fitCamera);
 fitCamera();
 export function updateDeskCamera(dt) {
   swipe.quiet += Math.min(50, dt * 1000);
-  const k = S.reduceMotion ? 1 : 1 - Math.exp(-dt / 0.09);
+  const k = S.reduceMotion || desk.instant ? 1 : 1 - Math.exp(-dt / 0.09); // instant: a finger is dragging the view
   // Round 3: while reading, look at the layout's centre (plus any drag-look offset; it resets when you close).
   if (!S.reading) { desk.readYaw = 0; desk.readPitch = 0; }
   const vc = S.reading ? relDir(A.r3?.viewCentre().yaw || 0, A.r3?.viewCentre().elev || 0) : null;
   const wantPitch = S.reading ? Math.asin(vc.y) + (desk.readPitch || 0) : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y + Math.atan2(-vc.x, -vc.z) + (desk.readYaw || 0) : desk.lookYaw;
   desk.pitch += (wantPitch - desk.pitch) * k;
   // Round 3: the cockpit is 81° wide; the desktop preview widens its view to 100° while panels are open.
-  const wantH = S.reading ? A.r3?.viewHfov() || 100 : 90; if (Math.abs(wantH - desk.hfov) > 0.05) { desk.hfov += (wantH - desk.hfov) * k; fitCamera(); }
+  // pi-web (usability round 2): touch screens frame what fits them (touch.js sets frameHfov), and pinch zooms.
+  const wantH = ((S.reading ? desk.frameHfov?.() || A.r3?.viewHfov() || 100 : 90) * desk.zoom); if (Math.abs(wantH - desk.hfov) > 0.05) { desk.hfov += (wantH - desk.hfov) * k; fitCamera(); }
   let dy = Math.atan2(Math.sin(wantYaw - desk.yaw), Math.cos(wantYaw - desk.yaw)); desk.yaw += dy * k;
   camera.position.set(0, EYE, 0); uiRoot.localToWorld(camera.position);
   camera.rotation.set(desk.pitch, desk.yaw, 0, 'YXZ');
@@ -46,6 +47,14 @@ export function deskFlight(dt) {
 }
 const ndc = new THREE.Vector2();
 let mouseInside = false;
+/** pi-web (usability round 2): the pointer's position from any pointer event. A touch tap has no pointermove before
+ * it, so pointerdown sets the position too (P0-N1: taps on the foldables selected nothing). */
+export function setPointerAt(e, inside = true) {
+  const r = el.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  mouseInside = inside;
+}
+export function pointerGone() { mouseInside = false; mouse.valid = false; }
 export function updateMouseRay() {
   if (!mouseInside || renderer.xr.isPresenting) { mouse.valid = false; return; }
   raycaster.setFromCamera(ndc, camera);
@@ -56,10 +65,10 @@ const el = renderer.domElement;
 /** Right-drag: grab the point of the city under the mouse (on the ground plane) and keep it under the mouse. */
 let pan = null;
 function groundPoint() { const p = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0).applyMatrix4(city.root.matrixWorld); return mouse.ray.intersectPlane(p, new THREE.Vector3()); }
+// Touch is handled by touch.js (taps, swipes, drags, pinch, long-press); these handlers are the mouse and pen.
 el.addEventListener('pointermove', (e) => {
-  const r = el.getBoundingClientRect();
-  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-  mouseInside = true;
+  if (e.pointerType === 'touch') return;
+  setPointerAt(e);
   if (pan) {
     updateMouseRay();
     const g = groundPoint();
@@ -83,10 +92,11 @@ el.addEventListener('pointermove', (e) => {
   const h = intersect(mouse);
   el.style.cursor = mouse.press?.mode === 'scroll' ? 'grabbing' : h?.region ? 'pointer' : 'grab';
 });
-el.addEventListener('pointerleave', () => { mouseInside = false; mouse.valid = false; });
+el.addEventListener('pointerleave', (e) => { if (e.pointerType !== 'touch') pointerGone(); });
 el.addEventListener('pointerdown', (e) => {
-  if (renderer.xr.isPresenting) return;
+  if (renderer.xr.isPresenting || e.pointerType === 'touch') return;
   el.setPointerCapture?.(e.pointerId);
+  setPointerAt(e);
   updateMouseRay();
   // Round 3: Shift+click on an avatar (or a live card) opens that session beside the focused one.
   if (e.button === 0 && e.shiftKey) { const h = intersect(mouse), sid = h?.region?.session || h?.card; if (sid && A.r3) { A.r3.openBeside(sid); logInput('mouse:beside'); return; } }
@@ -96,6 +106,7 @@ el.addEventListener('pointerdown', (e) => {
   if (mouse.press.mode === 'look' || mouse.press.mode === 'look-or-tap') mouse.press.lookStart = {x: e.clientX, y: e.clientY, yaw: desk.lookYaw, pitch: desk.lookPitch, ryaw: desk.readYaw || 0, rpitch: desk.readPitch || 0};
 });
 el.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'touch') return;
   if (pan) { pan = null; return; }
   if (e.button !== 0) return;
   updateMouseRay();

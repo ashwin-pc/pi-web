@@ -6,10 +6,10 @@ import {client} from './client.js';
 import {PPM} from './turns.js';
 import {A, renderer, camera, scene, DEG, READER_POS, animMs, uiRoot} from './core.js';
 import {readers, VIEW_PX, tileStats, TILE} from './reader.js';
-import {city, bar, pops, switchLog, panelLog, openReader, closeReader, getLastSwitch, switchBy, choose, flyToSession, flyToPath, goHome, setTable, isTable, comfort} from './app.js';
+import {city, bar, pops, switchLog, panelLog, openReader, closeReader, getLastSwitch, switchBy, choose, flyToSession, flyToPath, goHome, setTable, isTable, comfort, PAGE} from './app.js';
 import {head, updateHead, intersect, inScene, raycaster, effortLog, pointers} from './input.js';
 import {desk} from './desktop.js';
-import {xrStatus, inIframe} from './xr.js';
+import {xrStatus, inIframe, activationLog} from './xr.js';
 import * as V from './views.js';
 import * as N from './city-nav.js';
 import {cityHooks} from './city-hooks.js';
@@ -63,15 +63,20 @@ window.__vrCity = {
       panelSettled: readers.every((x) => !x.pose || animMs() - x.pose.t0 >= x.pose.dur),
       xrPresenting: renderer.xr.isPresenting, xr: {...xrStatus}, inIframe, lastSwitch: getLastSwitch(), table: isTable(),
       nav: {x: +N.nav.pos.x.toFixed(3), y: +N.nav.pos.y.toFixed(3), z: +N.nav.pos.z.toFixed(3), yaw: +N.nav.yaw.toFixed(5), scale: +N.nav.scale.toFixed(4), anim: !!N.nav.anim, altitude: +N.altitude(head.local).toFixed(2)},
-      bar: {yaw: +(bar.yaw / DEG).toFixed(2), page: bar.page, start: bar.start, pages: Math.ceil(S.pinned.length / 10), moreOpen: bar.moreOpen, highlight: A.highlight || null, preview: pops.preview.mesh.visible ? pops.preview.sid : null},
+      bar: {yaw: +(bar.yaw / DEG).toFixed(2), page: bar.page, start: bar.start, vis: PAGE, pages: Math.ceil(S.pinned.length / 10), moreOpen: bar.moreOpen, highlight: A.highlight || null, preview: pops.preview.mesh.visible ? pops.preview.sid : null},
       head: {yaw: +(head.yaw / DEG).toFixed(2), pitch: +(head.pitch / DEG).toFixed(2)}, hoverAvatar: A.hoverAvatar || null,
     };
   },
   fps() { const w = A.fpsWin.slice(-60); return w.length ? +(1000 / (w.reduce((a, b) => a + b, 0) / w.length)).toFixed(1) : 0; },
   stats() { const i = renderer.info; return {calls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures}; },
-  allRegions() { return panels.filter((p) => inScene(p.mesh) || p.batch).flatMap((p) => p.regions.map((r) => r.id)); },
+  allRegions() {
+    const dom = A.touch?.dock ? [...S.pinned.map((id) => `avatar:${id}`), 'bar:needs', 'bar:home', 'bar:more'] : []; // pi-web: the touch dock
+    return [...panels.filter((p) => inScene(p.mesh) || p.batch).flatMap((p) => p.regions.map((r) => r.id)), ...dom];
+  },
   world(id) { const c = corners(id); return c && {x: c.c.x, y: c.c.y, z: c.c.z}; },
   project(id) {
+    const d = A.touch?.domTarget?.(id); // pi-web: on touch screens the bar is the DOM dock
+    if (d) { const b = d.getBoundingClientRect(); return {x: b.left + b.width / 2, y: b.top + b.height / 2, visible: b.width > 0 && b.right > 0 && b.left < innerWidth && b.bottom > 0 && b.top < innerHeight, dom: true}; }
     const c = corners(id);
     if (!c) return null;
     const v = c.c.clone().project(camera);
@@ -79,6 +84,8 @@ window.__vrCity = {
     return {x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height, visible: v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1};
   },
   regionPx(id) {
+    const d = A.touch?.domTarget?.(id);
+    if (d) { const b = d.getBoundingClientRect(); return {w: Math.round(b.width), h: Math.round(b.height), dom: true}; }
     const c = corners(id); if (!c) return null;
     const r = el.getBoundingClientRect(), P = (v) => { const q = v.clone().project(camera); return [r.left + (q.x + 1) / 2 * r.width, r.top + (1 - q.y) / 2 * r.height]; };
     const l = P(c.l), rr = P(c.r), t = P(c.t), b = P(c.b);
@@ -107,6 +114,7 @@ window.__vrCity = {
   cityFiles() { return {files: city.land.files.size, dirs: city.land.byPath.size, home: client.files.home}; },
   /** pi-web: the active reader's tiles. Is every turn laid out, does the tiling cover each turn's full height (no cut
    * turns), and is the text at the bottom of the view drawn? Plus resident tile textures and per-frame stats. */
+  tileStats() { return {...tileStats, slow: A.slowPanel, phase: A.phaseMs ? Object.fromEntries(Object.entries(A.phaseMs).map(([k, v]) => [k, +v.toFixed(1)])) : null}; },
   readerTiles() {
     const r = A.active, set = r.set; if (!set) return null;
     const turns = set.turns.map((t) => ({i: t.i, laid: !!t.lay, h: t.h, tiled: t.tiles.reduce((a, tl) => Math.max(a, tl.y0 + tl.ch), 0), drawn: t.tiles.filter((tl) => tl.panel && !tl.dirty).length, tiles: t.tiles.length}));
@@ -121,7 +129,7 @@ window.__vrCity = {
     const it = tt.lay.items[tt.lay.items.length - 1], y = tt.top + it.y + it.h / 2;
     return {y: Math.round(y), scroll: Math.round(r.scroll), view: VIEW_PX, visible: y >= r.scroll && y <= r.scroll + VIEW_PX, drawn: !!set.tileAt(y)?.drawn};
   },
-  composerFocus() { const a = document.activeElement; const xs = renderer.xr.getSession?.(); return {active: a?.id || a?.tagName || null, focused: S.composer.focused, keyboard: xs ? xs.isSystemKeyboardSupported ?? null : null, dictationAvailable: V.UI.dictationAvailable}; },
+  composerFocus() { const a = document.activeElement; const xs = renderer.xr.getSession?.(); return {active: a?.id || a?.tagName || null, focused: S.composer.focused, keyboard: xs ? xs.isSystemKeyboardSupported ?? null : null, dictationAvailable: V.UI.dictationAvailable, log: V.UI.focusLog || [], activation: [...activationLog]}; },
   clientEvents(n = 40) { return (window.__clientEvents || []).slice(-n); },
   header() { return A.active.header.drawn || null; },
   lastTool(id) { const s = get(id); const m = [...s.messages].reverse().find((x) => x.type === 'tool'); return m ? {name: m.name, status: m.status, sum: m.sum} : null; },

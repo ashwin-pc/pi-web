@@ -13,6 +13,7 @@ import {avatarsReady} from './avatars.js';
 import {mouse, pointers, updateHovers, updateHead, head, pressMove, panPoints} from './input.js';
 import {updateDeskCamera, updateMouseRay, deskFlight} from './desktop.js';
 import {xrFrame, updateXRVisuals, xrInput} from './xr.js';
+import './touch.js'; // pi-web (usability round 2): touch screens without a headset
 import './hooks.js';
 import {r3} from './r3.js'; // round 3: focus cockpit, layouts, artifacts
 import './r3-hooks.js';
@@ -58,19 +59,31 @@ renderer.setAnimationLoop((time, frame) => {
   for (const r of readers) r.tick(dt);
   tickReaders();
   for (const r of readers) r.updateClip();
+  const ph0 = performance.now();
   r3.frame(dt);
+  const ph1 = performance.now();
   followFrame(dt);
+  const ph2 = performance.now();
   updateHovers();
   for (const p of pointers) if (p !== mouse && p.press) pressMove(p);
   // The composer redraws for the dictation meter (8 a second) and for its caret (twice a second, pi-web: it was 8,
   // each a texture upload of the side columns' atlas).
   if (S.composer.dictating && t - lastBlink > 120 || S.composer.focused && Math.floor(t / 500) !== Math.floor(lastBlink / 500)) { composer.invalidate(); lastBlink = t; }
-  for (const p of panels) if (!p.isTurn) p.update();
+  const ph3 = performance.now();
+  // pi-web (usability round 2): redraws share a 4 ms budget a frame (the first always runs); the rest wait a frame.
+  let slow = null;
+  for (const p of panels) if (!p.isTurn && (!p.dirty || performance.now() - ph3 < 4)) { const q0 = performance.now(); if (p.update() && performance.now() - q0 > (slow?.ms || 2)) slow = {name: p.name, ms: +(performance.now() - q0).toFixed(1)}; }
+  A.slowPanel = slow;
+  const ph4 = performance.now();
   prefetchStep();
   tileStep(); // pi-web: turn tiles, windowed and budgeted (reader.js)
+  const ph5 = performance.now();
   if (frame) updateXRVisuals();
   sideBatch.sync();
+  const ph6 = performance.now();
   renderer.render(scene, camera);
+  // pi-web: where this frame's time went (ms), for the measurement tools.
+  A.phaseMs = {r3: ph1 - ph0, follow: ph2 - ph1, hovers: ph3 - ph2, panels: ph4 - ph3, tiles: ph5 - ph4, batch: ph6 - ph5, render: performance.now() - ph6};
 });
 // Running timers in the bar and the header tick once a second; live data arrives through the client.
 const tickTimer = setInterval(() => emit('tick'), 1000);

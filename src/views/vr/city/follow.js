@@ -53,6 +53,7 @@ export function followFrame(dt) {
   bar.pointed = !!A.barPointed;
   bar.panelCap = renderer.xr.isPresenting && S.reading ? A.r3?.barCap(bar.yaw, bar.halfWidthDeg(), bar.halfHeightDeg()) ?? null : null; // round 3: the bar stays below every panel
   bar.update(head.local, head.yaw, dt, deskElev, head.pitch, deskElev || contentLow == null ? null : head.pitch / DEG + contentLow);
+  bar.g.visible = !(A.touch?.dock && !renderer.xr.isPresenting); // pi-web: touch screens use the DOM dock (touch.js)
   // Pointing at an avatar for a moment highlights its beam and building, with a thread to it.
   const hv = A.hoverAvatar || null;
   if (hv !== hoverSid) { hoverSid = hv; hoverSince = performance.now(); }
