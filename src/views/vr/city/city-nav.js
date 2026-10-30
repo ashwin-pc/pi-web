@@ -18,8 +18,22 @@ export function setHome(L) {
   // Face the middle between the districts' centres, so every workspace is in front of you.
   const ds = L.districts.filter((d) => !d.node.meta?.big), c = {x: ds.reduce((a, d) => a + (d.rect.x0 + d.rect.x1) / 2, 0) / ds.length, z: ds.reduce((a, d) => a + (d.rect.z0 + d.rect.z1) / 2, 0) / ds.length};
   const yaw = Math.atan2(-(c.x - eye.x), -(c.z - eye.z));
+  clearOfWalls(L, eye, yaw);
   home = {pos: eye.clone().sub(new THREE.Vector3(0, EYE, 0)), yaw, scale: 1};
   return home;
+}
+/** pi-web (usability round 2): a vantage must not open onto a building's lit wall a few metres away (it filled a
+ * quarter of the view at Home and at the start). While a building rises near eye height (top above eye − 25 m) within
+ * 70 m and ±60° of the view, step the eye back and up, 15 m at a time (at most 12 steps). Mutates `eye`. */
+export function clearOfWalls(L, eye, yaw) {
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+  const blocked = () => L.buildings.some((g) => {
+    const dx = g.x - eye.x, dz = g.z - eye.z, d = Math.hypot(dx, dz) - Math.max(g.w, g.d) / 2;
+    if (d > 70 || (g.base || 0) + g.h < eye.y - 25) return false;
+    return (dx * fx + dz * fz) / Math.max(1e-6, Math.hypot(dx, dz)) > Math.cos(60 * Math.PI / 180) || d < 12;
+  });
+  for (let i = 0; i < 12 && blocked(); i++) { eye.x -= fx * 15; eye.z -= fz * 15; eye.y += 6; }
+  return eye;
 }
 export const homeView = () => home;
 /** pi-web (usability round 1): where you start. A low overlook (30 m up, 120 m back from the districts' middle, facing
@@ -32,8 +46,9 @@ export function startView(L) {
   const back = new THREE.Vector3(L.hall.x - c.x, 0, L.hall.z - c.z);
   if (back.lengthSq() < 1) back.set(0, 0, 1);
   back.normalize();
-  const eye = c.clone().addScaledVector(back, 120).setY(30);
-  return {pos: eye.sub(new THREE.Vector3(0, EYE, 0)), yaw: Math.atan2(-(c.x - eye.x), -(c.z - eye.z)), scale: 1};
+  const eye = c.clone().addScaledVector(back, 120).setY(30), yaw = Math.atan2(-(c.x - eye.x), -(c.z - eye.z));
+  clearOfWalls(L, eye, yaw);
+  return {pos: eye.sub(new THREE.Vector3(0, EYE, 0)), yaw, scale: 1};
 }
 /** City-space position of a user-space point (eye, hand). */
 export function toCity(u, out = new THREE.Vector3()) { q.setFromAxisAngle(Y, nav.yaw); return out.copy(u).multiplyScalar(nav.scale).applyQuaternion(q).add(nav.pos); }

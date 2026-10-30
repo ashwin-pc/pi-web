@@ -32,7 +32,10 @@ function drawPreview(ctx, p) {
   // Actions along the bottom: open (the main one), beside, and fly to its place in the city. pi-web (usability
   // round 1): each button is 104 px tall (3.2° from the eye, was 1.5°) and a third of the card wide.
   const BH = 104, by = H - 12 - BH / 2;
-  const acts = [{id: 'pv:open', label: 'Open', ic: 'chevron-right', click: () => UIB.choose(id)}, {id: 'pv:beside', label: 'Beside', ic: 'columns-2', click: () => UIB.beside?.(id)}, {id: 'pv:fly', label: 'Fly to', ic: 'locate-fixed', click: () => UIB.flyToSession(id)}];
+  // pi-web (usability round 2): after any of them the card goes away (it lingered over the left Pair tile) until you
+  // point at something else.
+  const done = (fn) => () => { if (p.pops) p.pops.suppress = id; fn(); };
+  const acts = [{id: 'pv:open', label: 'Open', ic: 'chevron-right', click: done(() => UIB.choose(id))}, {id: 'pv:beside', label: 'Beside', ic: 'columns-2', click: done(() => UIB.beside?.(id))}, {id: 'pv:fly', label: 'Fly to', ic: 'locate-fixed', click: done(() => UIB.flyToSession(id))}];
   const bw = (W - 24 - 12 * (acts.length - 1)) / acts.length;
   for (const [i, b] of acts.entries()) {
     const x = 12 + i * (bw + 12), hov = p.isHover(b.id);
@@ -73,7 +76,7 @@ export class BarPops {
   constructor(bar) {
     this.bar = bar;
     this.preview = new Panel('preview', {w: PREVIEW.w, h: PREVIEW.h, ppm: PREVIEW.ppm, draw: drawPreview, renderOrder: 32, depthWrite: false});
-    this.preview.mat.depthTest = false; this.preview.mesh.visible = false; this.preview.sid = null;
+    this.preview.mat.depthTest = false; this.preview.mesh.visible = false; this.preview.sid = null; this.preview.pops = this; this.suppress = null;
     this.menu = new Panel('menu', {w: MENU.w, h: MENU.h, ppm: MENU.ppm, draw: drawMenu, renderOrder: 32, depthWrite: false});
     this.menu.mat.depthTest = false; this.menu.mesh.visible = false;
     bar.g.add(this.preview.mesh, this.menu.mesh);
@@ -92,7 +95,8 @@ export class BarPops {
   update(hoverSid) {
     if (hoverSid) client.warm?.([hoverSid]); // pi-web: its transcript loads when you point at it (for the preview)
     const s = hoverSid && get(hoverSid), k = s && indicator(s);
-    const show = !!s && !this.bar.moreOpen;
+    if (this.suppress && hoverSid !== this.suppress) this.suppress = null;
+    const show = !!s && !this.bar.moreOpen && hoverSid !== this.suppress;
     if (show) {
       const c = cellOf(hoverSid, this.bar.start);
       if (c) {

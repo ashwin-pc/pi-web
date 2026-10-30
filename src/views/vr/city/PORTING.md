@@ -57,5 +57,17 @@ live-load probe. The artifact modules read real files:
 | `bar.js`, `bar-pops.js`, `state.js` | 8 named avatars; follow past 48°, never while pointed at; under the panels and farther out while reading; needs you = finished-and-unread or asking (not workers); "editing reader.js" status |
 | `xr.js`, `city-nav.js`, `r3.js` | Grip and stick dead zones; a low start pose that opens the session that needs you; local-floor fallback, reset, framebuffer log; Exit VR |
 
+### Usability round 2 (the critic's second pass, fixed in pi-web)
+
+| File | Edit |
+|---|---|
+| `touch.js` (new), `desktop.js`, `follow.js` | Touch screens without a headset: taps set the pointer on pointerdown (no hover first); swipe the conversation for the next session, drag to scroll, drag the city for height, pinch to zoom, long-press an avatar for its card; a DOM dock (all pins, Needs you, Home or Reply, More) replaces the 3D bar; More and card sheets; a gesture coach; a typing bar |
+| `reader.js`, `app.js`, `turns.js`, `main.js` | A panel that appears is held invisible until its text is drawn (150 ms, at least 4 frames); far jumps wait for their destination, then cut; grey placeholder lines; urgent tiles get raster time beyond the byte budget; layout yields per block; panel redraws share 4 ms a frame |
+| `artifact-draw.js`, `artifacts.js` | Thumbnails at 1.5×, one a frame, in memory (a GPU-backed one cost 14 ms per rail redraw); long reports stop drawing below the thumbnail; the rail redraws only when the artifact list changes |
+| `input.js`, `bar.js`, `bar-pops.js` | No double pinch on empty space; a Needs you button on the bar (7 avatars); the hover card closes after one of its actions |
+| `xr.js`, `app.js` | Focus the text field in the select event (user activation), logged; the local fallback resets; the auto-opened session is not read before your first input |
+| `views.js`, `focus.js`, `r3.js`, `pedestal.js` | 34° conversation, cockpit never below eye level minus 3°, so the bar stays at −28° or higher and 2.5° clear; two-line titles; a "new line" toggle; a "jump faster" tip |
+| `state.js`, `city-nav.js`, `reader.js` | `dir/file` for the running file; vantages step back from a lit wall; "back" goes to the turn before the one you read |
+
 Not ported: `record.mjs` (recording), `build.mjs` (pi-web's Vite build bundles three.js as a lazy chunk), the mock's
 test harnesses (pi-web's Playwright specs `tests/e2e/vr-view.spec.ts` and `vr-xr.spec.ts` cover the live view).

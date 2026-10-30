@@ -28,8 +28,11 @@ export const room = {E: new THREE.Vector3(0, 1.6, 0), gaze: 0, pitch: FOCUS.E, s
 export function setAnchor(headWorld, gazePitchDeg) {
   room.E.copy(world.worldToLocal(headWorld.clone()));
   room.gaze = gazePitchDeg;
-  room.pitch = clamp(gazePitchDeg, -32, 10) + FOCUS.E;
+  // pi-web (usability round 2): never lower than PITCH_MIN, so the composer's bottom stays above −22° and the bar
+  // (2.5° under it) at −28° or higher; you read slightly below eye level instead of looking down at your knees.
+  room.pitch = Math.max(PITCH_MIN, clamp(gazePitchDeg, -32, 10) + FOCUS.E);
 }
+export const PITCH_MIN = 2.5;
 /** Direction for yaw (degrees, positive = right) and elevation (degrees), in `world` coordinates. */
 export function dirOf(yaw, elev, out = new THREE.Vector3()) { const a = yaw * DEG, b = elev * DEG; return out.set(Math.sin(a) * Math.cos(b), Math.sin(b), -Math.cos(a) * Math.cos(b)); }
 const eyeW = new THREE.Vector3();

@@ -115,7 +115,7 @@ export const r3 = {
       const d = u.worldToLocal(c.clone()).sub(hl), az = Math.atan2(-d.x, -d.z), el = Math.asin(clamp(d.y / d.length(), -1, 1)) / DEG;
       const phi = Math.atan2(Math.sin(az - yawRad), Math.cos(az - yawRad)) / DEG;
       if (Math.abs(phi) > halfWDeg + 2) continue;
-      const e = el - topDeg - 1; // the bar is a level band (a cone) while panels are open
+      const e = el - topDeg - 2.5; // the bar is a level band (a cone) while panels are open; pi-web: 2.5° clear of them (was 1°)
       cap = cap == null ? e : Math.min(cap, e);
     }
     return cap;

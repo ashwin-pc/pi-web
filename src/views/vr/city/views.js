@@ -1,6 +1,10 @@
 // Canvas drawing for the Town's reading panel: header, turn strip, composer, settings, pill (borrowed from vr-breeze).
 import {C, MONO, font, fillRR, icon, text, dot, measure, ellipsize} from './draw.js';
 import {S, get, indicator, statusText, folderLabel, waitingCount, turnsOf, needsYou, fenceLine} from './state.js';
+import {ICONS} from './icons.js';
+
+// pi-web (usability round 2): the composer's "new line" toggle (lucide corner-down-left, ISC).
+ICONS['corner-down-left'] ||= ['M20 4v7a4 4 0 0 1-4 4H4', 'm9 10-5 5 5 5'];
 
 export const UI = {};
 export const STATUS_COL = {running: '#e2b15f', waiting: '#8fb8ff', unread: '#ffd58a', asking: '#ffd58a', error: '#fb7185', current: '#f2f2f2', idle: '#6f6f6f'};
@@ -27,7 +31,9 @@ export function wrapLines(ctx, str, maxW, maxLines) {
 // Round 3: the focused session gets the room. In metres at the round 1 scale (1.4 m); the focus panel shows it 1.9 m
 // away at FOCUS.S (core.js), so text stays about 1.2° while the panel is 55° × 44° (round 2: 50° × 30°).
 // pi-web (usability round 1): 35° wide (was 55°), so a line never needs a head turn; 39° tall.
-export const READER = {w: 0.95, headerH: 0.13, streamH: 0.92, gutter: 0.12, ppm: 1100};
+// pi-web (usability round 2): 34° tall (streamH 0.78, was 0.92), so the cockpit and the bar under it fit between eye
+// level and −31°: the bar no longer sits at −36° near your knees while you read.
+export const READER = {w: 0.95, headerH: 0.13, streamH: 0.78, gutter: 0.12, ppm: 1100};
 /** pi-web's status bar: the title in bold on the dark bar, the runtime status ("running" in gold, with the tool) and
  * the session's note below it, the context meter as a thin track along the bottom edge, and the City and Fly-to buttons. */
 export function drawHeader(ctx, p) {
@@ -51,11 +57,25 @@ export function drawHeader(ctx, p) {
   text(ctx, UI.xr ? 'Fly to' : 'Fly to (F)', W - BW - FW + 32, H / 2 + 1, {size: 25, weight: 700, color: C.text});
   p.region('header:fly', W - BW - FW - 26, 0, FW + 10, H, {click: () => UI.flyCurrent()});
   const n = r.set?.turns.length || 0;
-  const y1 = H * 0.34, y2 = H * 0.70;
+  const y1 = H * 0.34;
   const right = W - BW - FW - 40;
   const pos = n ? `Turn ${Math.min(n, r.turnIdx + 1)} of ${n}` : '';
-  const posW = text(ctx, pos, right, y1, {size: 23, color: C.muted, align: 'right', weight: 600});
-  text(ctx, s.title, 36, y1, {size: 36, weight: 700, maxW: right - posW - 60});
+  // pi-web (usability round 2): a title that does not fit takes two lines (whole words) at a smaller size, instead of
+  // "Deleting Decide…"; the status line moves down under it.
+  ctx.font = font(36, 700);
+  const tw0 = ctx.measureText(pos).width, maxT = right - 36 - (n ? 0 : 0);
+  const one = ctx.measureText(s.title).width <= right - tw0 - 60 - 36;
+  let y2 = H * 0.70;
+  if (one) { text(ctx, pos, right, y1, {size: 23, color: C.muted, align: 'right', weight: 600}); text(ctx, s.title, 36, y1, {size: 36, weight: 700}); }
+  else {
+    ctx.font = font(30, 700);
+    const words = String(s.title).split(/\s+/).filter(Boolean), lines = [''];
+    for (const w of words) { const t = lines.at(-1) ? `${lines.at(-1)} ${w}` : w; const lim = lines.length === 1 ? maxT : right - tw0 - 60 - 36; if (ctx.measureText(t).width <= lim || !lines.at(-1)) lines[lines.length - 1] = t; else if (lines.length < 2) lines.push(w); else { lines[1] = `${lines[1]} ${w}`; } }
+    text(ctx, lines[0], 36, H * 0.22, {size: 30, weight: 700, maxW: maxT});
+    if (lines[1]) text(ctx, lines[1], 36, H * 0.48, {size: 30, weight: 700, maxW: right - tw0 - 60 - 36});
+    text(ctx, pos, right, H * 0.48, {size: 23, color: C.muted, align: 'right', weight: 600});
+    y2 = H * 0.76; p.drawn.titleLines = lines.filter(Boolean);
+  }
   // Runtime status, as pi-web shows it above the composer: running in gold, with the tool.
   let x = 36;
   p.drawn.status = kind === 'running' ? `● ${statusText(s)}` : statusText(s);
@@ -109,6 +129,14 @@ export const PILL = {w: 0.46, h: 0.17, ppm: 1000};
 export function drawPill(ctx, p) {
   const W = p.cw, H = p.ch;
   const hov = p.isHover('pill');
+  // pi-web (usability round 2): in a long session, scrolling with the stick for a while teaches the fast routes.
+  if (p.reader?.tipOn?.()) {
+    fillRR(ctx, 6, 8, W - 12, H - 16, 26, 'rgba(12,12,12,0.96)', 'rgba(226,177,95,0.7)', 3);
+    text(ctx, 'Long session? Point at the strip', W / 2, H * 0.36, {size: 28, weight: 700, align: 'center', maxW: W - 40});
+    text(ctx, 'on the right to jump, or pick a turn in the outline', W / 2, H * 0.66, {size: 22, weight: 600, color: C.muted, align: 'center', maxW: W - 40});
+    p.region('pill', 0, 0, W, H, {click: () => p.reader.hideTip()});
+    return;
+  }
   const pw = 300, ph = 76;
   fillRR(ctx, (W - pw) / 2, (H - ph) / 2, pw, ph, ph / 2, hov ? '#f0c27a' : C.accent, null);
   icon(ctx, 'arrow-down', (W - pw) / 2 + 52, H / 2, 32, '#111', 3);
@@ -119,12 +147,14 @@ export function drawPill(ctx, p) {
 // ---------------------------------------------------------------- composer
 /** pi-web (usability round 1): the composer is a row directly under the conversation (it was a column 36° to the
  * right): the draft, then the mic and Send, each button as tall as the row (about 6° from the eye in the cockpit). */
-export const COMPOSER = {w: READER.w, h: 0.16, ppm: 1000};
+export const COMPOSER = {w: READER.w, h: 0.14, ppm: 1000};
 export function drawComposer(ctx, p) {
   const W = p.cw, H = p.ch;
   const c = S.composer;
   const focused = c.focused || c.dictating;
-  const BW = Math.round(H * 1.15), gap = 12, fw = W - 2 * (BW + gap);
+  // pi-web (usability round 2): a "new line" toggle beside the box. With it on, Enter (the Quest keyboard's only way
+  // to break a line) adds a new line and only Send sends; off, Enter sends (the default).
+  const BW = Math.round(H * 1.15), NW = Math.round(H * 0.85), gap = 12, fw = W - 2 * (BW + gap) - (NW + gap);
   fillRR(ctx, 4, 4, fw - 8, H - 8, 26, '#0f0f0f', focused ? 'rgba(226,177,95,0.6)' : '#242424', 3);
   p.region('composer:input', 0, 0, fw, H, {click: () => UI.focusComposer()});
   let x = 28;
@@ -138,7 +168,7 @@ export function drawComposer(ctx, p) {
   ctx.font = font(30);
   if (c.text) {
     // The end of the draft (what you are typing), on one line.
-    let shown = c.text.replace(/\s+/g, ' ');
+    let shown = c.text.replace(/[ \t]+/g, ' ').replace(/\n/g, ' ⏎ ');
     while (shown.length > 1 && ctx.measureText(shown).width > fw - x - 40) shown = shown.slice(1);
     const tw = text(ctx, shown, x, y, {size: 30});
     if (focused && Math.floor(performance.now() / 500) % 2 === 0) { ctx.fillStyle = C.accent; ctx.fillRect(x + tw + 3, y - 17, 3, 34); }
@@ -147,7 +177,11 @@ export function drawComposer(ctx, p) {
     if (c.note) text(ctx, c.note, x, y + 22, {size: 21, color: C.faint, maxW: fw - x - 30});
     if (focused && Math.floor(performance.now() / 500) % 2 === 0) { ctx.fillStyle = C.accent; ctx.fillRect(x, y - 17, 3, 34); }
   } else text(ctx, 'Listening…', x, y, {size: 28, color: C.muted});
-  const micX = fw + gap, sendX = micX + BW + gap;
+  const nlX = fw + gap, micX = nlX + NW + gap, sendX = micX + BW + gap, nlHov = p.isHover('composer:newline');
+  fillRR(ctx, nlX, 4, NW, H - 8, 26, c.newline ? 'rgba(226,177,95,0.22)' : nlHov ? '#2c2c2c' : '#1a1a1a', c.newline ? 'rgba(226,177,95,0.7)' : '#2c2c2c', 2);
+  icon(ctx, 'corner-down-left', nlX + NW / 2, H / 2 - 12, 40, c.newline ? C.accent : C.muted, 2.6);
+  text(ctx, c.newline ? 'Enter: line' : 'Enter: send', nlX + NW / 2, H - 24, {size: 15, weight: 700, color: c.newline ? C.accent : C.dim, align: 'center'});
+  p.region('composer:newline', nlX - gap / 2, 0, NW + gap, H, {click: () => UI.toggleNewline?.()});
   const micHov = p.isHover('composer:mic'), sendHov = p.isHover('composer:send');
   fillRR(ctx, micX, 4, BW, H - 8, 26, c.dictating ? 'rgba(251,113,133,0.22)' : micHov ? '#2c2c2c' : '#1a1a1a', '#2c2c2c', 2);
   icon(ctx, 'mic', micX + BW / 2, H / 2, 52, c.dictating ? C.danger : UI.dictationAvailable === false ? C.dim : C.text, 2.6);

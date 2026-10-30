@@ -140,7 +140,8 @@ export const DWELL_MS = 2000;
 export function tickDwell(reading) {
   const d = S.dwell;
   if (!d || d.done) return;
-  if (!reading) { d.since = null; return; }
+  // pi-web (usability round 2): the session opened for you on Enter VR is not marked read until your first input.
+  if (!reading || S.dwellHold) { d.since = null; return; }
   const t = performance.now();
   if (d.since == null) d.since = t;
   if (t - d.since >= (S.dwellMs ?? DWELL_MS)) markRead(d.id);
@@ -169,7 +170,8 @@ export function runningWhat(s) {
     if (m.type !== 'tool' || m.status !== 'running') continue;
     const t = currentTool(s), path = m.args?.path || (m.name === 'read' || m.name === 'write' || m.name === 'edit' ? m.sub : '');
     const cmd = String(m.args?.command || m.sub || '').split(' · ')[0].trim();
-    if (path) return `${t.label} ${String(path).split('/').filter(Boolean).pop()}`;
+    // pi-web (usability round 2): the folder too ("editing city/reader.js"), so you can tell which main.ts it is.
+    if (path) return `${t.label} ${String(path).split('/').filter(Boolean).slice(-2).join('/')}`;
     if (t.act === 'search') { const toks = cmd.split(/\s+/).filter((x) => /[/.]/.test(x) && !x.startsWith('-')); return `searching ${toks.pop() || cmd.split(' ')[0]}`; }
     return `${m.name === 'bash' ? 'running' : m.name} ${cmd.length > 28 ? `${cmd.slice(0, 27)}…` : cmd}`.trim();
   }

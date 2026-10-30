@@ -6,7 +6,7 @@ import {Panel} from './panel.js';
 import {C, fillRR, icon, text} from './draw.js';
 import {room, placeRel, relDir} from './focus.js';
 import {sideSlotYaw, WIDE, closeArtifact} from './artifacts.js';
-import {A, world, clamp, DEG} from './core.js';
+import {A, world, clamp, DEG, FOCUS} from './core.js';
 import {host} from './host.js';
 import {modelGeometry} from './model-load.js';
 
@@ -94,7 +94,8 @@ export class Pedestal {
   tick(show) {
     this.g.visible = show && !!this.art;
     if (!this.g.visible) return;
-    const dy = sideSlotYaw(WIDE.model), de = room.gaze - PED.below - room.pitch;
+    // pi-web (usability round 2): relative to the cockpit (its centre can now sit above your gaze), not to the gaze.
+    const dy = sideSlotYaw(WIDE.model), de = -PED.below - FOCUS.E;
     placeRel(this.g, dy, de, PED.dist);
     // Keep the pedestal upright: it faces you in yaw only.
     const d = relDir(dy, de); this.g.rotation.set(0, -Math.atan2(d.x, -d.z), 0);
