@@ -604,6 +604,9 @@ describe("multi-method human authentication", () => {
     const cookie = original.headers["set-cookie"].split(";")[0];
     const auth = await kernel.gate(req({}, { cookie }));
     if (!auth.ok) throw new Error("No session");
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
     const manage = async (path: string, body: unknown, method = "PUT") => {
       const res = response();
       await handleSecurityRoute(
@@ -624,6 +627,10 @@ describe("multi-method human authentication", () => {
         })
       ).status,
     ).toBe(200);
+    expect((await store.read()).config?.methods.sort()).toEqual([
+      "external",
+      "password",
+    ]);
     expect(
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(409);

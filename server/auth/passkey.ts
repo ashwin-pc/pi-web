@@ -28,12 +28,15 @@ function allowOptions(peer: string) {
 }
 function rememberChallenge(peer: string, challenge: string, value: Omit<(typeof challenges extends Map<string, infer V> ? V : never), "peer">) {
   const now = Date.now();
-  let peerCount = 0;
+  const peerChallenges: string[] = [];
   for (const [key, pending] of challenges) {
     if (pending.expiresAt <= now) challenges.delete(key);
-    else if (pending.peer === peer) peerCount++;
+    else if (pending.peer === peer) peerChallenges.push(key);
   }
-  if (peerCount >= MAX_CHALLENGES_PER_PEER || challenges.size >= MAX_CHALLENGES) return false;
+  while (peerChallenges.length >= MAX_CHALLENGES_PER_PEER) {
+    challenges.delete(peerChallenges.shift()!);
+  }
+  if (challenges.size >= MAX_CHALLENGES) return false;
   challenges.set(challenge, { ...value, peer });
   return true;
 }

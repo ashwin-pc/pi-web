@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { trustedProxyPeer } from "./proxy.js";
 import { readJsonBody } from "./requestBody.js";
+import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
   hashPassword,
   hashSecret,
@@ -246,6 +247,7 @@ export async function changePassword(
   password: unknown,
   sessionHash: string,
   revokeApiTokens = true,
+  enable?: { policy: AccessPolicy; methods: Iterable<HumanAuthMethod> },
 ) {
   const hash = await validatedPasswordHash(password);
   await store.update((state) => {
@@ -266,5 +268,11 @@ export async function changePassword(
     );
     for (const session of state.sessions)
       if (session.hash !== sessionHash) session.revokedAt = Date.now();
+    if (enable) {
+      state.config = {
+        policy: state.config?.policy || enable.policy,
+        methods: [...new Set([...(state.config?.methods || enable.methods), "password" as const])],
+      };
+    }
   });
 }
