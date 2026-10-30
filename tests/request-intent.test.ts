@@ -83,6 +83,7 @@ describe("request intent gate", () => {
       { kernel: authenticated, req: message({ ...sameOrigin, cookie: `pi_web_session=${sessionSecret}` }), via: "session" },
       { kernel: open, req: message(sameOrigin), via: "open" },
       { kernel: authenticated, req: message({ authorization: `Bearer ${apiSecret}` }), via: "token" },
+      { kernel: authenticated, req: message({ authorization: `Bearer ${apiSecret}`, "x-test-user": "proxy-owner" }), via: "token" },
     ] as const;
 
     for (const entry of cases) {
@@ -90,5 +91,9 @@ describe("request intent gate", () => {
       expect(auth).toMatchObject({ ok: true, via: entry.via });
       if (auth.ok) expect(requestIntentFailure(entry.req, new URL(entry.req.url!, origin), auth.via, origin)).toBeUndefined();
     }
+    expect(await authenticated.gate(message({
+      authorization: "Bearer invalid",
+      "x-test-user": "proxy-owner",
+    }))).toEqual({ ok: false });
   });
 });

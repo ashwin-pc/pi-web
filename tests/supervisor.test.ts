@@ -317,6 +317,7 @@ describe("pi-web supervisor", () => {
 
     const machineHeaders = {
       authorization: `Bearer ${machineToken}`,
+      "x-amzn-tunnel-user": "proxy-added-owner",
     };
     expect(
       (await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
