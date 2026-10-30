@@ -123,7 +123,9 @@ function gesturePoint(p, out) {
   if (p.grip && p.kind === 'transient') return out.copy(p.grip);
   return out.copy(p.ray.origin).addScaledVector(p.ray.direction, p.kind === 'hand' ? 0.35 : 0.6);
 }
-const GC = {mouse: {flick: 0.1, scroll: 0.012, gain: PPM}, hand: {flick: 0.06, scroll: 0.02, gain: 3200}, controller: {flick: 0.07, scroll: 0.02, gain: 3200}, transient: {flick: 0.06, scroll: 0.02, gain: 3200}};
+// pi-web (usability round 3): a mouse flick is 0.4 m on the panel (about 130 px on a desktop preview, was 0.1 m, 40 px)
+// and must be quick (within FLICK_MS): a short or slow sideways mouse drag no longer switches session.
+const GC = {mouse: {flick: 0.4, scroll: 0.012, gain: PPM}, hand: {flick: 0.06, scroll: 0.02, gain: 3200}, controller: {flick: 0.07, scroll: 0.02, gain: 3200}, transient: {flick: 0.06, scroll: 0.02, gain: 3200}};
 const gcfg = (p) => GC[p.kind] || GC.hand;
 export const FLICK_MS = 450, PAN_START = 0.025; // a pinch that moves sideways fast is a flick; any other drag pans
 export const effortLog = [];
@@ -170,7 +172,7 @@ export function pressMove(p) {
   const cfg = gcfg(p), age = nowMs() - pr.t0;
   if (!pr.mode) {
     const dz = Math.abs(d.dot(tmpV2.copy(pr.right).cross(new THREE.Vector3(0, 1, 0))));
-    if (Math.abs(dx) >= cfg.flick && Math.abs(dx) > 1.4 * Math.max(Math.abs(dy), dz) && (age < FLICK_MS || p.kind === 'mouse' || S.reading || pr.hit)) {
+    if (Math.abs(dx) >= cfg.flick && Math.abs(dx) > 1.4 * Math.max(Math.abs(dy), dz) && (p.kind === 'mouse' ? age < FLICK_MS : age < FLICK_MS || S.reading || pr.hit)) {
       // Pinch-and-flick sideways: one session. Hand moves left -> the next session.
       pr.mode = 'flicked';
       switchBy(dx < 0 ? 1 : -1);
