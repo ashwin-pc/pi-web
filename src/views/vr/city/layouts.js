@@ -13,9 +13,11 @@ import {A, world, FOCUS, DEG, clamp, animMs, easeOut} from './core.js';
 
 export const LAYOUTS = {
   focus: {primary: 0, slots: []},
-  pair: {primary: 0, slots: [{yaw: -28, elev: 0, w: 50, h: 40}, {yaw: 28, elev: 0, w: 50, h: 40}]},
-  triptych: {primary: 1, slots: [-45, 0, 45].map((yaw) => ({yaw, elev: 0, w: 42, h: 40}))},
-  wall: {primary: 1, slots: [11.5, -11.5].flatMap((elev) => [-50, 0, 50].map((yaw) => ({yaw, elev, w: 46, h: 21})))},
+  // pi-web (usability round 1): within the comfortable head-turn range. Pair: 34° each at ±18° (70° in all, was
+  // 106°). Triptych: 30° each at −32°, 0°, +32°. Wall: 3 × 2 tiles of 30° × 19° at the same yaws (it is for watching).
+  pair: {primary: 0, slots: [{yaw: -18, elev: 0, w: 34, h: 38}, {yaw: 18, elev: 0, w: 34, h: 38}]},
+  triptych: {primary: 1, slots: [-32, 0, 32].map((yaw) => ({yaw, elev: 0, w: 30, h: 38}))},
+  wall: {primary: 1, slots: [11, -11].flatMap((elev) => [-32, 0, 32].map((yaw) => ({yaw, elev, w: 30, h: 19})))},
 };
 export const ORDER = ['focus', 'pair', 'triptych', 'wall'];
 export const MIN = {w: 24, h: 16}, SWAP_MS = 250;

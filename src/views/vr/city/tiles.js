@@ -14,7 +14,7 @@ import {client} from './client.js';
 import {FOCUS, DEG, nowMs} from './core.js';
 import * as V from './views.js';
 
-export const TILE = {headDeg: 3.0, cornerDeg: 5.0, unfocusedMs: 250, focusedMs: 150, settleMs: 600, composerDeg: 5.2, dens: 0.8};
+export const TILE = {headDeg: 3.6, cornerDeg: 5.0, unfocusedMs: 250, focusedMs: 150, settleMs: 600, composerDeg: 5.2, dens: 0.8};
 /** Metres at the round 1 scale for an angular size at FOCUS.D (the tile is drawn at PPM and shown at FOCUS.S). */
 export const eqOf = (deg) => (2 * FOCUS.D * Math.tan(deg * DEG / 2)) / FOCUS.S;
 const pxOf = (deg) => Math.round(eqOf(deg) * PPM);
@@ -99,11 +99,11 @@ export class Tile {
       text(ctx, `${K.label} · ${get(a?.sessionId)?.title || ''} · turn ${a?.turn}`, 130, hy + 20, {size: 22, color: C.dim});
     }
     // Close (unpin from the layout).
-    const cx = W - 60, cs = hh - 24;
-    fillRR(ctx, cx - cs / 2, 12, cs, cs, 14, p.isHover(`tile:close:${n}`) ? '#2a2a2a' : '#181818', '#2c2c2c', 2);
-    icon(ctx, 'x', cx, 12 + cs / 2, 30, C.muted, 2.6);
-    p.region(`tile:grab:${n}`, 0, 0, W - 110, hh, {drag: this.h.grab(this), click: () => this.h.focus(this)});
-    p.region(`tile:close:${n}`, cx - cs / 2 - 6, 6, cs + 12, cs + 12, {click: () => this.h.close(this)});
+    const cs = hh - 10, cx = W - 12 - cs / 2; // pi-web: 3.3° (was 2.3°)
+    fillRR(ctx, cx - cs / 2, 5, cs, cs, 14, p.isHover(`tile:close:${n}`) ? '#2a2a2a' : '#181818', '#2c2c2c', 2);
+    icon(ctx, 'x', cx, 5 + cs / 2, 34, C.muted, 2.6);
+    p.region(`tile:grab:${n}`, 0, 0, W - cs - 30, hh, {drag: this.h.grab(this), click: () => this.h.focus(this)});
+    p.region(`tile:close:${n}`, cx - cs / 2 - 6, 0, cs + 12, cs + 10, {click: () => this.h.close(this)});
     // The body: the live tail (or the artifact); selecting it refocuses this tile.
     const by = hh + 8, bh = H - by - 10 - (f && it.kind === 'session' ? pxOf(TILE.composerDeg) : 0);
     p.region(`tile:body:${n}`, 0, by, W, bh, {under: true, click: () => this.h.focus(this), scroll: true});

@@ -8,13 +8,15 @@ import {Panel} from './panel.js';
 import {S, get, turnsOf, indicator, statusText} from './state.js';
 import {C, SANS, MONO, font, fillRR, icon, text, ellipsize} from './draw.js';
 import {drawAvatar} from './avatars.js';
-import {touchedFiles} from './activity.js';
+import {touchedFiles, currentTarget} from './activity.js';
 import {A, world, FOCUS, DEG, clamp, RW, RH} from './core.js';
 import * as V from './views.js';
 
 const S_ = FOCUS.S;
 /** Column sizes in metres at the round 1 scale (shown at FOCUS.S); the gap between columns in degrees. */
-export const COL = {w: 0.36, ctxH: 0.54, railH: 0.54, gapDeg: 1.0};
+// pi-web (usability round 1): narrower side columns (11.5°), so the cockpit is 61° wide (was 86°): the nearest
+// control of each column is under 25° from the centre. The rail is full height; the composer is under the reader.
+export const COL = {w: 0.30, ctxH: RH - V.NAV.h - 0.02, railH: RH, gapDeg: 1.0};
 const angW = (wEq) => 2 * Math.atan((wEq * S_ / 2) / FOCUS.D) / DEG; // angular width of a width at FOCUS.S, FOCUS.D
 export const ANG = {readerW: angW(RW), readerH: angW(RH), colW: angW(COL.w)};
 ANG.totalW = ANG.readerW + 2 * (COL.gapDeg + ANG.colW);
@@ -79,53 +81,63 @@ function drawContext(ctx, p) {
   const s = get(S.currentId), W = p.cw, H = p.ch;
   fillRR(ctx, 2, 2, W - 4, H - 4, 22, '#0b0b0b', '#262626', 2);
   if (!s) return;
+  // pi-web (usability round 1): rows are 88 px (3.4° from the eye, was 1.4°) and text at least 1°; fewer rows.
+  const RH_ = 88;
   let y = 40;
-  const head = (t, n) => { text(ctx, t, 22, y, {size: 22, weight: 800, color: C.dim}); if (n != null) text(ctx, String(n), W - 22, y, {size: 22, weight: 700, color: C.dim, align: 'right'}); y += 34; };
+  const head = (t, n) => { text(ctx, t, 22, y, {size: 26, weight: 800, color: C.dim}); if (n != null) text(ctx, String(n), W - 22, y, {size: 26, weight: 700, color: C.dim, align: 'right'}); y += 40; };
+  const row = (id, on, draw, click, extra = {}) => {
+    const hov = p.isHover(id);
+    fillRR(ctx, 10, y, W - 20, RH_ - 8, 14, on ? '#1f1a10' : hov ? '#1a1a1a' : '#121212', on ? 'rgba(226,177,95,0.6)' : '#262626', 1.5);
+    draw(y + (RH_ - 8) / 2);
+    p.region(id, 0, y - 4, W, RH_, {click, ...extra});
+    y += RH_;
+  };
   // Outline: one row per turn (the prompt's first words), the turn you are reading in gold; select one to jump there.
-  const ts = turnsOf(s), r = A.active, cur = r?.sid === s.id ? r.turnIdx : -1, max = 5, from = Math.max(0, Math.min(ts.length - max, cur - 2));
+  const ts = turnsOf(s), r = A.active, cur = r?.sid === s.id ? r.turnIdx : -1, max = 3, from = Math.max(0, Math.min(ts.length - max, cur - 1));
   head('OUTLINE', `${ts.length} turns`);
   ts.slice(from, from + max).forEach((t, k) => {
     const i = from + k, m = s.messages[t.start], label = m?.type === 'user' ? m.text : (m?.type === 'assistant' ? 'Reply' : 'Start');
-    const on = i === cur, hov = p.isHover(`ctx:turn:${i}`);
-    if (on || hov) fillRR(ctx, 10, y - 18, W - 20, 38, 10, on ? '#1f1a10' : '#161616', on ? 'rgba(226,177,95,0.6)' : '#262626', 1.5);
-    ctx.font = font(23, on ? 700 : 400);
-    text(ctx, `${i + 1}`, 30, y + 1, {size: 22, weight: 700, color: on ? C.accent : C.dim, align: 'center'});
-    text(ctx, ellipsize(ctx, label, W - 80), 52, y + 1, {size: 23, weight: on ? 700 : 400, color: on ? '#f2f2f2' : '#cfcfcf'});
-    p.region(`ctx:turn:${i}`, 0, y - 20, W, 40, {click: () => { const rr = A.active; if (rr?.set?.turns[i]) rr.to(rr.set.snapPos(i)); }});
-    y += 42;
+    const on = i === cur;
+    row(`ctx:turn:${i}`, on, (cy) => {
+      text(ctx, `${i + 1}`, 34, cy, {size: 28, weight: 700, color: on ? C.accent : C.dim, align: 'center'});
+      ctx.font = font(30, on ? 700 : 400);
+      text(ctx, ellipsize(ctx, label, W - 90), 62, cy, {size: 30, weight: on ? 700 : 400, color: on ? '#f2f2f2' : '#cfcfcf'});
+    }, () => { const rr = A.active; if (rr?.set?.turns[i]) rr.to(rr.set.snapPos(i)); });
   });
-  // Files it touched: select one and its building lights up in the city, with a gold thread down to it.
-  y += 12;
-  const files = [...touchedFiles(s).files].slice(0, 4);
-  head('FILES', files.length);
+  // Files: the one its running tool works on first (in gold), then the others it touched. Select one and its building
+  // lights up in the city, with a gold thread down to it.
+  y += 10;
+  const all = [...touchedFiles(s).files], now = currentFile(s);
+  const files = [...(now ? [now] : []), ...all.filter((f) => f !== now).reverse()].slice(0, 2);
+  head('FILES', all.length + (now && !all.includes(now) ? 1 : 0));
   for (const f of files) {
-    const id = `ctx:file:${f}`, on = ctxState.file === f, hov = p.isHover(id);
-    if (on || hov) fillRR(ctx, 10, y - 18, W - 20, 38, 10, on ? '#1f1a10' : '#161616', on ? 'rgba(226,177,95,0.6)' : '#262626', 1.5);
-    icon(ctx, 'file-text', 30, y + 1, 22, on ? C.accent : C.dim, 2);
-    ctx.font = font(22, 400, MONO);
-    text(ctx, ellipsize(ctx, base(f), W - 80), 52, y + 1, {size: 22, family: MONO, color: on ? '#f2f2f2' : '#cfcfcf'});
-    p.region(id, 0, y - 20, W, 40, {click: () => { ctxState.file = ctxState.file === f ? null : f; p.invalidate(); }, file: f});
-    y += 42;
+    const id = `ctx:file:${f}`, on = ctxState.file === f, live = f === now;
+    row(id, on || live, (cy) => {
+      icon(ctx, live ? 'pencil' : 'file-text', 34, cy, 26, live || on ? C.accent : C.dim, 2.2);
+      ctx.font = font(28, 400, MONO);
+      text(ctx, ellipsize(ctx, base(f), W - 90), 62, cy, {size: 28, family: MONO, color: on || live ? '#f2f2f2' : '#cfcfcf'});
+    }, () => { ctxState.file = ctxState.file === f ? null : f; p.invalidate(); }, {file: f});
   }
   // Workers: small live tiles (avatar, title, status); select one to open it.
-  y += 12;
+  y += 10;
   const workers = [...S.sessions.values()].filter((w) => w.origin === s.id);
   head('WORKERS', workers.length || 'none');
-  for (const w of workers.slice(0, 2)) {
-    const id = `ctx:worker:${w.id}`, k = indicator(w), hov = p.isHover(id);
-    fillRR(ctx, 10, y - 14, W - 20, 64, 12, hov ? '#1a1a1a' : '#121212', k === 'running' ? 'rgba(226,177,95,0.5)' : '#262626', 1.5);
-    drawAvatar(ctx, w.id, 40, y + 18, 20);
-    ctx.font = font(22, 700);
-    text(ctx, ellipsize(ctx, w.title, W - 90), 70, y + 6, {size: 22, weight: 700});
-    text(ctx, ellipsize(ctx, statusText(w), W - 90), 70, y + 32, {size: 19, color: k === 'running' ? C.accent : C.dim});
-    p.region(id, 0, y - 16, W, 68, {click: () => A.choose?.(w.id)});
-    y += 74;
+  for (const w of workers.slice(0, Math.max(0, Math.floor((H - y - 8) / (RH_ + 8))))) {
+    const id = `ctx:worker:${w.id}`, k = indicator(w);
+    row(id, false, (cy) => {
+      drawAvatar(ctx, w.id, 40, cy, 24);
+      ctx.font = font(28, 700);
+      text(ctx, ellipsize(ctx, w.title, W - 90), 74, cy - 14, {size: 28, weight: 700});
+      text(ctx, ellipsize(ctx, statusText(w), W - 90), 74, cy + 18, {size: 24, color: k === 'running' ? C.accent : C.dim});
+    }, () => A.choose?.(w.id));
   }
-  p.sig = `${s.id}|${cur}|${ts.length}|${files.length}|${ctxState.file}|${workers.map((w) => indicator(w)).join()}`;
+  p.sig = `${s.id}|${cur}|${ts.length}|${files.length}|${ctxState.file}|${now}|${workers.map((w) => indicator(w)).join()}`;
 }
+/** The file a running session's current tool works on (null when it is not on a file). */
+export function currentFile(s) { const t = currentTarget(s); return t && !t.dir ? t.path : null; }
 /** Redraw the context column when what it shows changes. */
 let lastSig = '';
-export function contextSig() { const s = get(S.currentId); if (!s) return ''; const ws = [...S.sessions.values()].filter((w) => w.origin === s.id); return `${s.id}|${A.active?.turnIdx}|${s.messages.length}|${ctxState.file}|${ws.map((w) => indicator(w)).join()}`; }
+export function contextSig() { const s = get(S.currentId); if (!s) return ''; const ws = [...S.sessions.values()].filter((w) => w.origin === s.id); return `${s.id}|${A.active?.turnIdx}|${s.messages.length}|${ctxState.file}|${currentFile(s)}|${ws.map((w) => indicator(w)).join()}`; }
 export function syncContext() { const sig = contextSig(); if (sig !== lastSig) { lastSig = sig; context.invalidate(); } }
 
 // ------------------------------------------------------------------ placing the cockpit's columns around the reader
@@ -133,7 +145,7 @@ export function syncContext() { const sig = contextSig(); if (sig !== lastSig) {
 export function columnSlots(nav, composer, rail) {
   const yaw = ANG.readerW / 2 + COL.gapDeg + ANG.colW / 2, half = ANG.readerH / 2;
   const hNav = angW(V.NAV.h), hCtx = angW(COL.ctxH), hRail = angW(COL.railH), hComp = angW(V.COMPOSER.h);
-  return [[nav, -yaw, half - hNav / 2], [context, -yaw, -half + hCtx / 2], [rail, yaw, half - hRail / 2], [composer, yaw, -half + hComp / 2]];
+  return [[nav, -yaw, half - hNav / 2], [context, -yaw, -half + hCtx / 2], [rail, yaw, half - hRail / 2], [composer, 0, -half - COL.gapDeg - hComp / 2]];
 }
 /** Each frame while reading in the focus layout: the side columns follow the reader (also while it opens or slides). */
 export function layoutCockpit(r, {nav, composer, rail}, show) {
@@ -150,5 +162,5 @@ export function layoutCockpit(r, {nav, composer, rail}, show) {
   if (vis) syncContext();
 }
 /** The cockpit's angular box (degrees, relative to the room): for the bar and the overlap tests. */
-export function cockpitBox() { const c = -room.shift; return {yaw0: c - ANG.totalW / 2, yaw1: c + ANG.totalW / 2, elev0: room.pitch - ANG.readerH / 2, elev1: room.pitch + ANG.readerH / 2}; }
+export function cockpitBox() { const c = -room.shift; return {yaw0: c - ANG.totalW / 2, yaw1: c + ANG.totalW / 2, elev0: room.pitch - ANG.readerH / 2 - COL.gapDeg - angW(V.COMPOSER.h), elev1: room.pitch + ANG.readerH / 2}; }
 export {SANS};

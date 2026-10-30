@@ -26,7 +26,8 @@ export function wrapLines(ctx, str, maxW, maxLines) {
 // ---------------------------------------------------------------- reader header (pi-web's status bar and runtime status)
 // Round 3: the focused session gets the room. In metres at the round 1 scale (1.4 m); the focus panel shows it 1.9 m
 // away at FOCUS.S (core.js), so text stays about 1.2° while the panel is 55° × 44° (round 2: 50° × 30°).
-export const READER = {w: 1.56, headerH: 0.13, streamH: 1.06, gutter: 0.19, ppm: 1100};
+// pi-web (usability round 1): 35° wide (was 55°), so a line never needs a head turn; 39° tall.
+export const READER = {w: 0.95, headerH: 0.13, streamH: 0.92, gutter: 0.12, ppm: 1100};
 /** pi-web's status bar: the title in bold on the dark bar, the runtime status ("running" in gold, with the tool) and
  * the session's note below it, the context meter as a thin track along the bottom edge, and the City and Fly-to buttons. */
 export function drawHeader(ctx, p) {
@@ -57,7 +58,8 @@ export function drawHeader(ctx, p) {
   text(ctx, s.title, 36, y1, {size: 36, weight: 700, maxW: right - posW - 60});
   // Runtime status, as pi-web shows it above the composer: running in gold, with the tool.
   let x = 36;
-  if (kind === 'running') x += text(ctx, `● running · ${currentToolLabel(s)} · ${statusText(s).replace('Running ', '')}`, x, y2, {size: 23, weight: 800, color: C.accent, maxW: 420}) + 24;
+  p.drawn.status = kind === 'running' ? `● ${statusText(s)}` : statusText(s);
+  if (kind === 'running') x += text(ctx, `● ${statusText(s)}`, x, y2, {size: 23, weight: 800, color: C.accent, maxW: 420}) + 24;
   else x += text(ctx, kind === 'current' ? (s.model || 'Current session') : statusText(s), x, y2, {size: 23, weight: 700, color: kind === 'waiting' || kind === 'error' ? col : C.muted, maxW: 380}) + 24;
   x += text(ctx, folderLabel(s.cwd), x, y2, {size: 21, family: MONO, color: '#6f6f6f', maxW: 200}) + 22;
   if (s.note) {
@@ -115,58 +117,64 @@ export function drawPill(ctx, p) {
 }
 
 // ---------------------------------------------------------------- composer
-export const COMPOSER = {w: 0.24, h: 0.58, ppm: 1000};
-/** The composer, round 2: a column to the right of the reading panel. Draft text on top, then mic, then send. */
+/** pi-web (usability round 1): the composer is a row directly under the conversation (it was a column 36° to the
+ * right): the draft, then the mic and Send, each button as tall as the row (about 6° from the eye in the cockpit). */
+export const COMPOSER = {w: READER.w, h: 0.16, ppm: 1000};
 export function drawComposer(ctx, p) {
   const W = p.cw, H = p.ch;
   const c = S.composer;
   const focused = c.focused || c.dictating;
-  const BH = 180; // each button: 0.24 m × 0.18 m (more than 6° from the eye at 1.6 m)
-  const fh = H - 2 * BH - 24;
-  fillRR(ctx, 4, 4, W - 8, fh - 4, 26, '#0f0f0f', focused ? 'rgba(226,177,95,0.6)' : '#242424', 3);
-  p.region('composer:input', 0, 0, W, fh, {click: () => UI.focusComposer()});
-  let y = 46;
+  const BW = Math.round(H * 1.15), gap = 12, fw = W - 2 * (BW + gap);
+  fillRR(ctx, 4, 4, fw - 8, H - 8, 26, '#0f0f0f', focused ? 'rgba(226,177,95,0.6)' : '#242424', 3);
+  p.region('composer:input', 0, 0, fw, H, {click: () => UI.focusComposer()});
+  let x = 28;
+  const y = H / 2;
   if (c.dictating) {
-    dot(ctx, 34, y, 9, C.danger);
+    dot(ctx, x + 6, y, 9, C.danger);
     const t = performance.now() / 120;
-    for (let i = 0; i < 4; i++) { const bh = 10 + Math.abs(Math.sin(t + i * 0.9)) * 22; fillRR(ctx, 56 + i * 12, y - bh / 2, 6, bh, 3, C.danger); }
-    text(ctx, 'Listening…', 116, y + 1, {size: 26, color: C.muted});
-    y += 44;
+    for (let i = 0; i < 4; i++) { const bh = 10 + Math.abs(Math.sin(t + i * 0.9)) * 22; fillRR(ctx, x + 28 + i * 12, y - bh / 2, 6, bh, 3, C.danger); }
+    x += 90;
   }
-  ctx.font = font(28);
-  const lines = c.text ? wrapLines(ctx, c.text, W - 48, Math.floor((fh - y) / 36)) : [];
-  if (lines.length) for (const ln of lines) { text(ctx, ln, 24, y, {size: 28}); y += 36; }
-  else if (!c.dictating) { text(ctx, 'Ask pi…', 24, y, {size: 30, color: C.dim}); text(ctx, c.unavailable ? 'no dictation here: type' : 'mic to dictate', 24, y + 38, {size: 24, color: C.faint}); }
-  if (focused && Math.floor(performance.now() / 500) % 2 === 0) { ctx.fillStyle = C.accent; ctx.fillRect(24, Math.min(fh - 30, y - 6), 3, 30); }
-  const micY = fh + 8, sendY = fh + 16 + BH;
+  ctx.font = font(30);
+  if (c.text) {
+    // The end of the draft (what you are typing), on one line.
+    let shown = c.text.replace(/\s+/g, ' ');
+    while (shown.length > 1 && ctx.measureText(shown).width > fw - x - 40) shown = shown.slice(1);
+    const tw = text(ctx, shown, x, y, {size: 30});
+    if (focused && Math.floor(performance.now() / 500) % 2 === 0) { ctx.fillStyle = C.accent; ctx.fillRect(x + tw + 3, y - 17, 3, 34); }
+  } else if (!c.dictating) {
+    text(ctx, focused ? (UI.keyboardHint || 'Type your reply…') : 'Ask pi…', x, y - (c.note ? 12 : 0), {size: 30, color: C.dim});
+    if (c.note) text(ctx, c.note, x, y + 22, {size: 21, color: C.faint, maxW: fw - x - 30});
+    if (focused && Math.floor(performance.now() / 500) % 2 === 0) { ctx.fillStyle = C.accent; ctx.fillRect(x, y - 17, 3, 34); }
+  } else text(ctx, 'Listening…', x, y, {size: 28, color: C.muted});
+  const micX = fw + gap, sendX = micX + BW + gap;
   const micHov = p.isHover('composer:mic'), sendHov = p.isHover('composer:send');
-  fillRR(ctx, 4, micY, W - 8, BH - 8, 30, c.dictating ? 'rgba(251,113,133,0.22)' : micHov ? '#2c2c2c' : '#1a1a1a', '#2c2c2c', 2);
-  icon(ctx, 'mic', W / 2, micY + BH / 2 - 4, 52, c.dictating ? C.danger : C.text, 2.6);
-  p.region('composer:mic', 0, micY - 4, W, BH, {click: () => UI.toggleDictation()});
-  fillRR(ctx, 4, sendY, W - 8, BH - 8, 30, c.text ? (sendHov ? '#f0c27a' : C.accent) : '#1a1a1a', '#2c2c2c', 2);
-  icon(ctx, 'arrow-up', W / 2, sendY + BH / 2 - 4, 52, c.text ? '#111' : C.dim, 3);
-  p.region('composer:send', 0, sendY - 4, W, BH, {click: () => UI.send()});
+  fillRR(ctx, micX, 4, BW, H - 8, 26, c.dictating ? 'rgba(251,113,133,0.22)' : micHov ? '#2c2c2c' : '#1a1a1a', '#2c2c2c', 2);
+  icon(ctx, 'mic', micX + BW / 2, H / 2, 52, c.dictating ? C.danger : UI.dictationAvailable === false ? C.dim : C.text, 2.6);
+  p.region('composer:mic', micX - gap / 2, 0, BW + gap, H, {click: () => UI.toggleDictation()});
+  fillRR(ctx, sendX, 4, BW, H - 8, 26, c.text ? (sendHov ? '#f0c27a' : C.accent) : '#1a1a1a', '#2c2c2c', 2);
+  icon(ctx, 'arrow-up', sendX + BW / 2, H / 2, 52, c.text ? '#111' : C.dim, 3);
+  p.region('composer:send', sendX - gap / 2, 0, BW + gap, H, {click: () => UI.send()});
 }
 
 // ---------------------------------------------------------------- navigation column (left of the panel)
-export const NAV = {w: 0.2, h: 0.58, ppm: 1000};
-/** Three big buttons beside the panel, mirroring the composer: back to the city, what needs me, and fly to this
- * session's place in the city. Each is 0.2 m × 0.18 m, about 7° from the eye. */
+export const NAV = {w: 0.30, h: 0.42, ppm: 1000};
+/** Three big buttons above the context column: back to the city, what needs me, and fly to this session's place in
+ * the city. pi-web: rows (icon, label) about 5° tall; no keyboard hints (the desktop's top bar lists the keys). */
 export function drawNav(ctx, p) {
-  const W = p.cw, H = p.ch, BH = (H - 32) / 3;
+  const W = p.cw, H = p.ch, BH = (H - 24) / 3;
   const n = fenceLine().length;
   const rows = [
-    {id: 'nav:town', icon: 'house', label: 'City', sub: 'Esc · B', click: () => UI.closeReader()},
-    {id: 'nav:needs', icon: 'bell', label: n ? `${n} need you` : 'Nobody', sub: 'N · A', click: () => UI.needsYou(), accent: n > 0},
+    {id: 'nav:town', icon: 'house', label: 'City', sub: 'Esc', click: () => UI.closeReader()},
+    {id: 'nav:needs', icon: 'bell', label: n ? `${n} need you` : 'Nobody', sub: 'N', click: () => UI.needsYou(), accent: n > 0},
     {id: 'nav:fly', icon: 'locate-fixed', label: 'Fly there', sub: 'F', click: () => UI.flyCurrent()},
   ];
   rows.forEach((r, i) => {
-    const y = i * (BH + 16), hov = p.isHover(r.id);
-    fillRR(ctx, 4, y + 4, W - 8, BH - 8, 30, hov ? '#2c2c2c' : '#141414', r.accent ? 'rgba(226,177,95,0.55)' : '#2c2c2c', 2);
-    icon(ctx, r.icon, W / 2, y + BH * 0.34, 50, r.accent ? C.accent : C.text, 2.6);
-    text(ctx, r.label, W / 2, y + BH * 0.64, {size: 28, weight: 700, align: 'center'});
-    text(ctx, r.sub, W / 2, y + BH * 0.84, {size: 22, color: C.dim, align: 'center'});
-    p.region(r.id, 0, y, W, BH + 8, {click: r.click});
+    const y = i * (BH + 12), hov = p.isHover(r.id);
+    fillRR(ctx, 4, y + 4, W - 8, BH - 8, 26, hov ? '#2c2c2c' : '#141414', r.accent ? 'rgba(226,177,95,0.55)' : '#2c2c2c', 2);
+    icon(ctx, r.icon, 52, y + BH / 2, 44, r.accent ? C.accent : C.text, 2.6);
+    text(ctx, r.label, 88, y + BH / 2 + 1, {size: 29, weight: 700, maxW: W - 100});
+    p.region(r.id, 0, y, W, BH + 10, {click: r.click});
   });
 }
 
