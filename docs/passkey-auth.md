@@ -81,6 +81,59 @@ External identity is accepted only from the explicitly configured header. The ap
 
 **Only enable external authentication when the backend is reachable exclusively through a trusted proxy which removes caller-supplied copies and sets the verified header.** Direct callers, including loopback callers, can forge headers. This release does not infer trust from Tailscale or implement OIDC/GitHub flows. Header selection and network restrictions are server-operator decisions, not unauthenticated web settings.
 
+For an opt-in local identity boundary, run the supervisor with a Unix-domain
+listener in a dedicated directory owned by the pi-web user:
+
+```sh
+install -d -m 0700 /run/user/1000/pi-web
+PI_WEB_TUNNEL_SOCKET=/run/user/1000/pi-web/tunnel.sock \
+PI_WEB_AUTH_METHODS=external,password,passkey \
+PI_WEB_AUTH_TRUSTED_HEADER=X-Verified-User \
+pi-web
+
+tunnel create unix:/run/user/1000/pi-web/tunnel.sock --name pi
+```
+
+The path must be absolute and its existing parent must be owned by the running
+user with no group or other access. The supervisor creates the socket as mode
+0600 with the running user's ownership while continuing to listen on TCP.
+Only requests received on that socket may assert the configured external
+identity header. The Unix listener deliberately discards `X-Forwarded-For`
+and `X-Forwarded-Host`: filesystem access authenticates the tunnel process,
+but does not prove that it overwrites caller-supplied forwarding headers.
+Tunnel clients therefore share the bounded `unknown` peer bucket. The tunnel
+must remove every caller-supplied copy of the identity header and set one
+verified value. Other processes running as
+the same account remain trusted because they can open the user-owned socket;
+other local accounts cannot open it.
+
+TCP continues to accept browser cookies and API Bearer tokens. The supervisor
+strips external identity and its private provenance headers from TCP traffic,
+and a directly reached child rejects both a raw identity header and forged
+provenance. The supervisor and child share a new random secret for each
+supervisor launch. The child captures it during module startup and immediately
+deletes it from its environment before sessions, tools, or extensions can spawn,
+so subprocesses do not inherit it. The child also consumes and clears the tunnel
+socket setting so nested scripts do not try to bind the operator's live socket.
+Restart and status strip the identity header on TCP before authentication and
+preserve it only on the filesystem-protected socket. The child separately
+requires the secret-signed tunnel bit rather than trusting inbound marker
+headers. WebSocket upgrades through the Unix socket preserve the same identity and retain the existing Origin validation.
+
+Startup fails closed if the parent is not private, the path is occupied by a
+file or live socket, the socket cannot be created, or its mode/owner cannot be
+verified. A private user-owned stale socket is probed, rechecked by device and
+inode, and reclaimed automatically after a crash; a live or replaced entry is
+never removed. Clean shutdown removes the socket.
+Startup environment changes apply only when the supervisor itself is launched
+again. `POST /api/restart` restarts the child only, so it cannot activate
+`PI_WEB_TUNNEL_SOCKET` for an already-running supervisor. Use the deployment's
+service manager to perform a supervised supervisor re-launch; never kill the
+child directly.
+Leaving `PI_WEB_TUNNEL_SOCKET` unset preserves the legacy trusted-header
+behavior, including its documented risk. When the socket setting is enabled,
+running `server.ts` directly cannot accept raw external identity headers.
+
 ## Machine credentials and request security
 
 Named, expiring API tokens work through the canonical Authorization-header gate independently of the human methods. Tokens may read security inventory as before, but cannot mutate credentials, issue additional tokens, enroll passkeys, change passwords/methods, delegate devices, or revoke sessions. Token secrets are shown once and stored hashed. They never become browser sessions.

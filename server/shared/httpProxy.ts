@@ -18,7 +18,10 @@ export function proxyHttpRequest(
   res: ServerResponse,
   target: HttpProxyTarget,
 ): void {
-  const headers = { ...req.headers, host: target.preserveHost ? req.headers.host : `${target.host}:${target.port}` };
+  const preservedHost = target.preserveHost && typeof req.headers.host === "string" && req.headers.host
+    ? req.headers.host
+    : undefined;
+  const headers = { ...req.headers, host: preservedHost || `${target.host}:${target.port}` };
   let upstreamResponse: IncomingMessage | undefined;
   let upstream: ClientRequest;
 

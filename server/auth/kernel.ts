@@ -5,7 +5,12 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
-import { effectivePeerAddress } from "./supervisorPeer.js";
+import {
+  authenticatedTunnelRequest,
+  effectivePeerAddress,
+  isReservedSupervisorHeader,
+  tunnelSocketIdentityEnabled,
+} from "./supervisorPeer.js";
 import { isLoopbackAddress } from "./ip.js";
 import {
   mkdir,
@@ -477,7 +482,13 @@ export class AuthKernel {
           revocationEpoch,
         };
     }
-    if (methods.has("external") && this.trustedHeader) {
+    if (
+      methods.has("external") &&
+      this.trustedHeader &&
+      (!tunnelSocketIdentityEnabled() ||
+        (!isReservedSupervisorHeader(this.trustedHeader) &&
+          authenticatedTunnelRequest(req)))
+    ) {
       const value = req.headers[this.trustedHeader.toLowerCase()];
       const user = (Array.isArray(value) ? value[0] : value)?.trim();
       if (user)

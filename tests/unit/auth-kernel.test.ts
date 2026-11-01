@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuthKernel, AuthStore, bumpRevocationEpoch, hashSecret } from "../../server/auth/kernel.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
 
@@ -23,6 +23,55 @@ describe("auth kernel", () => {
     expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
     expect((await k.gate(req())).ok).toBe(false);
     expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
+  });
+
+  it("requires authenticated supervisor tunnel provenance only when the socket is enabled", async () => {
+    const previous = {
+      socket: process.env.PI_WEB_TUNNEL_SOCKET,
+      supervised: process.env.PI_WEB_SUPERVISED,
+      secret: process.env.PI_WEB_SUPERVISOR_SECRET,
+    };
+    process.env.PI_WEB_TUNNEL_SOCKET = "/private/pi-web.sock";
+    process.env.PI_WEB_SUPERVISED = "1";
+    process.env.PI_WEB_SUPERVISOR_SECRET = "real-supervisor-secret";
+    let resetSupervisorContext: (() => void) | undefined;
+    try {
+      vi.resetModules();
+      const { AuthKernel: StartupAuthKernel } = await import("../../server/auth/kernel.js");
+      const { initializeSupervisorPeerContext } = await import("../../server/auth/supervisorPeer.js");
+      initializeSupervisorPeerContext(process.env);
+      resetSupervisorContext = () => initializeSupervisorPeerContext({});
+      const s = await store();
+      const k = new StartupAuthKernel("external", s, false, "x-verified-user");
+      const direct = {
+        headers: { "x-verified-user": "attacker", "x-pi-web-peer": "192.0.2.44", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "guessed" },
+        url: "/",
+        socket: { remoteAddress: "127.0.0.1" },
+      } as any;
+      expect((await k.gate(direct)).ok).toBe(false);
+
+      const supervised = {
+        headers: { "x-verified-user": "owner", "x-pi-web-peer": "192.0.2.44", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "real-supervisor-secret" },
+        url: "/",
+        socket: { remoteAddress: "::ffff:127.0.0.1" },
+      } as any;
+      expect(await k.gate(supervised)).toMatchObject({
+        ok: true,
+        via: "external",
+        identity: { id: "external:owner" },
+      });
+
+      const reserved = new StartupAuthKernel("external", s, false, "x-pi-web-tunnel");
+      expect((await reserved.gate(supervised)).ok).toBe(false);
+    } finally {
+      resetSupervisorContext?.();
+      if (previous.socket === undefined) delete process.env.PI_WEB_TUNNEL_SOCKET;
+      else process.env.PI_WEB_TUNNEL_SOCKET = previous.socket;
+      if (previous.supervised === undefined) delete process.env.PI_WEB_SUPERVISED;
+      else process.env.PI_WEB_SUPERVISED = previous.supervised;
+      if (previous.secret === undefined) delete process.env.PI_WEB_SUPERVISOR_SECRET;
+      else process.env.PI_WEB_SUPERVISOR_SECRET = previous.secret;
+    }
   });
 
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
