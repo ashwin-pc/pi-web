@@ -571,7 +571,8 @@ function withAccessLog(
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const start = performance.now();
-    const startBytes = req.socket.bytesWritten; // counts everything, headers included
+    const socket = req.socket;
+    const startBytes = socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
     let pathname = "(malformed)";
     let logged = false;
@@ -583,7 +584,7 @@ function withAccessLog(
         pathname,
         res.statusCode,
         performance.now() - start,
-        Math.max(0, req.socket.bytesWritten - startBytes),
+        Math.max(0, socket.bytesWritten - startBytes),
         aborted,
         extensionHttp.caller(req),
       );
@@ -733,7 +734,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/event") {
-        const body = await readBody(req);
+        const maxMockEventBytes = 64 * 1024;
+        const declaredBytes = Number(req.headers["content-length"]);
+        if (Number.isFinite(declaredBytes) && declaredBytes > maxMockEventBytes) {
+          throw new HttpError("Request body is too large", 413);
+        }
+        const raw = await readBytes(req, maxMockEventBytes);
+        const text = raw.toString("utf-8");
+        const body = text ? JSON.parse(text) : {};
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
         }

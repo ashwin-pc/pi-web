@@ -51,6 +51,19 @@ function rawGet(
   });
 }
 
+function rawPost(port: number, path: string, body: Buffer, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on("error", reject);
+    for (let offset = 0; offset < body.length; offset += 8_192) req.write(body.subarray(offset, offset + 8_192));
+    req.end();
+  });
+}
+
 async function freePort() {
   const server = createServer();
   server.listen(0, "127.0.0.1");
@@ -331,6 +344,50 @@ describe("pi-web mock API", () => {
     ]);
     expect(events.find((event) => event.type === "agent_event" && event.event?.type === "agent_end")?.event).toMatchObject({ aborted: false, willRetry: false });
     ws.close();
+  });
+
+  it("bounds mock event request bodies before broadcast and replay", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const port = Number(new URL(baseUrl).port);
+    const live = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current`);
+    const liveEvents: any[] = [];
+    live.on("message", (data) => liveEvents.push(JSON.parse(String(data))));
+    await once(live, "open");
+    await waitForCondition(() => liveEvents.some((event) => event.type === "hello"));
+
+    const ordinary = { type: "web_contribution_updated", sessionId: "mock-current", key: "notes", testMarker: "ordinary" };
+    const accepted = await fetch(`${baseUrl}/api/mock/event`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(ordinary),
+    });
+    expect(accepted.status).toBe(200);
+    await waitForCondition(() => liveEvents.some((event) => event.testMarker === "ordinary"));
+    const ordinarySeq = liveEvents.find((event) => event.testMarker === "ordinary").seq;
+    liveEvents.length = 0;
+
+    const declaredBody = Buffer.from(JSON.stringify({ ...ordinary, testMarker: "oversized-declared", payload: "x".repeat(64 * 1024) }));
+    const streamedBody = Buffer.from(JSON.stringify({ ...ordinary, testMarker: "oversized-streamed", payload: "x".repeat(64 * 1024) }));
+    const declared = await rawPost(port, "/api/mock/event", declaredBody, {
+      "content-type": "application/json",
+      "content-length": String(declaredBody.length),
+    });
+    const streamed = await rawPost(port, "/api/mock/event", streamedBody, {
+      "content-type": "application/json",
+      "transfer-encoding": "chunked",
+    });
+    expect([declared.status, streamed.status]).toEqual([413, 413]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(liveEvents.some((event) => String(event.testMarker).startsWith("oversized-"))).toBe(false);
+    live.close();
+
+    const replay = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
+    const replayEvents: any[] = [];
+    replay.on("message", (data) => replayEvents.push(JSON.parse(String(data))));
+    await once(replay, "open");
+    await waitForCondition(() => replayEvents.some((event) => event.testMarker === "ordinary" && event.replay === true));
+    expect(replayEvents.some((event) => String(event.testMarker).startsWith("oversized-"))).toBe(false);
+    replay.close();
   });
 
   it("returns the tree navigation response and emits its terminal runtime event", async () => {
