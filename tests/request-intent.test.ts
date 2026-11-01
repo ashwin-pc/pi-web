@@ -63,7 +63,7 @@ describe("request intent gate", () => {
         expiresAt: Date.now() + 60_000,
       }],
     }));
-    const authenticated = new AuthKernel("external", new AuthStore(storePath), "", true, "x-test-user");
+    const authenticated = new AuthKernel("external", new AuthStore(storePath), true, "x-test-user");
     const open = new AuthKernel("none", new AuthStore(join(dir, "open.json")));
     const sameOrigin = { origin, "sec-fetch-site": "same-origin", "x-pi-web-client-id": "browser" };
     const cases = [

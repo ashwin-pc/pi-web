@@ -7,14 +7,20 @@ import {
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
   mkdir,
-  open,
   readFile,
   rename,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  PasswordWorkUnavailableError,
+  runPasswordWork,
+} from "./passwordWork.js";
+import {
+  acquireAuthStoreLock,
+  releaseAuthStoreLock,
+} from "./storeLock.js";
 
 export type AuthMode = "none" | "passkey" | "external";
 export type Identity = { id: string; displayName?: string };
@@ -97,42 +103,33 @@ const safeEqual = (a: string, b: string) => {
   const bb = Buffer.from(b);
   return aa.length === bb.length && timingSafeEqual(aa, bb);
 };
-let passwordWorkActive = false;
 const scrypt = (
   password: string,
   salt: Buffer,
   length: number,
   options: { N: number; r: number; p: number },
+  lane: "login" | "credential",
 ): Promise<Buffer> =>
-  new Promise((resolve, reject) => {
-    if (passwordWorkActive) {
-      reject(new Error("Password verification busy; retry shortly"));
-      return;
-    }
-    passwordWorkActive = true;
-    try {
-      nodeScrypt(
-        password,
-        salt,
-        length,
-        { ...options, maxmem: 160 * 1024 * 1024 },
-        (error, key) => {
-          passwordWorkActive = false;
-          error ? reject(error) : resolve(key);
-        },
-      );
-    } catch (error) {
-      passwordWorkActive = false;
-      reject(error);
-    }
-  });
+  runPasswordWork(
+    lane,
+    () =>
+      new Promise((resolve, reject) => {
+        nodeScrypt(
+          password,
+          salt,
+          length,
+          { ...options, maxmem: 160 * 1024 * 1024 },
+          (error, key) => (error ? reject(error) : resolve(key)),
+        );
+      }),
+  );
 export async function hashPassword(password: string) {
   const salt = randomBytes(16);
   const derived = (await scrypt(password, salt, 64, {
     N: 32768,
     r: 8,
     p: 1,
-  })) as Buffer;
+  }, "credential")) as Buffer;
   return `scrypt$32768$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
 }
 export async function verifyPassword(password: string, encoded: string) {
@@ -147,55 +144,27 @@ export async function verifyPassword(password: string, encoded: string) {
     Buffer.from(expected, "base64url").length !== 64
   )
     return false;
-  try {
-    const actual = (await scrypt(
-      password,
-      Buffer.from(salt, "base64url"),
-      Buffer.from(expected, "base64url").length,
-      { N: Number(n), r: Number(r), p: Number(p) },
-    )) as Buffer;
-    return safeEqual(actual.toString("base64url"), expected);
-  } catch {
-    return false;
-  }
+  const actual = (await scrypt(
+    password,
+    Buffer.from(salt, "base64url"),
+    Buffer.from(expected, "base64url").length,
+    { N: Number(n), r: Number(r), p: Number(p) },
+    "login",
+  )) as Buffer;
+  return safeEqual(actual.toString("base64url"), expected);
 }
 
-/** Serialize reapers so a second reaper cannot unlink a newly acquired lock.
- * Missing/malformed owner metadata and EPERM are deliberately not evidence of death.
- * A crash during recovery itself requires operator cleanup of .recovery. */
-async function recoverDeadLock(path: string) {
-  let guard: Awaited<ReturnType<typeof open>>;
-  try {
-    guard = await open(`${path}.recovery`, "wx", 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw error;
-  }
-  try {
-    let pid: unknown;
-    try {
-      pid = JSON.parse(await readFile(path, "utf8")).pid;
-    } catch {
-      return;
-    }
-    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
-      return;
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH")
-        await unlink(path).catch((error) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-    }
-  } finally {
-    await guard.close();
-    await unlink(`${path}.recovery`);
+export class AuthStoreBusyError extends Error {
+  readonly status = 503;
+  constructor(message = "Auth store busy; retry shortly") {
+    super(message);
+    this.name = "AuthStoreBusyError";
   }
 }
 
 export class AuthStore {
   private queue = Promise.resolve();
+  private pendingUpdates = 0;
   readonly listeners = new Set<(state: AuthState) => void>();
   constructor(readonly path: string) {}
   async read(): Promise<AuthState> {
@@ -211,30 +180,27 @@ export class AuthStore {
     }
   }
   async update(
-    mutator: (state: AuthState) => void | Promise<void>,
+    mutator: (state: AuthState) => void | false | Promise<void | false>,
   ): Promise<AuthState> {
+    if (this.pendingUpdates >= 64) throw new AuthStoreBusyError();
+    this.pendingUpdates++;
     let result!: AuthState;
     const operation = this.queue
       .catch(() => undefined)
       .then(async () => {
         await mkdir(dirname(this.path), { recursive: true });
         const lockPath = `${this.path}.lock`;
-        let lock: Awaited<ReturnType<typeof open>> | undefined;
-        for (let attempt = 0; attempt < 100; attempt++) {
-          try {
-            lock = await open(lockPath, "wx", 0o600);
-            await lock.writeFile(JSON.stringify({ pid: process.pid }));
-            break;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-            await recoverDeadLock(lockPath);
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
+        let lock;
+        try {
+          lock = await acquireAuthStoreLock(lockPath);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === `Auth store is locked: ${lockPath}`
+          )
+            throw new AuthStoreBusyError(error.message);
+          throw error;
         }
-        if (!lock)
-          throw new Error(
-            `Auth store is locked: ${lockPath}. If a writer crashed, stop writers before removing the lock.`,
-          );
         try {
           const state = await this.read();
           const now = Date.now();
@@ -245,14 +211,15 @@ export class AuthStore {
             (grant) =>
               !grant.usedAt && !grant.cancelledAt && grant.expiresAt > now,
           );
-          await mutator(state);
+          const changed = await mutator(state);
+          result = state;
+          if (changed === false) return;
           await mkdir(dirname(this.path), { recursive: true });
           const temp = `${this.path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
           await writeFile(temp, JSON.stringify(state, null, 2), {
             mode: 0o600,
           });
           await rename(temp, this.path);
-          result = state;
           for (const listener of this.listeners) {
             try {
               listener(state);
@@ -264,9 +231,11 @@ export class AuthStore {
             }
           }
         } finally {
-          await lock.close();
-          await unlink(lockPath);
+          await releaseAuthStoreLock(lock);
         }
+      })
+      .finally(() => {
+        this.pendingUpdates--;
       });
     this.queue = operation.catch(() => undefined);
     await operation;
@@ -346,13 +315,33 @@ export class AuthKernel {
     });
     await this.refreshConfig();
   }
-  async revokeSession(req: IncomingMessage) {
+  async revokeSession(req: IncomingMessage): Promise<boolean> {
     const raw = cookies(req)[SESSION_COOKIE];
-    if (raw)
-      await this.store.update((state) => {
-        const session = state.sessions.find((s) => s.hash === hashSecret(raw));
-        if (session) session.revokedAt = Date.now();
-      });
+    if (!raw) return false;
+    const hash = hashSecret(raw);
+    const now = Date.now();
+    if (
+      !(await this.store.read()).sessions.some(
+        (session) =>
+          session.hash === hash &&
+          !session.revokedAt &&
+          session.expiresAt > now,
+      )
+    )
+      return false;
+    let revoked = false;
+    await this.store.update((state) => {
+      const session = state.sessions.find(
+        (candidate) =>
+          candidate.hash === hash &&
+          !candidate.revokedAt &&
+          candidate.expiresAt > Date.now(),
+      );
+      if (!session) return false;
+      session.revokedAt = Date.now();
+      revoked = true;
+    });
+    return revoked;
   }
 
   constructor(
@@ -540,3 +529,5 @@ export function isLoopback(req: IncomingMessage) {
 export function randomSecret() {
   return randomBytes(32).toString("base64url");
 }
+
+export { PasswordWorkUnavailableError };

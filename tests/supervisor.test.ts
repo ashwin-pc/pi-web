@@ -2,7 +2,7 @@ import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { writeFile } from "node:fs/promises";
-import { AuthStore, hashSecret } from "../server/auth/kernel.js";
+import { AuthStore } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { mintStoredApiToken } from "./auth-fixture.js";
@@ -263,6 +263,7 @@ describe("pi-web supervisor", () => {
         authorization: `Bearer ${token.secret}`,
         origin: "https://owner.example",
         "x-forwarded-host": "owner.example",
+        "x-pi-web-client-id": "deployment-contract",
       },
     });
     expect(restart.status).toBe(202);
@@ -308,4 +309,157 @@ describe("pi-web supervisor", () => {
     expect(result.code).not.toBe(0);
     expect(result.output).toContain("pi-web auth recover");
   });
+
+  it("preserves the public auth contract across proxying and restart", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const publicOrigin = "https://public.example";
+    const authEnv = isolatedAuthEnv();
+    const supervisor = spawn(
+      process.execPath,
+      ["--import", "tsx", "supervisor.ts"],
+      {
+        cwd: projectRoot,
+        env: {
+          ...authEnv,
+          HOST: "127.0.0.1",
+          PORT: String(publicPort),
+          PI_WEB_CHILD_PORT: String(childPort),
+          PI_WEB_AUTH_MODE: "external",
+          PI_WEB_AUTH_METHODS: "external",
+          PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+          PI_WEB_AUTH_ORIGIN: publicOrigin,
+          PI_WEB_MOCK: "1",
+          PI_WEB_NO_SESSION: "1",
+          NODE_ENV: "test",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    supervisors.add(supervisor);
+    let output = "";
+    supervisor.stdout?.on("data", (chunk) => (output += chunk));
+    supervisor.stderr?.on("data", (chunk) => (output += chunk));
+    const base = `http://127.0.0.1:${publicPort}`;
+    const externalHeaders = {
+      "x-amzn-tunnel-user": "synthetic-owner",
+      "x-pi-web-client-id": "compatibility-test",
+    };
+
+    try {
+      const signedIn = await waitFor(async () => {
+        const response = await fetch(`${base}/api/state`, {
+          headers: externalHeaders,
+        });
+        return response.ok && response.headers.get("set-cookie")
+          ? response
+          : undefined;
+      }, supervisor, 20_000);
+      const cookie = signedIn.headers.get("set-cookie")!.split(";")[0];
+      const browserHeaders = {
+        cookie,
+        origin: publicOrigin,
+        "x-pi-web-client-id": "compatibility-test",
+        "content-type": "application/json",
+      };
+
+      expect(
+        (
+          await fetch(`${base}/api/auth/authorize`, {
+            method: "POST",
+            headers: browserHeaders,
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await fetch(`${base}/api/auth/authorize`, {
+            method: "POST",
+            headers: { ...browserHeaders, origin: "https://other.example" },
+          })
+        ).status,
+      ).toBe(403);
+
+      const tokenResponse = await fetch(`${base}/api/auth/tokens`, {
+        method: "POST",
+        headers: browserHeaders,
+        body: JSON.stringify({ name: "Synthetic machine" }),
+      });
+      expect(tokenResponse.status).toBe(201);
+      const machine = (await tokenResponse.json()) as {
+        secret: string;
+      };
+      const machineHeaders = { authorization: `Bearer ${machine.secret}` };
+      expect(
+        (await fetch(`${base}/api/state`, { headers: machineHeaders })).status,
+      ).toBe(200);
+
+      const ticketResponse = await fetch(`${base}/api/ws-ticket`, {
+        method: "POST",
+        headers: machineHeaders,
+      });
+      expect(ticketResponse.status).toBe(201);
+      const ticket = (await ticketResponse.json()) as { ticket: string };
+      const socket = new WebSocket(
+        `ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket.ticket)}`,
+        { origin: publicOrigin },
+      );
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+      const closed = new Promise<void>((resolve) =>
+        socket.once("close", () => resolve()),
+      );
+
+      const before = (await (
+        await fetch(`${base}/__supervisor/status`, {
+          headers: externalHeaders,
+        })
+      ).json()) as { childGeneration: number };
+      const restart = await fetch(`${base}/api/restart`, {
+        method: "POST",
+        headers: browserHeaders,
+      });
+      expect(restart.status).toBe(202);
+      await closed;
+      await waitFor(async () => {
+        const response = await fetch(`${base}/__supervisor/status`, {
+          headers: externalHeaders,
+        });
+        if (!response.ok) return undefined;
+        const current = (await response.json()) as {
+          childGeneration: number;
+          childPid?: number;
+        };
+        if (
+          current.childGeneration <= before.childGeneration ||
+          !current.childPid
+        )
+          return undefined;
+        return (await fetch(`${base}/api/state`, { headers: machineHeaders }))
+          .ok
+          ? current
+          : undefined;
+      }, supervisor, 20_000);
+
+      const reconnectTicket = (await (
+        await fetch(`${base}/api/ws-ticket`, {
+          method: "POST",
+          headers: machineHeaders,
+        })
+      ).json()) as { ticket: string };
+      const reconnected = new WebSocket(
+        `ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(reconnectTicket.ticket)}`,
+        { origin: publicOrigin },
+      );
+      await new Promise<void>((resolve, reject) => {
+        reconnected.once("open", resolve);
+        reconnected.once("error", reject);
+      });
+      reconnected.close();
+    } catch (error) {
+      throw new Error(`${String(error)}\n${output}`);
+    }
+  }, 35_000);
 });

@@ -1,7 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-const token = "synthetic-attachment-token";
+const sessionCookie = "synthetic-attachment-session";
+
+test.beforeEach(async ({ context, baseURL }) => {
+  await context.addCookies([{ name: "pi_web_session", value: sessionCookie, url: new URL("/api/test-images/", baseURL!).href }]);
+});
 
 test("authenticated transcript image previews stay same-origin", async ({ page, baseURL }) => {
   const externalRequests: string[] = [];
@@ -25,7 +29,7 @@ test("authenticated transcript image previews stay same-origin", async ({ page, 
   }
   await page.route("**/api/test-images/**", async (route) => {
     const request = route.request();
-    expect(request.headers().authorization).toBe(`Bearer ${token}`);
+    expect((await request.allHeaders()).cookie).toContain(`pi_web_session=${sessionCookie}`);
     authenticatedPreviewRequests.push(new URL(request.url()).pathname);
     if (request.url().endsWith("/redirect.png")) {
       await route.fulfill({ status: 302, headers: { location: "https://redirect.invalid/image.png" } });
@@ -46,7 +50,7 @@ test("authenticated transcript image previews stay same-origin", async ({ page, 
     });
   });
 
-  await page.goto(`/?token=${token}`);
+  await page.goto("/");
 
   await expect(page.locator(".message.user", { hasText: "same-origin relative" }).locator("img")).toHaveAttribute("src", /^blob:/);
   await expect(page.locator(".message.user", { hasText: "same-origin absolute" }).locator("img")).toHaveAttribute("src", /^blob:/);
@@ -70,7 +74,7 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
     });
   }
   await page.route("**/api/test-images/tool-same-origin.png", async (route) => {
-    expect(route.request().headers().authorization).toBe(`Bearer ${token}`);
+    expect((await route.request().allHeaders()).cookie).toContain(`pi_web_session=${sessionCookie}`);
     authenticatedPreviewRequests.push(new URL(route.request().url()).pathname);
     await route.fulfill({ status: 200, contentType: "image/png", body: png });
   });
@@ -95,7 +99,7 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
     });
   });
 
-  await page.goto(`/?token=${token}`);
+  await page.goto("/");
 
   const card = page.locator('.toolCard[data-tool-name="read"]');
   await expect(card).toHaveCount(1);

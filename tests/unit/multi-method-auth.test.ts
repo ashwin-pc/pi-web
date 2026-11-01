@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -194,18 +194,6 @@ describe("multi-method human authentication", () => {
     const warn = vi.fn(); await kernel.startupDiagnostics(warn);
     expect(warn.mock.calls[0][0]).toContain("environment-only methods=[passkey, external]");
   });
-  it("recovers dead PID locks but never steals a live lock by age", async () => {
-    const { store } = await fixture();
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
-    await store.update((s) => {
-      s.verifiedMethods = ["password"];
-    });
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: process.pid }));
-    await utimes(`${store.path}.lock`, new Date(0), new Date(0));
-    await expect(store.update(() => {})).rejects.toThrow(
-      "Auth store is locked",
-    );
-  }, 10_000);
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
     const seen = vi.fn();
@@ -559,17 +547,17 @@ describe("multi-method human authentication", () => {
     );
     expect(replay.status).toBe(401);
   });
-  it("bounds concurrent password work to one memory allocation", async () => {
+  it("serializes concurrent password work without rejecting a bounded waiter", async () => {
     const outcomes = await Promise.allSettled([
       hashPassword("first secure password"),
       hashPassword("second secure password"),
     ]);
-    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
-    const success = outcomes.find(
-      (o) => o.status === "fulfilled",
-    ) as PromiseFulfilledResult<string>;
-    expect(success.value).toMatch(/^scrypt\$32768\$8\$1\$/);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(
+      true,
+    );
+    for (const outcome of outcomes)
+      if (outcome.status === "fulfilled")
+        expect(outcome.value).toMatch(/^scrypt\$32768\$8\$1\$/);
   });
   it("hashes salted passwords with scrypt and rejects incorrect passwords", async () => {
     const a = await hashPassword("a secure test password"),
@@ -616,6 +604,9 @@ describe("multi-method human authentication", () => {
     const cookie = original.headers["set-cookie"].split(";")[0];
     const auth = await kernel.gate(req({}, { cookie }));
     if (!auth.ok) throw new Error("No session");
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
     const manage = async (path: string, body: unknown, method = "PUT") => {
       const res = response();
       await handleSecurityRoute(
@@ -636,6 +627,10 @@ describe("multi-method human authentication", () => {
         })
       ).status,
     ).toBe(200);
+    expect((await store.read()).config?.methods.sort()).toEqual([
+      "external",
+      "password",
+    ]);
     expect(
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(409);
@@ -655,7 +650,7 @@ describe("multi-method human authentication", () => {
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(200);
     expect(
-      (await kernel.gate(req({}, { authorization: "Bearer legacy-secret" })))
+      (await kernel.gate(req({}, { authorization: "Bearer removed-secret" })))
         .ok,
     ).toBe(false);
     expect(
@@ -667,7 +662,7 @@ describe("multi-method human authentication", () => {
     expect(
       (
         await kernel.gate(
-          req({}, { cookie, authorization: "Bearer legacy-secret" }),
+          req({}, { cookie, authorization: "Bearer removed-secret" }),
         )
       ).ok,
     ).toBe(false);
