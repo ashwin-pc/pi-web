@@ -1,13 +1,13 @@
 import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { writeFile } from "node:fs/promises";
 import { AuthStore } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { mintStoredApiToken } from "./auth-fixture.js";
 
-const projectRoot = new URL("..", import.meta.url).pathname;
+const projectRoot = process.env.PI_WEB_TEST_SOURCE_ROOT || new URL("..", import.meta.url).pathname;
 const supervisors = new Set<ChildProcess>();
 
 async function freePort(): Promise<number> {
@@ -22,6 +22,22 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
+function pollingErrorCode(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as NodeJS.ErrnoException).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function isTransientPollingError(error: unknown): boolean {
+  return ["ECONNREFUSED", "ECONNRESET"].includes(pollingErrorCode(error) || "");
+}
+
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
   supervisor: ChildProcess,
@@ -29,7 +45,12 @@ async function waitFor<T>(
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await operation().catch(() => undefined);
+    let value: T | undefined;
+    try {
+      value = await operation();
+    } catch (error) {
+      if (!isTransientPollingError(error)) throw error;
+    }
     if (value !== undefined) return value;
     if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
       throw new Error(`Supervisor exited early: code=${supervisor.exitCode} signal=${supervisor.signalCode}`);
@@ -39,14 +60,18 @@ async function waitFor<T>(
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
-async function status(port: number, supervisor: ChildProcess, token: string) {
+async function status(port: number, supervisor: ChildProcess, token: string, host?: string) {
+  let last = "no response";
   return waitFor(async () => {
     const response = await fetch(`http://127.0.0.1:${port}/__supervisor/status`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, ...(host ? { host } : {}) },
     });
+    last = `HTTP ${response.status}: ${await response.clone().text()}`;
     if (!response.ok) return undefined;
     return response.json() as Promise<{ childPid?: number; childGeneration: number }>;
-  }, supervisor);
+  }, supervisor).catch(error => {
+    throw new Error(`${String(error)}; last supervisor status: ${last}`);
+  });
 }
 
 async function apiReady(port: number, supervisor: ChildProcess, token: string) {
@@ -84,6 +109,54 @@ async function stopSupervisor(supervisor: ChildProcess) {
   });
 }
 
+function rawStatus(port: number, host: string, authorization: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: "/api/state",
+      headers: { host, authorization },
+    }, response => {
+      response.resume();
+      response.once("end", () => resolve(response.statusCode || 0));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+function rawRequest(
+  port: number,
+  options: {
+    method?: string;
+    path: string;
+    headers: Record<string, string>;
+    localAddress?: string;
+  },
+): Promise<{ status: number; headers: import("node:http").IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      method: options.method,
+      path: options.path,
+      headers: options.headers,
+      localAddress: options.localAddress,
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      response.once("end", () => resolve({
+        status: response.statusCode || 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString(),
+      }));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+
 afterEach(async () => {
   await Promise.all(Array.from(supervisors, async (supervisor) => {
     supervisors.delete(supervisor);
@@ -92,6 +165,29 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it("retries transient fixture polling errors but surfaces permanent bind errors", async () => {
+    const runningSupervisor = { exitCode: null, signalCode: null } as ChildProcess;
+    let transientAttempts = 0;
+    await expect(waitFor(async () => {
+      transientAttempts += 1;
+      if (transientAttempts === 1) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
+        });
+      }
+      return "ready";
+    }, runningSupervisor, 500)).resolves.toBe("ready");
+    expect(transientAttempts).toBe(2);
+
+    const bindError = Object.assign(new Error("bind EADDRNOTAVAIL"), { code: "EADDRNOTAVAIL" });
+    let permanentAttempts = 0;
+    await expect(waitFor(async () => {
+      permanentAttempts += 1;
+      throw bindError;
+    }, runningSupervisor, 500)).rejects.toBe(bindError);
+    expect(permanentAttempts).toBe(1);
+  });
+
   it.each([
     {
       label: "keeps the default loopback launch usable over plain HTTP",
@@ -186,9 +282,16 @@ describe("pi-web supervisor", () => {
 
     const machineHeaders = {
       authorization: `Bearer ${machineToken}`,
+      "x-amzn-tunnel-user": "proxy-added-owner",
     };
     expect(
       (await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: machineHeaders,
+      })).status,
+    ).toBe(200);
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
         headers: machineHeaders,
       })).status,
     ).toBe(200);
@@ -470,6 +573,210 @@ describe("pi-web supervisor", () => {
     expect(result.code).not.toBe(0);
     expect(result.output).toContain("pi-web auth recover");
   });
+
+  it("preserves the external, machine, browser WebSocket, restart, and public-origin contracts", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const publicHost = `pi.example.test:${publicPort}`;
+    const publicOrigin = `https://${publicHost}`;
+    const authEnv = isolatedAuthEnv();
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    const machineToken = await mintStoredApiToken(store, "machine");
+    await store.update(s => {
+      s.config = { policy: "authenticated", methods: ["external"] };
+    });
+    const env = {
+      ...authEnv,
+      HOST: "127.0.0.1",
+      PORT: String(publicPort),
+      PI_WEB_CHILD_PORT: String(childPort),
+      PI_WEB_AUTH_MODE: "external",
+      PI_WEB_AUTH_POLICY: "authenticated",
+      PI_WEB_AUTH_METHODS: "external",
+      PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+      PI_WEB_AUTH_ORIGIN: publicOrigin,
+      PI_WEB_MOCK: "1",
+      PI_WEB_DEV: "0",
+      NODE_ENV: "test",
+    };
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    const output: string[] = [];
+    supervisor.stdout?.on("data", data => output.push(String(data)));
+    supervisor.stderr?.on("data", data => output.push(String(data)));
+
+    await status(publicPort, supervisor, machineToken.secret, publicHost).catch(error => {
+      throw new Error(`${String(error)}\n${output.join("")}`);
+    });
+    const external = await waitFor(async () => {
+      const response = await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: {
+          host: publicHost,
+          origin: publicOrigin,
+          "x-amzn-tunnel-user": "owner@example.test",
+          "x-pi-web-client-id": "browser-client",
+        },
+      });
+      return response.status === 502 ? undefined : response;
+    }, supervisor);
+    expect(external.status, output.join("")).toBe(200);
+    const cookie = external.headers.get("set-cookie")?.split(";")[0];
+    expect(cookie).toContain("pi_web_session=");
+
+    const rejectedMachineOrigin = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: {
+        host: publicHost,
+        authorization: `Bearer ${machineToken.secret}`,
+        origin: "https://hostile.example.test",
+      },
+    });
+    expect(rejectedMachineOrigin.status).toBe(403);
+
+    const machineTicket = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: { host: publicHost, authorization: `Bearer ${machineToken.secret}` },
+    });
+    expect(machineTicket.status).toBe(201);
+    const connectMachine = async (ticketResponse: Response) => {
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+        headers: { host: publicHost },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("message", data => {
+          expect(JSON.parse(String(data)).type).toBe("hello");
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+      socket.close();
+      await new Promise<void>(resolve => socket.once("close", () => resolve()));
+    };
+    await connectMachine(machineTicket);
+    await connectMachine(await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: { host: publicHost, authorization: `Bearer ${machineToken.secret}` },
+    }));
+
+    const externalCrossSite = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: {
+        host: publicHost,
+        origin: "http://other.example.test",
+        "x-amzn-tunnel-user": "owner@example.test",
+        "x-pi-web-client-id": "browser-client",
+      },
+    });
+    expect.soft(externalCrossSite.status).toBe(403);
+    const externalMissingOrigin = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: {
+        host: publicHost,
+        "x-amzn-tunnel-user": "owner@example.test",
+        "x-pi-web-client-id": "browser-client",
+      },
+    });
+    expect.soft(externalMissingOrigin.status).toBe(403);
+    expect.soft(await rawStatus(publicPort, `other.example.test:${publicPort}`, `Bearer ${machineToken.secret}`)).toBe(200);
+
+    const browserHeaders = {
+      host: publicHost,
+      cookie: cookie!,
+      origin: publicOrigin,
+      "x-pi-web-client-id": "browser-client",
+    };
+    const wrongOrigin = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: { ...browserHeaders, origin: "http://other.example.test" },
+    });
+    expect(wrongOrigin.status).toBe(403);
+    const matchingHostWrongOrigin = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: {
+        ...browserHeaders,
+        host: `other.example.test:${publicPort}`,
+        origin: `https://other.example.test:${publicPort}`,
+      },
+    });
+    expect(matchingHostWrongOrigin.status).toBe(403);
+
+    const expectAmbientSocketRejected = async (socketOrigin?: string) => {
+      const response = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+        method: "POST",
+        headers: browserHeaders,
+      });
+      expect(response.status).toBe(201);
+      const { ticket } = await response.json() as { ticket: string };
+      await expect(new Promise<void>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+          ...(socketOrigin ? { origin: socketOrigin } : {}),
+          headers: { host: publicHost },
+        });
+        socket.once("unexpected-response", (_request, response) => {
+          expect(response.statusCode).toBe(403);
+          socket.terminate();
+          resolve();
+        });
+        socket.once("open", () => reject(new Error("Ambient ticket opened without a trusted browser Origin")));
+        socket.once("error", reject);
+      })).resolves.toBeUndefined();
+    };
+    await expectAmbientSocketRejected();
+    await expectAmbientSocketRejected("https://hostile.example.test");
+
+    const connect = async () => {
+      const response = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+        method: "POST",
+        headers: browserHeaders,
+      });
+      expect(response.status).toBe(201);
+      const { ticket } = await response.json() as { ticket: string };
+      const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+        origin: publicOrigin,
+        headers: { host: publicHost },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("message", data => {
+          expect(JSON.parse(String(data)).type).toBe("hello");
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+      socket.close();
+      await new Promise<void>(resolve => socket.once("close", () => resolve()));
+    };
+    await connect();
+    await connect();
+
+    const missingIntentRestart = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+      method: "POST",
+      headers: {
+        host: publicHost,
+        cookie: cookie!,
+        origin: publicOrigin,
+      },
+    });
+    expect(missingIntentRestart.status).toBe(403);
+    expect(await missingIntentRestart.json()).toMatchObject({ error: "CSRF validation failed" });
+
+    const beforeRestart = await status(publicPort, supervisor, machineToken.secret, publicHost);
+    const restart = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+      method: "POST",
+      headers: browserHeaders,
+    });
+    expect(restart.status).toBe(202);
+    const afterRestart = await waitFor(async () => {
+      const current = await status(publicPort, supervisor, machineToken.secret, publicHost);
+      return current.childGeneration > beforeRestart.childGeneration ? current : undefined;
+    }, supervisor);
+    expect(afterRestart.childPid).not.toBe(beforeRestart.childPid);
+  }, 30_000);
+
 
   it("preserves the public auth contract across proxying and restart", async () => {
     const publicPort = await freePort();

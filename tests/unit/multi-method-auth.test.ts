@@ -76,24 +76,57 @@ const config = {
 };
 
 describe("multi-method human authentication", () => {
-  it("accepts the actual authority and configured origin but never forged forwarding headers", () => {
-    for (const host of [
-      "127.0.0.1:9300",
-      "192.168.1.5:9300",
-      "machine.tailnet:9300",
-    ])
-      expect(
-        trustedOrigin(
-          req({}, { host, origin: `http://${host}` }),
-          "http://localhost:9300",
-        ),
-      ).toBe(true);
+  it("enforces the exact configured public origin and only canonical local aliases", () => {
     expect(
       trustedOrigin(
         req({}, { host: "internal", origin: "https://public.example" }),
         "https://public.example",
       ),
     ).toBe(true);
+    // #224 fail-before regression: with the default environment, caller Host
+    // must not authorize an invented HTTPS Origin.
+    expect(
+      trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example" }),
+        "https://public.example",
+      ),
+    ).toBe(false);
+    for (const alias of ["localhost", "127.0.0.1", "[::1]"]) {
+      expect(
+        trustedOrigin(
+          req({}, { host: "attacker.example:9300", origin: `http://${alias}:9300` }),
+          "http://localhost:9300",
+        ),
+      ).toBe(true);
+    }
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9300"],
+      ["http://localhost", "localhost:80"],
+      ["http://127.0.0.1:9301", "127.0.0.1:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.5:9300"],
+      ["http://[::1]:9300", "[0:0:0:0:0:0:0:1]:9300"],
+      ["https://[2001:db8::1]", "[2001:0db8:0:0:0:0:0:1]:443"],
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host, origin }),
+          "https://machine.tailnet.ts.net",
+        ),
+      ).toBe(true);
+    }
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.6:9300"],
+      ["http://machine.tailnet:9300", "machine.tailnet:9300"],
+      ["https://other.example:9300", "other.example:9300"],
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host, origin }),
+          "https://public.example",
+        ),
+      ).toBe(false);
+    }
     for (const origin of [
       "null",
       "garbage",
@@ -110,29 +143,30 @@ describe("multi-method human authentication", () => {
         ),
       ).toBe(false);
   });
-  it("trusts only exact canonical proxy peers and a single strict forwarded authority", () => {
+  it("does not treat trusted forwarded authorities as browser Origin grants", () => {
     const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
     try {
       process.env.PI_WEB_AUTH_PROXY_PEERS = "::ffff:127.0.0.1";
       const headers = { host: "internal:9300", origin: "https://public.example", "x-forwarded-host": "public.example" };
-      expect(trustedOrigin(req({}, headers), config.origin)).toBe(true);
-      for (const [origin, authority, accepted] of [
-        ["https://public.example", "public.example:443", true],
-        ["http://public.example", "public.example:80", true],
-        ["https://public.example", "public.example:80", false],
-        ["http://public.example", "public.example:443", false],
-        ["https://public.example:8443", "public.example:8443", true],
-        ["https://public.example", "public.example:8443", false],
+      expect(trustedOrigin(req({}, headers), config.origin)).toBe(false);
+      for (const [origin, authority] of [
+        ["https://public.example", "public.example:443"],
+        ["http://public.example", "public.example:80"],
+        ["https://public.example", "public.example:80"],
+        ["http://public.example", "public.example:443"],
+        ["https://public.example:8443", "public.example:8443"],
+        ["https://public.example", "public.example:8443"],
       ] as const) {
         const request = req({}, { ...headers, origin, "x-forwarded-host": authority });
-        expect(trustedOrigin(request, config.origin)).toBe(accepted);
-        // The supervisor preserves the explicit authority while stripping XFH;
-        // the child's direct Host comparison must have identical semantics.
+        expect(trustedOrigin(request, config.origin)).toBe(false);
         expect(forwardedHost(request)).toBe(authority);
-        expect(trustedOrigin(req({}, { host: authority, origin }), config.origin)).toBe(accepted);
         request.socket.remoteAddress = "192.0.2.1";
         expect(trustedOrigin(request, config.origin)).toBe(false);
       }
+      expect(trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example", "x-forwarded-host": "other.example" }),
+        "https://public.example",
+      )).toBe(false);
       const untrusted = req({}, headers); untrusted.socket.remoteAddress = "192.0.2.1";
       expect(trustedOrigin(untrusted, config.origin)).toBe(false);
       for (const host of ["public.example,evil.example", "public.example/path", "public.example@evil.example", " public.example", "public.example:"])
@@ -141,6 +175,13 @@ describe("multi-method human authentication", () => {
       if (old === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
       else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
     }
+  });
+  it("anchors originless browser signals in operator configuration", () => {
+    expect(trustedOrigin(req({}, { host: "pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "cross-site" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "same-origin" }), "https://pi.example.test")).toBe(true);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "http://pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "https://pi.example.test" }), "https://pi.example.test")).toBe(true);
   });
   it("denies stale-cookie and grant persistence and other-device lockout", async () => {
     for (const grant of [false, true]) {

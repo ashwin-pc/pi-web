@@ -11,6 +11,26 @@ import WebSocket from "ws";
 import { AuthStore } from "../server/auth/kernel.js";
 import { mintStoredApiToken } from "./auth-fixture.js";
 
+const nativeFetch = globalThis.fetch;
+function apiFetch(input: string | URL | Request, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const method = (init.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("x-pi-web-client-id")) {
+    headers.set("x-pi-web-test-client-intent", "api-test");
+  }
+  return nativeFetch(input, { ...init, headers });
+}
+const fetch = apiFetch;
+
+async function mockWebSocket(baseUrl: string, query = "", options: { autoPong?: boolean } = {}): Promise<WebSocket> {
+  const origin = new URL(baseUrl).origin;
+  const response = await fetch(`${baseUrl}/api/ws-ticket`, { method: "POST" });
+  if (!response.ok) throw new Error(`Could not mint mock WebSocket ticket: ${response.status}`);
+  const { ticket } = await response.json() as { ticket: string };
+  const suffix = query ? `&${query}` : "";
+  return new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws?ticket=${encodeURIComponent(ticket)}${suffix}`, { origin, ...options });
+}
+
 function rawGet(
   port: number,
   path: string,
@@ -116,7 +136,7 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -146,6 +166,27 @@ describe("pi-web mock API", () => {
 
     const lifecycle = await (await fetch(`${baseUrl}/api/session/lifecycle`)).json();
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
+  });
+
+  it("requires explicit same-origin browser intent for open-policy mutations", async () => {
+    const body = JSON.stringify({ defaults: { thinkingLevel: "high" } });
+    const missingOrigin = await nativeFetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "browser" },
+      body,
+    });
+    expect(missingOrigin.status).toBe(403);
+    const crossSite = await nativeFetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", origin: "https://other.example.test", "x-pi-web-client-id": "browser" },
+      body,
+    });
+    expect(crossSite.status).toBe(403);
+    expect((await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body,
+    })).status).toBe(200);
   });
 
   it("deletes a requested session and its independent note", async () => {
@@ -256,7 +297,7 @@ describe("pi-web mock API", () => {
 
   it("routes mock agent events through contract shapes and event-before-runtime order", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -294,7 +335,7 @@ describe("pi-web mock API", () => {
 
   it("returns the tree navigation response and emits its terminal runtime event", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const runtimeEvents: any[] = [];
     ws.on("message", (data) => {
@@ -318,7 +359,7 @@ describe("pi-web mock API", () => {
   it("returns a very deep conversation tree without overflowing the stack", async () => {
     const port = await freePort();
     const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     deepChild.stderr?.on("data", (data) => process.stderr.write(data));
@@ -703,7 +744,7 @@ describe("pi-web mock API", () => {
   });
 
   it("renames and clears the current session without duplicate state broadcasts", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -729,7 +770,7 @@ describe("pi-web mock API", () => {
 
   it("clears queued mock prompt correlations on reset", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -965,7 +1006,7 @@ describe("git repo discovery API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_CWD: workspace },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -1019,7 +1060,7 @@ describe("artifact serving", () => {
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -1145,7 +1186,7 @@ describe("additional API coverage", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -1380,7 +1421,6 @@ describe("Live session lifecycle", () => {
         PI_WEB_DEV: "0",
         HOST: "127.0.0.1",
         PORT: String(port),
-        PI_WEB_TOKEN: "",
         PI_WEB_SESSION_IDLE_GRACE_MS: "120",
         PI_WEB_VIEWER_LEASE_GRACE_MS: "80",
         PI_WEB_WS_HEARTBEAT_MS: "50",
@@ -1415,7 +1455,7 @@ describe("Live session lifecycle", () => {
     await reset();
     const res = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-pi-web-client-id": "lease-test" },
+      headers: { "content-type": "application/json", origin: baseUrl, "x-pi-web-client-id": "lease-test" },
       body: JSON.stringify({ sessionId: "mock-older", clientId: "lease-test" }),
     });
     expect(res.status).toBe(200);
@@ -1438,14 +1478,14 @@ describe("Live session lifecycle", () => {
     await reset();
     const opened = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-pi-web-client-id": "heartbeat-test" },
+      headers: { "content-type": "application/json", origin: baseUrl, "x-pi-web-client-id": "heartbeat-test" },
       body: JSON.stringify({ sessionId: "mock-older", clientId: "heartbeat-test" }),
     });
     expect(opened.status).toBe(200);
 
     let replyToPings = true;
     let acknowledgedPings = 0;
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-older&clientId=heartbeat-test", { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
     ws.on("ping", () => {
       if (!replyToPings) return;
@@ -1733,16 +1773,27 @@ describe("WebSocket authentication", () => {
     }
   }, 25_000);
 
-  it("sends a hello message with session info on WebSocket connect (no token)", async () => {
+  it("requires a ticket and sends session info for an open-policy mock WebSocket", async () => {
     const port = await freePort();
     const noTokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
       await waitForServer(`http://127.0.0.1:${port}`);
+      await expect(new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: `http://127.0.0.1:${port}` });
+        ws.on("unexpected-response", (_req, response) => {
+          expect(response.statusCode).toBe(401);
+          ws.terminate();
+          resolve();
+        });
+        ws.on("open", () => reject(new Error("WebSocket without a ticket should be rejected")));
+        ws.on("error", reject);
+      })).resolves.toBeUndefined();
+
+      const ws = await mockWebSocket(`http://127.0.0.1:${port}`);
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");

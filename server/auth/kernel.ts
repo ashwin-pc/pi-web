@@ -462,17 +462,6 @@ export class AuthKernel {
       return { ok: false };
     }
     const auth = req.headers.authorization || "";
-    if (methods.has("external") && this.trustedHeader) {
-      const value = req.headers[this.trustedHeader.toLowerCase()];
-      const user = (Array.isArray(value) ? value[0] : value)?.trim();
-      if (user)
-        return {
-          ok: true,
-          identity: { id: `external:${user}`, displayName: user },
-          via: "external",
-          revocationEpoch,
-        };
-    }
     if (auth.startsWith("Bearer ")) {
       const hash = hashSecret(auth.slice(7));
       const api = state.apiTokens.find(
@@ -483,6 +472,17 @@ export class AuthKernel {
           ok: true,
           identity: { id: `token:${api.id}`, displayName: api.name },
           via: "token",
+          revocationEpoch,
+        };
+    }
+    if (methods.has("external") && this.trustedHeader) {
+      const value = req.headers[this.trustedHeader.toLowerCase()];
+      const user = (Array.isArray(value) ? value[0] : value)?.trim();
+      if (user)
+        return {
+          ok: true,
+          identity: { id: `external:${user}`, displayName: user },
+          via: "external",
           revocationEpoch,
         };
     }
