@@ -1,7 +1,9 @@
 import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { bootstrapRequiresLoopback } from "./bootstrapAccess.js";
 import { trustedProxyPeer } from "./proxy.js";
+import { effectivePeerAddress } from "./supervisorPeer.js";
 import { readJsonBody } from "./requestBody.js";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
@@ -21,7 +23,7 @@ const attempts = new Map<
 >();
 const ATTEMPTS_CAPACITY = 4096;
 export function loginPeer(req: IncomingMessage) {
-  const peer = req.socket.remoteAddress || "unknown";
+  const peer = effectivePeerAddress(req) || "unknown";
   const forwarded = req.headers["x-forwarded-for"];
   // Opt-in exact proxy peers; require one sanitized IP, never take an arbitrary chain.
   return trustedProxyPeer(req) &&
@@ -137,9 +139,9 @@ export async function handlePasswordLogin(
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
-      if (new URL(origin).hostname === "localhost" && !isLoopback(req)) {
+      if (bootstrapRequiresLoopback(origin) && !isLoopback(req)) {
         send(res, 403, {
-          error: "Bootstrap requires loopback access for localhost origins",
+          error: "Bootstrap requires loopback access",
         });
         return true;
       }

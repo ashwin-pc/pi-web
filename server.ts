@@ -47,14 +47,19 @@ import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
 import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
+import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
+import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
 
+initializeSupervisorPeerContext(process.env);
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();
 const distDir = join(appDir, "dist");
 const staticDir = distDir;
+const publicDir = join(appDir, "public");
 
-const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
+const isDev = process.env.PI_WEB_DEV === "1" ||
+  (process.env.PI_WEB_DEV === undefined && process.env.NODE_ENV === "development");
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
@@ -1484,9 +1489,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
     }
 
     if (viteDevServer) {
-      viteDevServer.middlewares(req, res, () => {
-        if (!res.writableEnded) sendJson(res, 404, { ok: false, error: "Not found" });
-      });
+      await serveAuthenticatedViteRequest(viteDevServer, authKernel, publicDir, req, res, url.pathname);
       return;
     }
 
@@ -1499,7 +1502,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
 const wss = new WebSocketServer({ noServer: true });
 const webSocketRevocation = new WebSocketRevocation(authStore, authKernel);
-server.on("upgrade", (req, socket, head) => {
+// Vite owns this non-listening server and may replace its upgrade listener on
+// restart. The public server always keeps the stable authenticated listener.
+const viteHmrServer = createServer();
+const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, authOrigin, viteHmrServer);
+const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1509,7 +1516,15 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (url.pathname !== "/ws") return;
+  if (url.pathname !== "/ws") {
+    const protocol = req.headers["sec-websocket-protocol"];
+    if (isDev && url.pathname === "/" && (protocol === "vite-hmr" || protocol === "vite-ping")) {
+      viteUpgrades.handle(req, socket, head);
+    } else {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+    return;
+  }
 
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "");
@@ -1520,7 +1535,8 @@ server.on("upgrade", (req, socket, head) => {
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     wss.handleUpgrade(req, socket, head, (ws) => { webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
-});
+};
+server.on("upgrade", applicationUpgradeListener);
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
   const wsStart = performance.now();
@@ -1557,7 +1573,7 @@ if (isDev) {
     appType: "spa",
     server: {
       middlewareMode: true,
-      hmr: { server },
+      hmr: { server: viteHmrServer },
     },
   });
 }

@@ -24,6 +24,7 @@ import {
   passwordLoginPage,
 } from "../../server/auth/password.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
+import { handlePasskeyRoute } from "../../server/auth/passkey.js";
 
 async function fixture() {
   const store = new AuthStore(
@@ -403,7 +404,13 @@ describe("multi-method human authentication", () => {
     expect(result.status).toBe(200);
     expect(result.headers["set-cookie"]).toContain("Max-Age=0");
   });
-  it("enforces password bootstrap loopback parity", async () => {
+  it.each([
+    "http://localhost:8787",
+    "http://workspace.localhost:8787",
+    "http://127.44.2.1:8787",
+    "http://[::1]:8787",
+    "http://[::ffff:127.0.0.9]:8787",
+  ])("requires loopback password bootstrap for loopback origin %s", async (origin) => {
     const { store, kernel } = await fixture();
     const request = req({});
     request.socket.remoteAddress = "192.0.2.1";
@@ -411,11 +418,123 @@ describe("multi-method human authentication", () => {
     await handlePasswordLogin(
       request,
       res,
-      new URL("/api/auth/password/bootstrap", config.origin),
+      new URL("/api/auth/password/bootstrap", origin),
       kernel,
       store,
+      origin,
     );
     expect(res.status).toBe(403);
+  });
+  it("allows remote password bootstrap at a public origin and consumes the token once", async () => {
+    const { store, kernel } = await fixture();
+    await store.update(s => {
+      s.bootstrap = { hash: hashSecret("remote-setup"), expiresAt: Date.now() + 60_000 };
+    });
+    const origin = "https://public.example.invalid";
+    const request = req({ token: "remote-setup", password: "a remote setup password" });
+    request.socket.remoteAddress = "192.0.2.1";
+    const accepted = response();
+    await handlePasswordLogin(
+      request,
+      accepted,
+      new URL("/api/auth/password/bootstrap", origin),
+      kernel,
+      store,
+      origin,
+    );
+    expect(accepted.status).toBe(200);
+
+    const replay = req({ token: "remote-setup", password: "another remote password" });
+    replay.socket.remoteAddress = "192.0.2.1";
+    const denied = response();
+    await handlePasswordLogin(
+      replay,
+      denied,
+      new URL("/api/auth/password/bootstrap", origin),
+      kernel,
+      store,
+      origin,
+    );
+    expect(denied.status).toBe(401);
+  });
+  it.each([
+    "http://localhost:8787",
+    "http://workspace.localhost:8787",
+    "http://127.44.2.1:8787",
+    "http://[::1]:8787",
+    "http://[::ffff:127.0.0.9]:8787",
+  ])("requires loopback passkey bootstrap for loopback origin %s", async (origin) => {
+    const { store, kernel } = await fixture();
+    const remote = req({}, {}, "GET");
+    remote.socket.remoteAddress = "192.0.2.1";
+    const denied = response();
+    const loopbackConfig = {
+      ...config,
+      origin,
+      rpID: new URL(origin).hostname.replace(/^\[|\]$/g, ""),
+    };
+    await handlePasskeyRoute(
+      remote,
+      denied,
+      new URL("/api/auth/passkey-bootstrap?token=synthetic", origin),
+      kernel,
+      store,
+      loopbackConfig,
+    );
+    expect(denied.status).toBe(403);
+  });
+  it("allows a valid remote passkey bootstrap token at its public HTTPS RP and rejects invalid or used tokens", async () => {
+    const { store, kernel } = await fixture();
+    const publicConfig = {
+      ...config,
+      origin: "https://public.example.invalid",
+      rpID: "public.example.invalid",
+    };
+    await store.update(s => {
+      s.bootstrap = { hash: hashSecret("remote-passkey-setup"), expiresAt: Date.now() + 60_000 };
+    });
+    const remote = req({ token: "remote-passkey-setup", name: "Remote key" });
+    remote.socket.remoteAddress = "192.0.2.1";
+    const accepted = response();
+    await handlePasskeyRoute(
+      remote,
+      accepted,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(accepted.status).toBe(200);
+    expect(JSON.parse(accepted.text).rp.id).toBe(publicConfig.rpID);
+
+    const invalidRequest = req({ token: "wrong-token", name: "Remote key" });
+    invalidRequest.socket.remoteAddress = "192.0.2.1";
+    const invalid = response();
+    await handlePasskeyRoute(
+      invalidRequest,
+      invalid,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(invalid.status).toBe(401);
+
+    await store.update(s => {
+      s.bootstrap!.usedAt = Date.now();
+    });
+    const replay = req({ token: "remote-passkey-setup", name: "Remote key" });
+    replay.socket.remoteAddress = "192.0.2.1";
+    const used = response();
+    await handlePasskeyRoute(
+      replay,
+      used,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(used.status).toBe(401);
   });
   it("translates supported compatibility configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({

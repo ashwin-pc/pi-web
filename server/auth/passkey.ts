@@ -2,6 +2,7 @@ import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./log
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCredential } from "@simplewebauthn/server";
+import { bootstrapRequiresLoopback } from "./bootstrapAccess.js";
 import { AuthKernel, hashSecret, isLoopback, type AuthStore } from "./kernel.js";
 import { loginPeer } from "./password.js";
 import { readJsonBody } from "./requestBody.js";
@@ -40,7 +41,6 @@ function rememberChallenge(peer: string, challenge: string, value: Omit<(typeof 
   challenges.set(challenge, { ...value, peer });
   return true;
 }
-function bootstrapRequiresLoopback(config: PasskeyConfig) { return new URL(config.origin).hostname === "localhost"; }
 function clientChallenge(response: unknown): string | undefined {
   try {
     const value = (response as { response?: { clientDataJSON?: unknown } })?.response?.clientDataJSON;
@@ -60,7 +60,7 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
   if (!url.pathname.includes("bootstrap") && !kernel.methods.has("passkey")) return false;
   if (req.method === "GET" && url.pathname === "/api/auth/challenge") { json(res, 200, { mode: "redirect", url: "/api/auth/login" }); return true; }
   if (req.method === "GET" && (url.pathname === "/api/auth/login" || url.pathname === "/api/auth/passkey-login" || url.pathname === "/api/auth/passkey-bootstrap")) {
-    if (url.pathname.endsWith("bootstrap") && bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap is localhost-only" }); return true; }
+    if (url.pathname.endsWith("bootstrap") && bootstrapRequiresLoopback(config.origin) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access" }); return true; }
     const bootstrap = url.pathname.endsWith("bootstrap"); const token = bootstrap ? url.searchParams.get("token") || "" : "";
     const html = renderLoginPage({ methods: ["passkey"], passkeyOnly: true, ...(bootstrap ? { setupToken: token } : {}), presentation: await presentation?.() });
     res.writeHead(200, loginPageHeaders); res.end(html); return true;
@@ -85,17 +85,17 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     await store.update(s => { const found = s.credentials.find(c => c.id === record.id); if (found) found.counter = result.authenticationInfo.newCounter; }); await kernel.establishSession(res, { id: "owner", displayName: "Owner" }, "passkey", req, true, { passkeyId: record.id }); json(res, 200, { ok: true }); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/bootstrap/options") {
-    if (bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access for localhost origins" }); return true; }
+    if (bootstrapRequiresLoopback(config.origin) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access" }); return true; }
     const peer = `${store.path}:${loginPeer(req)}`;
-    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const input = await body(req) as { token?: string; name?: string }; const state = await store.read();
     if (!input.token || !state.bootstrap || state.bootstrap.usedAt || state.bootstrap.expiresAt < Date.now() || hashSecret(input.token) !== state.bootstrap.hash) { json(res, 401, { ok: false, error: "Invalid bootstrap token" }); return true; }
+    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const options = await generateRegistrationOptions({ rpName: config.rpName, rpID: config.rpID, userName: "pi-web-owner", userDisplayName: "Pi Web Owner", attestationType: "none", authenticatorSelection: { residentKey: "preferred", userVerification: "required" }, excludeCredentials: state.credentials.filter(c => !c.revokedAt).map(c => ({ id: c.id })) });
     if (!rememberChallenge(peer, options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "register", bootstrapHash: state.bootstrap.hash })) { res.setHeader("retry-after", "2"); json(res, 429, { ok: false, error: "Too many pending ceremonies" }); return true; }
     json(res, 200, options); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/bootstrap/verify") {
-    if (bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access for localhost origins" }); return true; }
+    if (bootstrapRequiresLoopback(config.origin) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access" }); return true; }
     const input = await body(req) as { response: RegistrationResponseJSON; name?: string }; const challenge = clientChallenge(input.response);
     if (!challenge) { json(res, 400, { ok: false, error: "Malformed authenticator response" }); return true; }
     const pending = challenges.get(challenge);
