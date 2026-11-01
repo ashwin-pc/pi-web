@@ -379,6 +379,17 @@ describe("multi-method human authentication", () => {
   it("translates supported compatibility configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
+      explicitOpenPolicy: false,
+      methods: [],
+    });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_POLICY: "open",
+      }),
+    ).toMatchObject({
+      policy: "open",
+      explicitOpenPolicy: true,
       methods: [],
     });
     expect(
@@ -390,7 +401,100 @@ describe("multi-method human authentication", () => {
       policy: "authenticated",
       methods: ["password", "passkey", "external"],
     });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+      }),
+    ).toMatchObject({
+      policy: "authenticated",
+      methods: ["external"],
+    });
+    expect(() =>
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_METHODS: "external",
+      }),
+    ).toThrow("cannot be combined");
     expect(() => resolveAuthConfig({ PI_WEB_AUTH_METHODS: "basic" })).toThrow();
+  });
+  it("preserves saved policy during method changes and never lets saved open weaken authenticated environment", async () => {
+    const { store } = await fixture();
+    await store.update((s) => {
+      s.config = { policy: "open", methods: ["password"] };
+    });
+    const kernel = new AuthKernel(
+      "passkey",
+      store,
+      false,
+      "",
+      "authenticated",
+      ["password"],
+    );
+    await kernel.refreshConfig();
+    expect(kernel.policy).toBe("authenticated");
+    await kernel.configure(["password", "external"]);
+    expect((await store.read()).config).toEqual({
+      policy: "open",
+      methods: ["password", "external"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+  });
+  it("persists authenticated policy on first enrollment unless policy was explicitly changed", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-first-enrollment-")), "auth.json"),
+    );
+    const kernel = new AuthKernel("none", store, false);
+    expect(kernel.policy).toBe("open");
+
+    await kernel.configure(["password"]);
+    expect((await store.read()).config).toEqual({
+      policy: "authenticated",
+      methods: ["password"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+
+    const explicitOpenStore = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-explicit-open-")), "auth.json"),
+    );
+    const explicitOpenConfig = resolveAuthConfig({
+      PI_WEB_AUTH_MODE: "none",
+      PI_WEB_AUTH_POLICY: "open",
+    });
+    const explicitOpen = new AuthKernel(
+      explicitOpenConfig.mode,
+      explicitOpenStore,
+      false,
+      "",
+      explicitOpenConfig.policy,
+      explicitOpenConfig.methods,
+      undefined,
+      explicitOpenConfig.explicitOpenPolicy,
+    );
+    await explicitOpen.configure(["password"]);
+    expect((await explicitOpenStore.read()).config).toEqual({
+      policy: "open",
+      methods: ["password"],
+    });
+    expect(explicitOpen.policy).toBe("open");
+  });
+  it("warns when an explicitly open policy advertises login methods", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-open-methods-")), "auth.json"),
+    );
+    const kernel = new AuthKernel(
+      "none",
+      store,
+      false,
+      "",
+      "open",
+      ["password"],
+    );
+    const warn = vi.fn();
+    await kernel.startupDiagnostics(warn);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('policy is "open" while login methods are enabled'),
+    );
   });
   it("recovery removes saved legacy authority and creates a usable single-use bootstrap", async () => {
     const { store } = await fixture();

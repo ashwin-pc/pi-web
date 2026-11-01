@@ -71,6 +71,7 @@ export type DeviceGrantRecord = {
 };
 export type AuthState = {
   config?: { policy: AccessPolicy; methods: HumanAuthMethod[] };
+  revocationEpoch?: number;
   verifiedMethods?: HumanAuthMethod[];
   version: 1;
   credentials: CredentialRecord[];
@@ -258,16 +259,37 @@ function cookies(req: IncomingMessage) {
 }
 export type AuthVia = "session" | "token" | "external" | "open" | "extension";
 export type GateResult =
-  | { ok: true; identity: Identity; via: AuthVia; sessionHash?: string }
+  | {
+      ok: true;
+      identity: Identity;
+      via: AuthVia;
+      sessionHash?: string;
+      revocationEpoch?: number;
+    }
   | { ok: false; status?: 401 | 403 };
 
+export type WsTicket = {
+  identity: Identity;
+  via: AuthVia;
+  expiresAt: number;
+  sessionHash?: string;
+  revocationEpoch: number;
+};
+
+export function bumpRevocationEpoch(state: AuthState): void {
+  state.revocationEpoch = (state.revocationEpoch || 0) + 1;
+}
+
 export class AuthKernel {
-  private wsTickets = new Map<
-    string,
-    { identity: Identity; expiresAt: number; sessionHash?: string }
-  >();
+  private wsTickets = new Map<string, WsTicket>();
+  private readonly configuredPolicy: AccessPolicy;
   policy: AccessPolicy;
   methods: ReadonlySet<HumanAuthMethod>;
+  effectivePolicy(saved?: AccessPolicy) {
+    return this.configuredPolicy === "authenticated" || saved === "authenticated"
+      ? "authenticated"
+      : "open";
+  }
   async refreshConfig() {
     const state = await this.store.read();
     if (state.config) {
@@ -275,7 +297,7 @@ export class AuthKernel {
         throw new Error(
           "Saved authentication settings still enable removed legacy token authentication. Run `pi-web auth recover` to migrate the store and create a one-time password/passkey setup URL.",
         );
-      this.policy = state.config.policy;
+      this.policy = this.effectivePolicy(state.config.policy);
       this.methods = new Set(state.config.methods);
     }
   }
@@ -301,17 +323,27 @@ export class AuthKernel {
           [...state.config.methods].sort().join())
     )
       warn(
-        `Auth environment/store disagreement: saved store takes precedence. Policy env=${this.policy}, saved=${state.config.policy}; environment-only methods=[${[...this.methods].filter(m => !state.config!.methods.includes(m)).join(", ")}]; store-only methods=[${state.config.methods.filter(m => !this.methods.has(m)).join(", ")}]. Environment neither enables nor retires saved methods; use Settings or terminal recovery.`,
+        `Auth environment/store disagreement. Authenticated policy is fail-closed and takes precedence; saved methods remain authoritative. Policy env=${this.policy}, saved=${state.config.policy}; environment-only methods=[${[...this.methods].filter(m => !state.config!.methods.includes(m)).join(", ")}]; store-only methods=[${state.config.methods.filter(m => !this.methods.has(m)).join(", ")}]. Use Settings or terminal recovery to change saved methods.`,
       );
     await this.refreshConfig();
     if (this.policy === "authenticated" && !(await this.readyMethods()).length)
       warn(
-        "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store policy takes precedence.",
+        "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store methods remain authoritative.",
       );
+    if (this.policy === "open" && this.methods.size)
+      warn(
+        `Auth policy is "open" while login methods are enabled (${[...this.methods].join(", ")}). Requests are not required to authenticate; set PI_WEB_AUTH_POLICY=authenticated or clear the methods.`,
+      );
+  }
+  configurationPolicy(saved?: AccessPolicy): AccessPolicy {
+    return saved ?? (this.explicitOpenPolicy ? "open" : "authenticated");
   }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
-      state.config = { policy: this.policy, methods };
+      state.config = {
+        policy: this.configurationPolicy(state.config?.policy),
+        methods,
+      };
     });
     await this.refreshConfig();
   }
@@ -347,16 +379,19 @@ export class AuthKernel {
   constructor(
     readonly mode: AuthMode,
     readonly store: AuthStore,
-    readonly secureCookie = true,
+    readonly secureCookie: boolean | ((req?: IncomingMessage) => boolean) = true,
     readonly trustedHeader = "",
     policy?: AccessPolicy,
     methods?: HumanAuthMethod[],
     private readonly extensionResolver?: (req: IncomingMessage) => Promise<GateResult>,
+    private readonly explicitOpenPolicy = false,
   ) {
-    this.policy = policy || (mode === "none" ? "open" : "authenticated");
+    this.configuredPolicy =
+      policy || (mode === "none" ? "open" : "authenticated");
+    this.policy = this.configuredPolicy;
     this.methods = new Set(methods || (mode === "none" ? [] : [mode]));
   }
-  mintWsTicket(identity: Identity, sessionHash?: string) {
+  mintWsTicket(auth: Extract<GateResult, { ok: true }>) {
     const now = Date.now();
     for (const [key, ticket] of this.wsTickets)
       if (ticket.expiresAt <= now) this.wsTickets.delete(key);
@@ -364,8 +399,10 @@ export class AuthKernel {
       this.wsTickets.delete(this.wsTickets.keys().next().value!);
     const secret = randomSecret();
     this.wsTickets.set(hashSecret(secret), {
-      identity,
-      sessionHash,
+      identity: auth.identity,
+      via: auth.via,
+      sessionHash: auth.sessionHash,
+      revocationEpoch: auth.revocationEpoch || 0,
       expiresAt: now + 30_000,
     });
     return secret;
@@ -379,14 +416,22 @@ export class AuthKernel {
   async gate(req: IncomingMessage): Promise<GateResult> {
     // Reserved credential class: never fall through to open/browser/machine auth.
     if (/^PiWebExtension(?:\s|$)/i.test(req.headers.authorization || "")) {
-      try { return await this.extensionResolver?.(req) || { ok: false }; }
-      catch { return { ok: false }; }
+      try {
+        const extension = await this.extensionResolver?.(req);
+        if (!extension?.ok) return extension || { ok: false };
+        const state = await this.store.read();
+        return {
+          ...extension,
+          revocationEpoch: state.revocationEpoch || 0,
+        };
+      } catch { return { ok: false }; }
     }
     const state = await this.store.read();
     // Credential and policy decisions use one snapshot, never a stale refresh
     // that could restore retired authority during concurrent configuration changes.
     const methods = new Set(state.config?.methods || this.methods);
-    const policy = state.config?.policy || this.policy;
+    const policy = this.effectivePolicy(state.config?.policy);
+    const revocationEpoch = state.revocationEpoch || 0;
     const now = Date.now();
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw) {
@@ -410,6 +455,7 @@ export class AuthKernel {
           identity: record.identity,
           via: "session",
           sessionHash: record.hash,
+          revocationEpoch,
         };
       }
       // A revoked browser must explicitly sign in again, not silently re-exchange ambient credentials.
@@ -424,6 +470,7 @@ export class AuthKernel {
           ok: true,
           identity: { id: `external:${user}`, displayName: user },
           via: "external",
+          revocationEpoch,
         };
     }
     if (auth.startsWith("Bearer ")) {
@@ -436,10 +483,16 @@ export class AuthKernel {
           ok: true,
           identity: { id: `token:${api.id}`, displayName: api.name },
           via: "token",
+          revocationEpoch,
         };
     }
     return policy === "open"
-      ? { ok: true, identity: { id: "none" }, via: "open" }
+      ? {
+          ok: true,
+          identity: { id: "none" },
+          via: "open",
+          revocationEpoch,
+        }
       : { ok: false };
   }
   async establishSession(
@@ -509,15 +562,21 @@ export class AuthKernel {
         expiresAt: now + 30 * DAY,
       });
     });
+    const secure = typeof this.secureCookie === "function"
+      ? this.secureCookie(req)
+      : this.secureCookie;
     res.setHeader(
       "set-cookie",
-      `${SESSION_COOKIE}=${raw}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${this.secureCookie ? "; Secure" : ""}`,
+      `${SESSION_COOKIE}=${raw}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${secure ? "; Secure" : ""}`,
     );
   }
-  clearSession(res: ServerResponse) {
+  clearSession(res: ServerResponse, req?: IncomingMessage) {
+    const secure = typeof this.secureCookie === "function"
+      ? this.secureCookie(req)
+      : this.secureCookie;
     res.setHeader(
       "set-cookie",
-      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.secureCookie ? "; Secure" : ""}`,
+      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`,
     );
   }
 }

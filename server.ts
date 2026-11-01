@@ -41,6 +41,8 @@ import {
 } from "./server/auth/kernel.js";
 import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
+import { secureSessionCookies } from "./server/auth/cookieSecurity.js";
+import { WebSocketRevocation } from "./server/auth/webSocketRevocation.js";
 import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
 import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
@@ -58,12 +60,12 @@ const port = Number(process.env.PORT || 8787);
 const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
 const authMode = authConfig.mode;
-const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || process.env.PI_WEB_AUTH_INTERNAL_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
+const authKernel = new AuthKernel(authMode, authStore, (req) => secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS, req?.headers.host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -653,7 +655,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && url.pathname === "/api/auth/logout") {
         if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
         await authKernel.revokeSession(req);
-        authKernel.clearSession(res);
+        authKernel.clearSession(res, req);
         return sendJson(res, 200, { ok: true });
       }
       const auth = extensionAuth || await authKernel.gate(req);
@@ -671,7 +673,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         readBody,
         broadcast,
       })) return;
-      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
@@ -1475,11 +1477,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 }));
 
 const wss = new WebSocketServer({ noServer: true });
-const browserSockets = new Map<import("ws").WebSocket, string>();
-const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
-authStore.listeners.add(enforceBrowserSessions);
-const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
-authSessionSweep.unref();
+const webSocketRevocation = new WebSocketRevocation(authStore, authKernel);
 server.on("upgrade", (req, socket, head) => {
   let url: URL;
   try {
@@ -1495,12 +1493,11 @@ server.on("upgrade", (req, socket, head) => {
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
     const identity = ticket?.identity;
-    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (ticket && "via" in ticket && !(await webSocketRevocation.validForUpgrade(ticket))) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
-    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
+    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket && "via" in ticket) webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
 

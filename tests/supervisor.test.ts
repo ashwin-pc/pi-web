@@ -92,6 +92,167 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it.each([
+    {
+      label: "keeps the default loopback launch usable over plain HTTP",
+      configuredOrigin: undefined,
+      secure: false,
+    },
+    {
+      label: "permits non-Secure cookies for explicit HTTP loopback origins",
+      configuredOrigin: "loopback",
+      secure: false,
+    },
+  ])("$label", async ({ configuredOrigin, secure }) => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const explicitOrigin = configuredOrigin === "loopback"
+      ? `http://localhost:${publicPort}`
+      : undefined;
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...authEnv,
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+        ...(explicitOrigin ? { PI_WEB_AUTH_ORIGIN: explicitOrigin } : {}),
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+
+    const response = await waitFor(async () => {
+      const candidate = await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: { "x-amzn-tunnel-user": "synthetic-owner", "x-pi-web-client-id": "cookie-regression" },
+      });
+      return candidate.ok ? candidate : undefined;
+    }, supervisor);
+    const setCookie = response.headers.get("set-cookie") || "";
+    expect(setCookie).toContain("pi_web_session=");
+    if (secure) expect(setCookie).toMatch(/;\s*Secure(?:;|$)/i);
+    else expect(setCookie).not.toMatch(/;\s*Secure(?:;|$)/i);
+  }, 20_000);
+
+  it("preserves the synthetic deployment auth contract through the supervisor", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const publicOrigin = `https://public.example.test:${publicPort}`;
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
+    const { secret: machineToken } = await mintStoredApiToken(store, "Machine");
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...authEnv,
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+        PI_WEB_AUTH_ORIGIN: publicOrigin,
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    await waitFor(async () => {
+      const response = await fetch(
+        `http://127.0.0.1:${publicPort}/api/state`,
+        { headers: { authorization: `Bearer ${machineToken}` } },
+      );
+      return response.ok ? true : undefined;
+    }, supervisor);
+
+    const external = await fetch(`http://127.0.0.1:${publicPort}/api/auth/info`, {
+      headers: { "x-amzn-tunnel-user": "synthetic-owner" },
+    });
+    expect(await external.json()).toMatchObject({
+      identity: { id: "external:synthetic-owner" },
+    });
+
+    const machineHeaders = {
+      authorization: `Bearer ${machineToken}`,
+    };
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: machineHeaders,
+      })).status,
+    ).toBe(200);
+
+    const sessionResponse = await fetch(
+      `http://127.0.0.1:${publicPort}/api/state`,
+      {
+        headers: {
+          "x-amzn-tunnel-user": "synthetic-owner",
+          "x-pi-web-client-id": "browser",
+          "x-forwarded-proto": "http",
+        },
+      },
+    );
+    expect(sessionResponse.headers.get("set-cookie")).toContain("Secure");
+    const cookie = sessionResponse.headers.get("set-cookie")!.split(";")[0];
+    const browserHeaders = {
+      cookie,
+      origin: publicOrigin,
+      "x-pi-web-client-id": "browser",
+    };
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
+        headers: browserHeaders,
+      })).status,
+    ).toBe(200);
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
+        headers: { ...browserHeaders, origin: "http://other.example.test" },
+      })).status,
+    ).toBe(403);
+
+    const connect = async () => {
+      const ticketResponse = await fetch(
+        `http://127.0.0.1:${publicPort}/api/ws-ticket`,
+        { method: "POST", headers: browserHeaders },
+      );
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      return new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(
+          `ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`,
+          { origin: publicOrigin },
+        );
+        ws.once("message", () => {
+          ws.close();
+          resolve();
+        });
+        ws.once("error", reject);
+      });
+    };
+    await connect();
+    await connect();
+
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+        method: "POST",
+        headers: browserHeaders,
+      })).status,
+    ).toBe(202);
+  }, 25_000);
+
   it("restarts an unexpectedly terminated child without double-spawning on intentional restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
