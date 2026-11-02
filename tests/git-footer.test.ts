@@ -406,6 +406,22 @@ describe("automatic upstream fetch", () => {
     await vi.advanceTimersByTimeAsync(2_501);
     expect(calls()).toHaveLength(2);
   });
+  it("aligns cwd retries with fetch completion instead of adding another minute", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    fetch.mockImplementation(async (args) => {
+      if (args[0] === "rev-parse") return ok("/shared/.git");
+      if (args[0] === "for-each-ref") return ok("origin\0refs/heads/main\0refs/remotes/origin/main");
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      return ok();
+    });
+    setup(fetch, "/repo/one"); setup(fetch, "/repo/two"); await flush();
+    const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls()).toHaveLength(2);
+  });
   it("does no metadata or network work without an upstream", async () => {
     vi.useFakeTimers();
     const fetch = fetchRunner();
