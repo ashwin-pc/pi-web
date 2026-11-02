@@ -4,6 +4,54 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
+test("a pending message panel link upgrades in place when its panel registers", async ({ page }) => {
+  const invocations: any[] = [];
+  await page.route("**/api/messages**", (route) => route.fulfill({ json: {
+    ok: true,
+    messages: [{
+      role: "assistant",
+      isError: false,
+      text: "[Open late note](#panel:late-notes:id=n-7&undeclared=drop)",
+    }],
+  } }));
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    const input = route.request().postDataJSON();
+    invocations.push(input);
+    if (input.event?.action === "__pi_web_describe_deep_link") {
+      await route.fulfill({ json: { ok: true, description: `Late notes › ${input.event.payload.id}` } });
+      return;
+    }
+    await route.fulfill({ json: { ok: true, title: "Late notes", html: "<p>Late panel opened</p>" } });
+  });
+  await page.request.post("/api/mock/state", { data: { webContributions: [] } });
+  await page.goto("/");
+
+  const pending = page.getByRole("link", { name: "Open late note" });
+  await expect(pending).toHaveClass(/panelDeepLinkPending/);
+
+  const messagesReloaded = page.waitForResponse((response) => response.url().includes("/api/messages") && response.ok());
+  await page.request.post("/api/mock/state", { data: { webContributions: [{
+    version: 1,
+    key: "late-notes",
+    slot: "panel",
+    kind: "rendered",
+    title: "Late notes",
+    label: "Late notes",
+    icon: "notebook-pen",
+    deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
+  }] } });
+  await messagesReloaded;
+
+  const upgraded = page.getByRole("link", { name: "Late notes › n-7" });
+  await expect(upgraded).toHaveClass(/panelDeepLinkChip/);
+  await upgraded.click();
+  await expect(page.locator("#webExtensionPanel")).toBeVisible();
+  expect(invocations.find((input) => input.event?.action === "deep-link")).toMatchObject({
+    key: "late-notes",
+    event: { action: "deep-link", source: "message", payload: { id: "n-7" } },
+  });
+});
+
 test("opens an extension panel from chat and the FAB, then submits its form", async ({ page }) => {
   const webContributions = [
     {

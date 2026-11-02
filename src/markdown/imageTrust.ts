@@ -36,6 +36,7 @@ export function remoteMarkdownImagePlaceholder(source: Extract<MarkdownImageSour
 
 function createImage(placeholder: HTMLElement, source: Extract<MarkdownImageSource, { kind: "remote" }>) {
   const image = document.createElement("img");
+  image.dataset.remoteImageHost = source.host;
   image.alt = placeholder.dataset.remoteImageAlt || "";
   if (placeholder.dataset.remoteImageTitle) image.title = placeholder.dataset.remoteImageTitle;
   image.referrerPolicy = "no-referrer";
@@ -56,10 +57,28 @@ function suppressLinkedButtonActivation(container: HTMLElement) {
 
 function blockedImageNotice(host: string) {
   const blocked = document.createElement("span");
-  blocked.className = "remoteMarkdownImage";
+  blocked.className = "remoteMarkdownImage remoteMarkdownImageBlocked";
+  blocked.dataset.remoteImageHost = host;
   blocked.setAttribute("role", "status");
   blocked.textContent = `Remote image from ${host} was blocked.`;
   return blocked;
+}
+
+function revokeRemoteImagesForHost(host: string) {
+  const matching = [...document.querySelectorAll<HTMLElement>(
+    "img[data-remote-image-host], .remoteMarkdownImageWarning[data-remote-image-host], .remoteMarkdownImage[data-remote-image-src][data-remote-image-host]",
+  )].filter((node) => node.isConnected && node.dataset.remoteImageHost === host);
+  for (const image of matching.filter((node): node is HTMLImageElement => node instanceof HTMLImageElement)) {
+    image.removeAttribute("src");
+  }
+  const roots = new Set<HTMLElement>();
+  for (const node of matching) {
+    const warning = node.closest<HTMLElement>(".remoteMarkdownImageWarning[data-remote-image-host]");
+    roots.add(warning?.dataset.remoteImageHost === host ? warning : node);
+  }
+  for (const node of roots) {
+    if (node.isConnected) node.replaceWith(blockedImageNotice(host));
+  }
 }
 
 function warnedImage(
@@ -70,6 +89,7 @@ function warnedImage(
 ) {
   const wrapper = document.createElement("span");
   wrapper.className = "remoteMarkdownImageWarning";
+  wrapper.dataset.remoteImageHost = source.host;
   const image = createImage(placeholder, source);
   const marker = document.createElement("span");
   marker.className = "remoteMarkdownImageWarningMarker";
@@ -83,7 +103,8 @@ function warnedImage(
   block.setAttribute("aria-label", `Block images from ${source.host} for this app session`);
   block.addEventListener("click", () => {
     blockContentHost(source.host);
-    wrapper.replaceWith(blockedImageNotice(source.host));
+    revokeRemoteImagesForHost(source.host);
+    if (wrapper.isConnected) wrapper.replaceWith(blockedImageNotice(source.host));
   });
   marker.append(detail, block);
   wrapper.append(image, marker);

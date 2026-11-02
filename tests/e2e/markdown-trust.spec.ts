@@ -73,12 +73,12 @@ test("remote images make no request before verdict, auto-load allowed hosts, and
   }
 });
 
-test("allowlisted HTTP image renders with a transport warning and can be blocked without opening its link", async ({ page }) => {
-  let imageRequests = 0;
+test("Block host revokes every rendered image and prevents an off-screen lazy request", async ({ page }) => {
+  const imageRequests: string[] = [];
   let popups = 0;
   page.on("popup", () => { popups += 1; });
-  await page.route("http://warn-image.example.test/image.png", (route) => {
-    imageRequests += 1;
+  await page.route("http://warn-image.example.test/*.png", (route) => {
+    imageRequests.push(route.request().url());
     return route.fulfill({ body: png, contentType: "image/png" });
   });
   await page.request.patch("/api/settings", {
@@ -89,18 +89,30 @@ test("allowlisted HTTP image renders with a transport warning and can be blocked
     messages: [{
       role: "assistant",
       isError: false,
-      text: "[![warned transport](http://warn-image.example.test/image.png)](https://destination.example.test/)",
+      text: [
+        "[![warned transport](http://warn-image.example.test/first.png)](https://destination.example.test/)",
+        ...Array.from({ length: 500 }, (_, index) => `Spacer paragraph ${index}.`),
+        "![later warned transport](http://warn-image.example.test/later.png)",
+        ...Array.from({ length: 500 }, (_, index) => `Trailing spacer paragraph ${index}.`),
+      ].join("\n\n"),
     }],
   } }));
 
   await page.goto("/");
-  await expect(page.getByAltText("warned transport")).toBeVisible();
-  await expect.poll(() => imageRequests).toBe(1);
-  const warning = page.locator(".remoteMarkdownImageWarningMarker");
+  await page.locator(".remoteMarkdownImageWarning").first().scrollIntoViewIfNeeded();
+  await expect(page.getByAltText("warned transport", { exact: true })).toBeVisible();
+  await expect.poll(() => imageRequests.filter((url) => url.endsWith("/first.png")).length).toBe(1);
+  expect(imageRequests.some((url) => url.endsWith("/later.png"))).toBe(false);
+  await expect(page.locator(".remoteMarkdownImageWarning")).toHaveCount(2);
+  const warning = page.locator(".remoteMarkdownImageWarningMarker").first();
   await expect(warning).toContainText("transport-policy: Allowed host uses unencrypted HTTP");
   await warning.getByRole("button", { name: "Block images from warn-image.example.test for this app session" }).click();
-  await expect(page.getByAltText("warned transport")).toHaveCount(0);
-  await expect(page.getByText("Remote image from warn-image.example.test was blocked.")).toBeVisible();
+  await expect(page.getByAltText("warned transport", { exact: true })).toHaveCount(0);
+  await expect(page.getByAltText("later warned transport", { exact: true })).toHaveCount(0);
+  const blocked = page.getByText("Remote image from warn-image.example.test was blocked.");
+  await expect(blocked).toHaveCount(2);
+  await blocked.nth(1).scrollIntoViewIfNeeded();
+  expect(imageRequests.some((url) => url.endsWith("/later.png"))).toBe(false);
   expect(popups).toBe(0);
 });
 
@@ -176,6 +188,38 @@ test("contained preview runs without a click, reports blocked fetch, then succee
   expect(requests[0].referer).toBeUndefined();
 });
 
+test("contained preview cannot approve another same-origin application path", async ({ page }) => {
+  let requests = 0;
+  await page.route("**/api/preview-must-stay-blocked", (route) => {
+    requests += 1;
+    return route.fulfill({ json: { value: "unexpected" } });
+  });
+  await page.route("**/api/messages**", (route) => route.fulfill({ json: {
+    ok: true,
+    messages: [{
+      role: "assistant",
+      isError: false,
+      text: [
+        "```html-preview",
+        "<p id=\"status\">running</p>",
+        "<script>fetch('/api/preview-must-stay-blocked').catch(()=>document.getElementById('status').textContent='blocked')</script>",
+        "```",
+      ].join("\n"),
+    }],
+  } }));
+
+  await page.goto("/");
+  const preview = page.locator(".message.assistant .htmlPreview");
+  const frame = preview.locator("iframe");
+  await expect(frame.contentFrame().locator("html")).toHaveAttribute(
+    "data-pi-web-blocked-uri",
+    /\/api\/preview-must-stay-blocked$/,
+  );
+  await expect(preview.locator(".htmlPreviewNotice")).toHaveCount(0);
+  expect(requests).toBe(0);
+  await expect(frame).toBeVisible();
+});
+
 test("contained preview replaces self-navigation with a notice and can reload", async ({ page }) => {
   await page.route("https://destination.example.test/**", (route) => route.fulfill({
     contentType: "text/html",
@@ -208,7 +252,7 @@ test("script-driven preview navigation can request its URL before the parent sho
     markerRequests += 1;
     return route.fulfill({
       contentType: "text/html",
-      body: "<script>parent.postMessage({type:'pi-web-preview-navigation',url:location.href},'*')</script>",
+      body: "<p>destination loaded</p>",
     });
   });
   await page.route("**/api/messages**", (route) => route.fulfill({ json: {
@@ -216,7 +260,7 @@ test("script-driven preview navigation can request its URL before the parent sho
     messages: [{
       role: "assistant",
       isError: false,
-      text: "```html-preview\n<script>location.href='https://navigation.example.test/marker'</script>\n```",
+      text: "```html-preview\n<script>addEventListener('load',()=>setTimeout(()=>location.href='https://navigation.example.test/marker',0),{once:true})</script>\n```",
     }],
   } }));
 
@@ -225,7 +269,7 @@ test("script-driven preview navigation can request its URL before the parent sho
   expect(noticesWhenRequested).toBe(0);
   const navigation = page.locator(".message.assistant .htmlPreviewNavigation");
   await expect(navigation).toBeVisible();
-  await expect(navigation).toContainText("navigation.example.test");
+  await expect(navigation).toContainText("This preview tried to open another page");
   await expect(navigation).not.toContainText(/blocked|prevented/i);
 });
 

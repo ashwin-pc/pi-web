@@ -32,7 +32,12 @@ function parsedUrl(value: string): URL | undefined {
 function corePolicy(resource: ContentResource): ContentPolicyVerdict | undefined {
   const url = parsedUrl(resource.url);
   if (!url) return { action: "block", reason: "Invalid URL", by: "core" };
-  if (url.protocol === "data:" || url.protocol === "blob:" || url.origin === window.location.origin) return { action: "allow", by: "core" };
+  if (url.protocol === "data:" || url.protocol === "blob:") return { action: "allow", by: "core" };
+  if (url.origin === window.location.origin) {
+    return resource.kind === "preview-request"
+      ? { action: "block", reason: "Preview access to application paths is not allowed", by: "core" }
+      : { action: "allow", by: "core" };
+  }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return { action: "block", reason: "Unsupported URL", by: "core" };
 }
 
@@ -83,8 +88,8 @@ async function policyResult(policy: ContentPolicy, resource: ContentResource): P
 
 export async function decideContent(resource: ContentResource): Promise<ContentPolicyVerdict> {
   let verdict: ContentPolicyVerdict | undefined;
-  for (const policy of [...policies]) {
-    const result = await policyResult(policy, resource);
+  const results = await Promise.all([...policies].map((policy) => policyResult(policy, resource)));
+  for (const result of results) {
     if (result && (!verdict || strictness[result.action] > strictness[verdict.action])) verdict = result;
   }
   return verdict || { action: "ask", by: "default" };
@@ -136,8 +141,4 @@ export function blockContentHost(host: string) {
   allowedHosts.delete(normalized);
   document.dispatchEvent(new Event("pi-web-content-policy-changed"));
   return true;
-}
-
-export function contentPolicyAllowedHosts() {
-  return [...allowedHosts];
 }

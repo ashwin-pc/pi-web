@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyMarkdownImageSource, enhanceRemoteMarkdownImages, remoteMarkdownImagePlaceholder } from "../src/markdown/imageTrust.js";
-import { parsePanelDeepLink, setPanelDeepLinkDescriptors, validatedPanelDeepLink } from "../src/messages/panelDeepLinks.js";
+import { configurePanelDeepLinks, enhancePanelDeepLinks, parsePanelDeepLink, setPanelDeepLinkDescriptors, validatedPanelDeepLink } from "../src/messages/panelDeepLinks.js";
 import { artifactPreviewBaseUrl, previewContentSecurityPolicy } from "../src/markdown/htmlPreviewGate.js";
 import { applyContentPolicySettings, blockContentHost, decideContent, registerContentPolicy } from "../src/security/contentPolicy.js";
 import { normalizeRemoteContentHost } from "../server/shared/remoteContentHosts.js";
@@ -150,6 +150,7 @@ describe("markdown image trust policy", () => {
 
       const warning = placeholder.replacement!;
       expect(warning.className).toBe("remoteMarkdownImageWarning");
+      expect(warning.dataset.remoteImageHost).toBe("warn-image.example.test");
       const marker = warning.children[1] as FakeElement;
       expect((marker.children[0] as FakeElement).textContent).toBe("image-classifier: Unverified image source");
       const block = marker.children[1] as FakeElement;
@@ -209,6 +210,52 @@ describe("panel deep-link parsing", () => {
       payload: { any: "value" },
     });
   });
+
+  it("upgrades the same pending anchor when its described panel registers", async () => {
+    const classes = new Set<string>();
+    const anchor = {
+      dataset: {} as Record<string, string>,
+      classList: {
+        add: (...values: string[]) => values.forEach((value) => classes.add(value)),
+        remove: (...values: string[]) => values.forEach((value) => classes.delete(value)),
+      },
+      isConnected: true,
+      textContent: "Open late note",
+      title: "",
+      attributes: new Map([["href", "#panel:late-notes:id=n-7&undeclared=drop"]]),
+      getAttribute(name: string) { return this.attributes.get(name) || null; },
+      removeAttribute(name: string) { this.attributes.delete(name); },
+      replaceWith: vi.fn(),
+    } as unknown as HTMLAnchorElement;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, description: "Late notes › n-7" }),
+    });
+    configurePanelDeepLinks({ headers: () => ({}), getSessionId: () => "s1" });
+    try {
+      setPanelDeepLinkDescriptors([]);
+      enhancePanelDeepLinks({
+        querySelectorAll: () => [anchor],
+      } as unknown as ParentNode);
+      expect(classes.has("panelDeepLinkPending")).toBe(true);
+
+      setPanelDeepLinkDescriptors([{
+        key: "late-notes",
+        title: "Late notes",
+        deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
+      }]);
+      await vi.waitFor(() => expect(anchor.textContent).toBe("Late notes › n-7"));
+      expect(classes.has("panelDeepLinkPending")).toBe(false);
+      expect(classes.has("panelDeepLinkChip")).toBe(true);
+      expect(anchor.dataset.panelPayload).toBe('{"id":"n-7"}');
+      expect(anchor.replaceWith).not.toHaveBeenCalled();
+    } finally {
+      (anchor as unknown as { isConnected: boolean }).isConnected = false;
+      setPanelDeepLinkDescriptors([]);
+      globalThis.fetch = previousFetch;
+    }
+  });
 });
 
 describe("internal content policy", () => {
@@ -243,6 +290,15 @@ describe("internal content policy", () => {
       await expect(decideContent({
         kind: "preview-request",
         url: "https://pi.example.test/api/artifacts/demo",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({
+        action: "block",
+        reason: "Preview access to application paths is not allowed",
+        by: "core",
+      });
+      await expect(decideContent({
+        kind: "image",
+        url: "https://pi.example.test/api/artifacts/demo.png",
         from: { sessionId: "s1", role: "assistant" },
       })).resolves.toEqual({ action: "allow", by: "core" });
       await expect(decideContent({
@@ -424,11 +480,19 @@ describe("internal content policy", () => {
     }
 
     vi.useFakeTimers();
+    const slowPoliciesStarted: string[] = [];
     const removeTimeout = registerContentPolicy(function slowClassifier() {
+      slowPoliciesStarted.push("first");
+      return new Promise(() => undefined);
+    });
+    const removeSecondTimeout = registerContentPolicy(function secondSlowClassifier() {
+      slowPoliciesStarted.push("second");
       return new Promise(() => undefined);
     });
     try {
       const pending = decideContent(resource);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(slowPoliciesStarted).toEqual(["first", "second"]);
       await vi.advanceTimersByTimeAsync(1_500);
       await expect(pending).resolves.toMatchObject({
         action: "ask",
@@ -437,6 +501,7 @@ describe("internal content policy", () => {
       });
     } finally {
       removeTimeout();
+      removeSecondTimeout();
       vi.useRealTimers();
       Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
     }
@@ -503,5 +568,16 @@ describe("preview containment policy", () => {
     expect(policy).toContain(`frame-src ${artifactBase}`);
     expect(policy).toContain(`connect-src ${artifactBase}`);
     expect(policy).toContain(`base-uri ${artifactBase}`);
+
+    const punctuationBase = "https://pi.example.test/api/artifacts/reports;draft,one/";
+    expect(artifactPreviewBaseUrl(
+      "/api/artifacts/reports;draft,one/index.html",
+      "https://pi.example.test",
+    )).toBe(punctuationBase);
+    const punctuationPolicy = previewContentSecurityPolicy([], punctuationBase);
+    const escapedBase = "https://pi.example.test/api/artifacts/reports%3Bdraft%2Cone/";
+    expect(punctuationPolicy).toContain(`script-src 'unsafe-inline' 'unsafe-eval' ${escapedBase}`);
+    expect(punctuationPolicy).toContain(`base-uri ${escapedBase}`);
+    expect(punctuationPolicy).not.toContain(punctuationBase);
   });
 });

@@ -17,6 +17,9 @@ const descriptionCache = new Map<string, {
   declaration: string;
   values: Map<string, Promise<string | undefined>>;
 }>();
+const pendingAnchors = new Set<WeakRef<HTMLAnchorElement>>();
+const trackedPendingAnchors = new WeakSet<HTMLAnchorElement>();
+const maxPendingAnchors = 512;
 let apiHeaders: () => HeadersInit = () => ({ "content-type": "application/json" });
 let sessionId = () => "";
 
@@ -56,6 +59,7 @@ export function setPanelDeepLinkDescriptors(value: PanelDescriptor[]) {
     if (!panel || panelDeclaration(panel) !== cached.declaration) descriptionCache.delete(key);
   }
   panels = nextPanels;
+  upgradePendingPanelLinks();
 }
 
 export function validatedPanelDeepLink(link: PanelDeepLink) {
@@ -105,39 +109,74 @@ function replaceWithInvalidText(anchor: HTMLAnchorElement) {
   anchor.replaceWith(text);
 }
 
+function trackPendingAnchor(anchor: HTMLAnchorElement) {
+  if (trackedPendingAnchors.has(anchor)) return;
+  trackedPendingAnchors.add(anchor);
+  for (const reference of pendingAnchors) {
+    const pending = reference.deref();
+    if (!pending || !pending.isConnected) pendingAnchors.delete(reference);
+  }
+  if (pendingAnchors.size >= maxPendingAnchors) {
+    const oldest = pendingAnchors.values().next().value;
+    if (oldest) pendingAnchors.delete(oldest);
+  }
+  pendingAnchors.add(new WeakRef(anchor));
+}
+
+function enhancePanelDeepLink(anchor: HTMLAnchorElement) {
+  const parsed = parsePanelDeepLink(anchor.getAttribute("href") || "");
+  if (!parsed) {
+    replaceWithInvalidText(anchor);
+    return;
+  }
+  if (!panels.has(parsed.key)) {
+    anchor.removeAttribute("target");
+    anchor.removeAttribute("rel");
+    anchor.classList.add("panelDeepLinkPending");
+    trackPendingAnchor(anchor);
+    return;
+  }
+  trackedPendingAnchors.delete(anchor);
+  anchor.classList.remove("panelDeepLinkPending");
+  const valid = validatedPanelDeepLink(parsed);
+  if (!valid) {
+    replaceWithInvalidText(anchor);
+    return;
+  }
+  anchor.removeAttribute("target");
+  anchor.removeAttribute("rel");
+  anchor.dataset.panelDeepLink = valid.panel.key;
+  anchor.dataset.panelPayload = JSON.stringify(valid.payload);
+  anchor.title = `${valid.panel.title} › ${Object.values(valid.payload).join(" › ") || "open"}`;
+  if (valid.panel.deepLinks?.hasDescribe) {
+    void describe(valid.panel, valid.payload).then((label) => {
+      if (!label || !anchor.isConnected) return;
+      anchor.classList.add("panelDeepLinkChip");
+      anchor.textContent = label;
+      anchor.title = `${valid.panel.title} › ${label}`;
+    });
+  }
+}
+
+function upgradePendingPanelLinks() {
+  for (const reference of pendingAnchors) {
+    const anchor = reference.deref();
+    if (!anchor || !anchor.isConnected) {
+      pendingAnchors.delete(reference);
+      continue;
+    }
+    const parsed = parsePanelDeepLink(anchor.getAttribute("href") || "");
+    if (!parsed || !panels.has(parsed.key)) continue;
+    pendingAnchors.delete(reference);
+    enhancePanelDeepLink(anchor);
+  }
+}
+
 export function enhancePanelDeepLinks(root: ParentNode) {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a[href^="#panel:"]')) {
     if (anchor.dataset.panelDeepLinkEnhanced) continue;
     anchor.dataset.panelDeepLinkEnhanced = "true";
-    const parsed = parsePanelDeepLink(anchor.getAttribute("href") || "");
-    if (!parsed) {
-      replaceWithInvalidText(anchor);
-      continue;
-    }
-    if (!panels.has(parsed.key)) {
-      anchor.removeAttribute("target");
-      anchor.removeAttribute("rel");
-      anchor.classList.add("panelDeepLinkPending");
-      continue;
-    }
-    const valid = parsed && validatedPanelDeepLink(parsed);
-    if (!valid) {
-      replaceWithInvalidText(anchor);
-      continue;
-    }
-    anchor.removeAttribute("target");
-    anchor.removeAttribute("rel");
-    anchor.dataset.panelDeepLink = valid.panel.key;
-    anchor.dataset.panelPayload = JSON.stringify(valid.payload);
-    anchor.title = `${valid.panel.title} › ${Object.values(valid.payload).join(" › ") || "open"}`;
-    if (valid.panel.deepLinks?.hasDescribe) {
-      void describe(valid.panel, valid.payload).then((label) => {
-        if (!label || !anchor.isConnected) return;
-        anchor.classList.add("panelDeepLinkChip");
-        anchor.textContent = label;
-        anchor.title = `${valid.panel.title} › ${label}`;
-      });
-    }
+    enhancePanelDeepLink(anchor);
   }
 }
 

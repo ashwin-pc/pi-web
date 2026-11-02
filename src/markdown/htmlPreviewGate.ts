@@ -30,11 +30,13 @@ export function previewContentSecurityPolicy(
   trustedBaseUrl?: string,
 ) {
   const allowed = new Set(allowedOrigins);
-  if (trustedBaseUrl) allowed.add(trustedBaseUrl);
+  const trustedBaseSource = trustedBaseUrl?.replace(/[;,]/g, (character) =>
+    character === ";" ? "%3B" : "%2C");
+  if (trustedBaseSource) allowed.add(trustedBaseSource);
   const origins = [...allowed].sort().join(" ");
   return baseDirectives.map((directive) => {
     const name = directive.split(" ", 1)[0];
-    if (name === "base-uri") return trustedBaseUrl ? `base-uri ${trustedBaseUrl}` : directive;
+    if (name === "base-uri") return trustedBaseSource ? `base-uri ${trustedBaseSource}` : directive;
     if (!origins) return directive;
     if (name === "connect-src" || name === "frame-src") return `${name} ${origins}`;
     return ["img-src", "script-src", "style-src", "font-src", "media-src"].includes(name)

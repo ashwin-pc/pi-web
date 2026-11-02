@@ -7,6 +7,7 @@ import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
 import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
+import { cleanPanelDeepLinkPayload, cleanPanelDeepLinks } from "./panelDeepLinks.js";
 
 export interface WebUiBridgeDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
@@ -441,42 +442,6 @@ const artifactKinds = ["image", "markdown", "html", "video", "audio", "pdf", "fi
 const cleanArtifactKinds = (value: unknown) => Array.isArray(value)
   ? value.filter((kind): kind is typeof artifactKinds[number] => artifactKinds.includes(kind as typeof artifactKinds[number])).slice(0, artifactKinds.length)
   : undefined;
-
-function cleanPanelDeepLinks(value: PiWebPanel["deepLinks"]) {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || !Array.isArray(value.allowedKeys)
-    || value.allowedKeys.length === 0 || value.allowedKeys.length > 32) {
-    throw new TypeError("panel.deepLinks.allowedKeys must contain between 1 and 32 keys");
-  }
-  const allowedKeys = [...new Set(value.allowedKeys.map((key) => {
-    const cleaned = cleanHeaderActionText(key, 64);
-    if (!cleaned || !/^[A-Za-z0-9_-]+$/.test(cleaned)) throw new TypeError("panel.deepLinks keys must use letters, numbers, _ or -");
-    return cleaned;
-  }))];
-  const allowed = new Set(allowedKeys);
-  if (value.requiredKeys !== undefined && !Array.isArray(value.requiredKeys)) throw new TypeError("panel.deepLinks.requiredKeys must be an array");
-  const requiredKeys = [...new Set((value.requiredKeys || []).map((key) => {
-    if (typeof key !== "string" || !allowed.has(key)) throw new TypeError("panel.deepLinks.requiredKeys must be declared in allowedKeys");
-    return key;
-  }))];
-  return { allowedKeys, ...(requiredKeys.length ? { requiredKeys } : {}), hasDescribe: typeof value.describe === "function" };
-}
-
-function cleanPanelDeepLinkPayload(panel: PiWebPanel, value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError("Invalid panel deep-link payload", 400);
-  const raw = Object.entries(value as Record<string, unknown>);
-  if (raw.length > 64) throw new HttpError("Invalid panel deep-link payload", 400);
-  const schema = cleanPanelDeepLinks(panel.deepLinks);
-  const allowed = schema ? new Set(schema.allowedKeys) : undefined;
-  const payload: Record<string, string> = {};
-  for (const [key, item] of raw) {
-    if (allowed && !allowed.has(key)) continue;
-    if (key.length > 64 || typeof item !== "string" || item.length > 2_000) throw new HttpError("Invalid panel deep-link payload", 400);
-    payload[key] = item;
-  }
-  if (schema?.requiredKeys?.some((key) => !payload[key])) throw new HttpError("Invalid panel deep-link payload", 400);
-  return payload;
-}
 
 // `allowedKinds`, budgets, and field limits are executable guards. `viewFields`
 // and `effects` document each slot's output contract; the slot-specific
