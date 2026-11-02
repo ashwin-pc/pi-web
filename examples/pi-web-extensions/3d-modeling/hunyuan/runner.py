@@ -1,5 +1,16 @@
 """Owned, loopback-only ComfyUI Hunyuan3D runner; no downloads or Blender."""
+import importlib.util
 import json, os, pathlib, signal, socket, subprocess, sys, time, urllib.request, uuid
+
+# Share the image runner's conservative process identification, including
+# relative main.py launches from a ComfyUI checkout with an arbitrary name.
+_image_spec = importlib.util.spec_from_file_location(
+    'hunyuan_image_runner', pathlib.Path(__file__).resolve().parents[2] / 'image' / 'runner.py')
+_image_runner = importlib.util.module_from_spec(_image_spec)
+_image_spec.loader.exec_module(_image_runner)
+active_comfy_processes = _image_runner.active_comfy_processes
+process_cwd = _image_runner.process_cwd
+process_executable = _image_runner.process_executable
 
 
 def workflow(image, seed, steps, resolution):
@@ -51,8 +62,8 @@ def run(req):
         if image.width * image.height > 16_000_000: raise ValueError('Image exceeds 16 megapixels')
         image.verify()
     # Match installed image-tool preflight; never interrupt unrelated inference.
-    commands = subprocess.check_output(['ps', '-axo', 'command'], text=True, timeout=15)
-    if any(('main.py' in line and ('ComfyUI' in line or '--listen' in line)) for line in commands.splitlines()):
+    commands = subprocess.check_output(['ps', '-axo', 'pid=,command='], text=True, timeout=15)
+    if active_comfy_processes(commands, process_cwd, process_executable):
         raise RuntimeError('Another ComfyUI process is active; retry when idle (nothing was stopped)')
     pressure = subprocess.check_output(['memory_pressure'], text=True, timeout=15)
     import re
@@ -73,6 +84,8 @@ def run(req):
             while True:
                 if proc.poll() is not None: raise RuntimeError('Owned ComfyUI exited; inspect comfy.log')
                 try: api(port, '/system_stats'); break
+                except InterruptedError:
+                    raise  # Signal cancellation must never become a startup retry.
                 except (OSError, TimeoutError):
                     if time.monotonic() >= deadline: raise TimeoutError('ComfyUI startup timed out')
                     time.sleep(1)
