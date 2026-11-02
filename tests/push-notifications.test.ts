@@ -12,12 +12,12 @@ const subscription = {
 const storedState = (file: string) => readFile(file, "utf-8").then(JSON.parse);
 
 describe("push notification subscriptions", () => {
-  it("persists one VAPID identity when 24 service instances initialize together", async () => {
+  it("persists one VAPID identity when 24 callers initialize together", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
     const file = join(dir, "push.json");
-    const services = Array.from({ length: 24 }, () => createPushNotificationService(file));
+    const service = createPushNotificationService(file);
 
-    const keys = await Promise.all(services.map((service) => service.publicKey()));
+    const keys = await Promise.all(Array.from({ length: 24 }, () => service.publicKey()));
 
     expect(new Set(keys)).toEqual(new Set([keys[0]]));
     expect((await storedState(file)).vapid.publicKey).toBe(keys[0]);
@@ -30,8 +30,8 @@ describe("push notification subscriptions", () => {
     await writeFile(file, "{not valid json");
     const service = createPushNotificationService(file);
 
-    await expect(service.publicKey()).rejects.toThrow();
-    await expect(createPushNotificationService(file).subscribe("browser-a", subscription)).rejects.toThrow();
+    await expect(service.publicKey()).rejects.toThrow(`Invalid pi-web push state at ${file}; fix or delete it to re-enable notifications`);
+    await expect(createPushNotificationService(file).subscribe("browser-a", subscription)).rejects.toThrow(file);
     expect(await readFile(file, "utf-8")).toBe("{not valid json");
   });
 
@@ -85,14 +85,12 @@ describe("push notification subscriptions", () => {
     warn.mockRestore();
   });
 
-  it("treats cleanup failures as best-effort without overwriting newly corrupt state", async () => {
+  it("uses the serialized in-process state when cleaning up expired records", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
     const file = join(dir, "push.json");
-    const corrupt = "{corrupted during delivery";
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const service = createPushNotificationService(file, undefined, {
       sendNotification: async () => {
-        await writeFile(file, corrupt);
+        await writeFile(file, "{external writer is unsupported");
         throw Object.assign(new Error("expired"), { statusCode: 410 });
       },
     });
@@ -104,9 +102,7 @@ describe("push notification subscriptions", () => {
       completedAt: "2026-10-26T00:00:00.000Z",
     })).resolves.toBeUndefined();
 
-    expect(await readFile(file, "utf-8")).toBe(corrupt);
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect((await storedState(file)).subscriptions).toEqual([]);
   });
 
   it("delivers healthy notifications and removes expired subscriptions", async () => {

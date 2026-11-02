@@ -62,7 +62,7 @@ describe("tool card image previews", () => {
     }]);
   });
 
-  it("preserves external and explicitly scoped image URLs", () => {
+  it("preserves external URLs and normalizes explicit artifact scoping", () => {
     const content = [
       { type: "image", imageUrl: "https://cdn.example/api/artifacts/external.png" },
       { type: "image", imageUrl: "/api/artifacts/queried.png?sessionId=producer" },
@@ -70,7 +70,7 @@ describe("tool card image previews", () => {
     ];
     expect(collectToolImages({ content }, "current")).toEqual([
       { src: "https://cdn.example/api/artifacts/external.png", alt: "tool result image", needsAuth: false },
-      { src: "/api/artifacts/queried.png?sessionId=producer", alt: "tool result image", needsAuth: true },
+      { src: "/api/session-artifacts/producer/queried.png", alt: "tool result image", needsAuth: true },
       { src: "/api/session-artifacts/producer/scoped.png", alt: "tool result image", needsAuth: true },
     ]);
   });

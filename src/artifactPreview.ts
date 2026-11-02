@@ -1,7 +1,7 @@
 import "./style.css";
 import "highlight.js/styles/github-dark.css";
 import { renderStandaloneMarkdown } from "./markdown/render.js";
-import { artifactSessionId } from "./artifacts/url.js";
+import { artifactSessionId, scopeArtifactUrl } from "./artifacts/url.js";
 
 function allowedArtifactPath(value: string | null) {
   if (!value) return "";
@@ -23,7 +23,7 @@ function artifactName(path: string) {
 }
 
 const params = new URLSearchParams(window.location.search);
-const src = allowedArtifactPath(params.get("src"));
+const src = scopeArtifactUrl(allowedArtifactPath(params.get("src")), "");
 const title = document.querySelector<HTMLHeadingElement>("#artifactPreviewTitle");
 const raw = document.querySelector<HTMLAnchorElement>("#artifactPreviewRaw");
 const body = document.querySelector<HTMLElement>("#artifactPreviewBody");
