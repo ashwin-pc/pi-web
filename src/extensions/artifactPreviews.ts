@@ -18,7 +18,6 @@ export type ArtifactPreviewMountOptions = {
   className?: string;
   isCurrent?: () => boolean;
   onMount?: (frame: HTMLIFrameElement) => void;
-  onStop?: () => void;
 };
 
 let descriptors: ArtifactPreviewDescriptor[] = [];
@@ -79,12 +78,10 @@ export async function mountArtifactPreview(
   if (options.isCurrent && !options.isCurrent()) return true;
   const gate = createHtmlPreviewGate({
     source: html,
-    showSourceInitially: false,
     frameClassName: options.className,
     frameTitle: options.title,
-    mount: (frame) => { frame.srcdoc = html; },
+    from: { sessionId: sessionId(), role: "assistant" },
     onMount: options.onMount,
-    onStop: options.onStop,
   });
   host.replaceChildren(gate);
   return true;

@@ -1,5 +1,6 @@
 import { renderStandaloneMarkdown } from "../markdown/render.js";
 import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { createHtmlPreviewGate } from "../markdown/htmlPreviewGate.js";
 import { mountImagePreview } from "./imagePreview.js";
 
 type ArtifactEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number; url?: string };
@@ -306,9 +307,19 @@ export function initArtifactBrowser(options: {
       return;
     }
     if (kind === "html") {
-      const mark = document.createElement("span"); mark.className = "artifactGalleryHtmlMark"; mark.textContent = "</>";
-      const label = document.createElement("strong"); label.textContent = "Interactive HTML";
-      host.append(mark, label);
+      deferPreview(host, () => {
+        void fetch(url, { headers: apiHeaders(), credentials: "same-origin" })
+          .then(async (response) => {
+            if (!response.ok) return;
+            const source = await response.text();
+            if (generation !== loadGeneration || !host.isConnected) return;
+            host.replaceChildren(createHtmlPreviewGate({
+              source,
+              frameTitle: `Live contained thumbnail of ${entry.name}`,
+              from: { sessionId: "", role: "assistant" },
+            }));
+          });
+      });
       return;
     }
     if (kind === "markdown") {
@@ -440,7 +451,19 @@ export function initArtifactBrowser(options: {
     }
     if (kind === "html") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html"; previewBody.textContent = "";
-      const frame = document.createElement("iframe"); frame.src = url; frame.title = `Interactive preview of ${entry.name}`; frame.setAttribute("sandbox", "allow-scripts"); previewBody.append(frame); return;
+      void fetch(url, { headers: apiHeaders(), credentials: "same-origin" }).then(async (response) => {
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        const source = await response.text();
+        if (generation !== previewGeneration) return;
+        previewBody.replaceChildren(createHtmlPreviewGate({
+          source,
+          frameTitle: `Interactive preview of ${entry.name}`,
+          from: { sessionId: "", role: "assistant" },
+        }));
+      }).catch((error) => {
+        if (generation === previewGeneration) renderPreviewError(error instanceof Error ? error.message : String(error));
+      });
+      return;
     }
     if (kind === "video" || kind === "audio") {
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`; previewBody.textContent = "";

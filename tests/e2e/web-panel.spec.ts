@@ -9,13 +9,16 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     ok: true,
     messages: [
       { role: "assistant", isError: false, text: "[Missing panel](#panel:missing:note=ignored) · [Malformed panel](#panel::note=ignored)" },
-      { role: "assistant", isError: false, text: "[Open assistant task](#panel:notes:source=assistant)" },
-      { role: "user", text: "[Open scanner task](#panel:notes:note=oncall%2Fw34&task=old&task=t-3f2a)" },
+      { role: "assistant", isError: false, text: "[Open assistant task](#panel:notes:id=t-3f2a&undeclared=drop-me) · [Invalid task](#panel:notes:undeclared=only)" },
+      { role: "user", text: "[Open legacy panel](#panel:quiet:note=oncall%2Fw34)" },
     ],
   } }));
   await page.request.post("/api/mock/state", { data: {
     webContributions: [
-      { version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notepad", label: "Notepad", icon: "notebook-pen" },
+      {
+        version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notepad", label: "Notepad", icon: "notebook-pen",
+        deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
+      },
       { version: 1, key: "quiet", slot: "panel", kind: "rendered", title: "No launcher", label: "Quiet", icon: "notebook-pen" },
       { version: 1, key: "notes-launcher", slot: "fab", kind: "static", title: "Global notepad", label: "Notepad", icon: "notebook-pen", opens: "notes" },
       { version: 1, key: "open-notes", slot: "header-action", kind: "rendered", title: "Open notes", label: "Open notes", icon: "scroll-text" },
@@ -27,6 +30,10 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await page.route("**/api/web-contributions/invoke", async (route) => {
     const input = route.request().postDataJSON();
     invocations.push(input);
+    if (input.slot === "panel" && input.event?.action === "__pi_web_describe_deep_link") {
+      await route.fulfill({ json: { ok: true, description: `Notepad › task › ${input.event.payload.id}` } });
+      return;
+    }
     if (input.slot === "header-action") {
       await route.fulfill({ json: {
         ok: true,
@@ -57,9 +64,9 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await page.locator("#prompt").blur();
 
   const panel = page.locator("#webExtensionPanel");
-  await page.getByRole("link", { name: "Malformed panel" }).click();
+  await expect(page.getByRole("link", { name: "Malformed panel" })).toHaveCount(0);
   await expect(panel).toBeHidden();
-  expect(invocations).toEqual([]);
+  expect(invocations.filter((input) => input.event?.action !== "__pi_web_describe_deep_link")).toEqual([]);
 
   let unexpectedDialogs = 0;
   const dismissUnexpected = async (dialog: import("@playwright/test").Dialog) => {
@@ -67,38 +74,29 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     await dialog.dismiss();
   };
   page.on("dialog", dismissUnexpected);
-  await page.getByRole("link", { name: "Missing panel" }).click();
+  await expect(page.getByRole("link", { name: "Missing panel" })).toHaveCount(0);
   page.off("dialog", dismissUnexpected);
   expect(unexpectedDialogs).toBe(0);
-  expect(invocations).toEqual([]);
+  expect(invocations.filter((input) => input.event?.action !== "__pi_web_describe_deep_link")).toEqual([]);
 
-  let confirmation = "";
-  const assistantLink = page.getByRole("link", { name: "Open assistant task" });
-  page.once("dialog", async (dialog) => {
-    confirmation = dialog.message();
-    await dialog.accept();
-  });
+  await expect(page.getByText("Invalid task", { exact: true })).not.toHaveAttribute("href");
+  const assistantLink = page.getByRole("link", { name: "Notepad › task › t-3f2a" });
   await assistantLink.click();
-  expect(confirmation).toContain("Target: notes");
-  expect(confirmation).toContain('"source": "assistant"');
   await expect(panel).toBeVisible();
-  await expect.poll(() => invocations.length).toBe(1);
-  await panel.getByRole("button", { name: "Close panel" }).click();
-
-  page.once("dialog", async (dialog) => {
-    confirmation = dialog.message();
-    await dialog.accept();
-  });
-  await page.getByRole("link", { name: "Open scanner task" }).click();
-  expect(confirmation).toContain("Target: notes");
-  expect(confirmation).toContain('"note": "oncall/w34"');
-  expect(confirmation).toContain('"task": "t-3f2a"');
-  await expect(panel).toBeVisible();
-  await expect.poll(() => invocations.length).toBe(2);
-  expect(invocations[1]).toMatchObject({
+  await expect.poll(() => invocations.filter((input) => input.event?.action === "deep-link").length).toBe(1);
+  expect(invocations.find((input) => input.event?.action === "deep-link")).toMatchObject({
     slot: "panel",
     key: "notes",
-    event: { action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } },
+    event: { action: "deep-link", source: "message", payload: { id: "t-3f2a" } },
+  });
+  await panel.getByRole("button", { name: "Close panel" }).click();
+
+  await page.getByRole("link", { name: "Open legacy panel" }).click();
+  await expect(panel).toBeVisible();
+  expect(invocations.at(-1)).toMatchObject({
+    slot: "panel",
+    key: "quiet",
+    event: { action: "deep-link", source: "message", payload: { note: "oncall/w34" } },
   });
   await panel.getByRole("button", { name: "Close panel" }).click();
 

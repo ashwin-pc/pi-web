@@ -12,6 +12,7 @@ import { createSettingsShell, type SettingsShellController } from "./settingsShe
 import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 import type { UiIntent } from "../sessions/sessionUiSync.js";
+import { applyContentPolicySettings, normalizedContentHost } from "../security/contentPolicy.js";
 
 export type SettingsController = {
   init: () => void;
@@ -66,6 +67,10 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
   if (typeof composer?.expanded === "boolean") settings.composer.expanded = composer.expanded;
+  const security = isRecord(value.security) ? value.security : undefined;
+  settings.security.remoteContentHosts = Array.isArray(security?.remoteContentHosts)
+    ? security.remoteContentHosts.flatMap((host) => typeof host === "string" && normalizedContentHost(host) ? [normalizedContentHost(host)!] : []).slice(0, 64)
+    : [];
 
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = isRecord(defaults?.model) ? defaults.model : undefined;
@@ -131,6 +136,7 @@ export function createSettings(options: {
   let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
   let restartSettings: ReturnType<typeof createRestartSettings> | undefined;
   let extensionHealth: "loading" | "ready" | "degraded" = "loading";
+  let remoteHostsInput: HTMLTextAreaElement | undefined;
   const systemStatusButton = elements.sessionDrawerInfoButton;
 
   function updateSystemStatus() {
@@ -268,11 +274,16 @@ export function createSettings(options: {
     })();
     const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
+    applyContentPolicySettings(settings);
     if (applySavedIdentity) {
       applyIdentity(settings.identity);
       identitySettings?.update(settings.identity);
     }
     settingsShell?.setSummary("identity", settings.identity.name);
+    if (remoteHostsInput) remoteHostsInput.value = settings.security.remoteContentHosts.join("\n");
+    settingsShell?.setSummary("remote-content", settings.security.remoteContentHosts.length
+      ? `${settings.security.remoteContentHosts.length} allowed`
+      : "No remote hosts allowed");
     state.queueMode = settings.composer.queueMode;
     if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
     hasAppliedSettings = true;
@@ -765,6 +776,29 @@ export function createSettings(options: {
     // The saved identity arrives asynchronously from /api/settings; the shell
     // stays unbranded until then rather than flashing Pi for Fox/custom users.
     applySettings(state.settings, { applySavedIdentity: false });
+    const remoteHosts = elements.settingsPanel.querySelector<HTMLTextAreaElement>("#settingRemoteContentHosts");
+    const saveRemoteHosts = elements.settingsPanel.querySelector<HTMLButtonElement>("#settingSaveRemoteContentHosts");
+    if (!remoteHosts || !saveRemoteHosts) throw new Error("Missing remote content settings");
+    remoteHostsInput = remoteHosts;
+    const syncRemoteHosts = () => {
+      remoteHosts.value = state.settings.security.remoteContentHosts.join("\n");
+      settingsShell?.setSummary("remote-content", state.settings.security.remoteContentHosts.length
+        ? `${state.settings.security.remoteContentHosts.length} allowed`
+        : "No remote hosts allowed");
+    };
+    syncRemoteHosts();
+    saveRemoteHosts.addEventListener("click", () => {
+      const raw = remoteHosts.value.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
+      const invalid = raw.filter((value) => !normalizedContentHost(value));
+      if (invalid.length) {
+        setSettingsStatus(`Invalid host: ${invalid[0]}`, true);
+        remoteHosts.focus();
+        return;
+      }
+      patchSettings({ security: { remoteContentHosts: raw } }).then(syncRemoteHosts).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
 
     settingsPanelHandle = rightPanels?.register({
       id: "settings",

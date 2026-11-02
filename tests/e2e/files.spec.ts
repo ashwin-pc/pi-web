@@ -186,19 +186,30 @@ test("large artifact preview renders interactive HTML, Markdown, and video", asy
     contentType: "text/html",
     body: '<!doctype html><img src="https://markers.example.test/thumbnail"><button id="interactive">Ready</button><script>interactive.onclick=()=>interactive.textContent="Clicked"</script>',
   }));
+  await page.request.patch("/api/settings", { data: { security: { remoteContentHosts: ["markers.example.test"] } } });
   await page.goto("/");
   await openLauncherAction(page, "File explorer");
   await page.locator("#filesArtifactsScope").click();
 
-  const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] .artifactGalleryCardVisual`);
-  await expect(thumbnail).toContainText("Interactive HTML");
-  await expect(thumbnail.locator("iframe")).toHaveCount(0);
-  expect(htmlMarkers).toBe(0);
+  const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] iframe`);
+  await expect(thumbnail).toHaveAttribute("sandbox", "allow-scripts");
+  await expect(thumbnail.contentFrame().locator("#interactive")).toHaveText("Ready");
+  const thumbnailGeometry = await thumbnail.evaluate((iframe) => {
+    const visual = iframe.closest<HTMLElement>(".artifactGalleryCardVisual")!.getBoundingClientRect();
+    const frame = iframe.getBoundingClientRect();
+    return {
+      widthDifference: Math.abs(visual.width - frame.width),
+      heightDifference: Math.abs(visual.height - frame.height),
+    };
+  });
+  expect(thumbnailGeometry.widthDifference).toBeLessThan(2);
+  expect(thumbnailGeometry.heightDifference).toBeLessThan(2);
+  await expect.poll(() => htmlMarkers).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: "Preview concept.html" }).click();
   const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
   await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Ready");
-  await expect.poll(() => htmlMarkers).toBe(1);
+  await expect.poll(() => htmlMarkers).toBeGreaterThanOrEqual(1);
   await htmlFrame.contentFrame().locator("#interactive").click();
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Clicked");
   await page.goBack();

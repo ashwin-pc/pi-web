@@ -17,7 +17,7 @@ import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
-import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
+import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError, normalizeRemoteContentHost, remoteContentHostLimit } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
@@ -1215,6 +1215,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
         const patch = await readBody(req);
+        const remoteHosts = (patch as { security?: { remoteContentHosts?: unknown } } | null)?.security?.remoteContentHosts;
+        if (remoteHosts !== undefined && (
+          !Array.isArray(remoteHosts)
+          || remoteHosts.length > remoteContentHostLimit
+          || remoteHosts.some((entry) => normalizeRemoteContentHost(entry) === undefined)
+        )) {
+          return sendJson(res, 400, { ok: false, error: `remoteContentHosts must contain at most ${remoteContentHostLimit} valid hosts` });
+        }
         const settings = await withAvatarMutation(async () => {
           const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
           // A stale settings form must not resurrect a reclaimed generation.

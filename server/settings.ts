@@ -77,6 +77,9 @@ export type PiWebSettings = {
     queueMode: "steer" | "followUp";
     expanded: boolean;
   };
+  security: {
+    remoteContentHosts: string[];
+  };
   defaults: {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
@@ -104,6 +107,7 @@ export type PiWebSettingsPatch = Partial<{
     queueMode: unknown;
     expanded: unknown;
   }>;
+  security: Partial<{ remoteContentHosts: unknown }>;
   defaults: Partial<{
     model: unknown;
     thinkingLevel: unknown;
@@ -123,6 +127,9 @@ export const defaultPiWebSettings: PiWebSettings = {
   composer: {
     queueMode: "steer",
     expanded: false,
+  },
+  security: {
+    remoteContentHosts: [],
   },
   defaults: {},
 };
@@ -271,6 +278,41 @@ function normalizeModel(value: unknown) {
   return provider && id ? { provider, id } : undefined;
 }
 
+export const remoteContentHostLimit = 64;
+
+function isValidRemoteHostname(hostname: string) {
+  if (hostname.startsWith("[") && hostname.endsWith("]")) return true;
+  return hostname.split(".").every((label) =>
+    label.length > 0
+    && label.length <= 63
+    && /^[a-z0-9-]+$/.test(label)
+    && !label.startsWith("-")
+    && !label.endsWith("-"));
+}
+
+export function normalizeRemoteContentHost(value: unknown): string | undefined {
+  if (typeof value !== "string") return;
+  const text = value.trim().toLowerCase().replace(/\.$/, "");
+  if (!text || text.length > 253 || /[/?#@\\\s]/.test(text)) return;
+  try {
+    const url = new URL(`https://${text}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return;
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    if (!hostname || hostname.length > 253 || !isValidRemoteHostname(hostname)) return;
+    return url.port ? `${hostname}:${url.port}` : hostname;
+  } catch {
+    return;
+  }
+}
+
+export function normalizeRemoteContentHosts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.flatMap((entry) => {
+    const host = normalizeRemoteContentHost(entry);
+    return host ? [host] : [];
+  }))].slice(0, remoteContentHostLimit).sort();
+}
+
 export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorId | undefined {
   return typeof value === "string" && sessionMarkerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
@@ -336,6 +378,9 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   }
   if (typeof composer?.expanded === "boolean") settings.composer.expanded = composer.expanded;
 
+  const security = isRecord(value.security) ? value.security : undefined;
+  settings.security.remoteContentHosts = normalizeRemoteContentHosts(security?.remoteContentHosts);
+
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = normalizeModel(defaults?.model);
   if (model) settings.defaults.model = model;
@@ -382,6 +427,10 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       next.composer.queueMode = patch.composer.queueMode;
     }
     if (typeof patch.composer.expanded === "boolean") next.composer.expanded = patch.composer.expanded;
+  }
+
+  if (isRecord(patch.security) && "remoteContentHosts" in patch.security) {
+    next.security.remoteContentHosts = normalizeRemoteContentHosts(patch.security.remoteContentHosts);
   }
 
   if (isRecord(patch.defaults)) {

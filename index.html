@@ -220,6 +220,11 @@
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Notifications</span><span class="settingsNavSummary">Run completion alerts</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
+                <button id="settingsNavRemoteContent" class="settingsNavButton" type="button" data-settings-page-target="remote-content" data-settings-search="remote content images previews hosts allowlist network" aria-controls="settingsPageRemoteContent">
+                  <span class="settingsNavIcon" data-settings-icon="wifi-off" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Remote content</span><span class="settingsNavSummary">No remote hosts allowed</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
               </section>
               <section class="settingsNavGroup" data-settings-nav-group data-settings-scope="preferences">
                 <h3>Workflow</h3>
@@ -409,6 +414,22 @@
           <div class="settingsActions">
             <button id="settingRunNotificationsTestButton" type="button">Send test notification</button>
           </div>
+              </section>
+            </section>
+            <section id="settingsPageRemoteContent" class="settingsPage" data-settings-page="remote-content" aria-labelledby="settingsPageRemoteContentTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageRemoteContentTitle" class="settingsPageTitle" tabindex="-1">Remote content</h3>
+                <p>Choose hosts whose images and contained previews may load automatically.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Always allowed hosts</h4>
+                <label class="settingsField settingsRemoteHostsField">
+                  <span>One host per line, optionally including a port</span>
+                  <textarea id="settingRemoteContentHosts" rows="7" maxlength="16384" spellcheck="false" placeholder="images.example.com"></textarea>
+                </label>
+                <p class="settingsHint">New installations start empty. Content served by this pi-web origin, data URLs, and blob URLs is always allowed.</p>
+                <div class="settingsActions"><button id="settingSaveRemoteContentHosts" type="button">Save allowed hosts</button></div>
               </section>
             </section>
             <section id="settingsPageNewSessions" class="settingsPage" data-settings-page="new-sessions" aria-labelledby="settingsPageNewSessionsTitle" hidden>

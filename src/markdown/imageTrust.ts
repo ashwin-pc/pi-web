@@ -1,5 +1,7 @@
+import type { Role } from "../app/types.js";
+import { alwaysAllowHost, decideContent, type ContentResource } from "../security/contentPolicy.js";
+
 const inlineRasterImage = /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i;
-const automaticImagePath = /^\/api\/(?:artifacts\/|session-artifacts\/|attachments\/|messages\/image(?:[/?#]|$))/;
 const unsafeUrlSyntax = /[\u0000-\u001F\u007F\\]/;
 
 export type MarkdownImageSource =
@@ -10,24 +12,13 @@ export type MarkdownImageSource =
 export function classifyMarkdownImageSource(value: string, origin = window.location.origin): MarkdownImageSource {
   const source = value.trim();
   if (!source || unsafeUrlSyntax.test(source) || source.startsWith("//")) return { kind: "rejected" };
-  if (inlineRasterImage.test(source)) return { kind: "automatic", src: source };
-
+  if (inlineRasterImage.test(source) || source.startsWith("blob:")) return { kind: "automatic", src: source };
   let url: URL;
-  try {
-    url = new URL(source, origin);
-  } catch {
-    return { kind: "rejected" };
-  }
+  try { url = new URL(source, origin); } catch { return { kind: "rejected" }; }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return { kind: "rejected" };
-
-  if (url.origin === origin) {
-    const normalized = `${url.pathname}${url.search}${url.hash}`;
-    return automaticImagePath.test(normalized)
-      ? { kind: "automatic", src: normalized }
-      : { kind: "rejected" };
-  }
+  if (url.origin === origin) return { kind: "automatic", src: `${url.pathname}${url.search}${url.hash}` };
   if (!/^https?:/i.test(source)) return { kind: "rejected" };
-  return { kind: "remote", src: url.href, host: url.host };
+  return { kind: "remote", src: url.href, host: url.host.toLowerCase() };
 }
 
 export function remoteMarkdownImagePlaceholder(source: Extract<MarkdownImageSource, { kind: "remote" }>, alt: string, title: string) {
@@ -40,41 +31,76 @@ export function remoteMarkdownImagePlaceholder(source: Extract<MarkdownImageSour
   return placeholder;
 }
 
-export function enhanceRemoteMarkdownImages(root: ParentNode, enhanceImage: (image: HTMLImageElement) => void) {
+function createImage(placeholder: HTMLElement, source: Extract<MarkdownImageSource, { kind: "remote" }>) {
+  const image = document.createElement("img");
+  image.alt = placeholder.dataset.remoteImageAlt || "";
+  if (placeholder.dataset.remoteImageTitle) image.title = placeholder.dataset.remoteImageTitle;
+  image.referrerPolicy = "no-referrer";
+  image.loading = "lazy";
+  image.src = source.src;
+  return image;
+}
+
+export function enhanceRemoteMarkdownImages(
+  root: ParentNode,
+  enhanceImage: (image: HTMLImageElement) => void,
+  from: { sessionId: string; role: Role },
+) {
   for (const placeholder of root.querySelectorAll<HTMLElement>(".remoteMarkdownImage[data-remote-image-src]")) {
     if (placeholder.dataset.remoteImageEnhanced) continue;
     placeholder.dataset.remoteImageEnhanced = "true";
-    placeholder.setAttribute("role", "group");
-    placeholder.setAttribute("aria-label", "Remote image blocked");
-
-    const detail = document.createElement("span");
-    detail.className = "remoteMarkdownImageDetail";
-    detail.append("Remote image from ");
-    const host = document.createElement("code");
-    host.textContent = placeholder.dataset.remoteImageHost || "unknown host";
-    detail.append(host);
-
-    const load = document.createElement("button");
-    load.type = "button";
-    load.className = "remoteMarkdownImageLoad";
-    load.textContent = "Load image";
-    load.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const checked = classifyMarkdownImageSource(placeholder.dataset.remoteImageSrc || "");
-      if (checked.kind !== "remote" || checked.host !== placeholder.dataset.remoteImageHost) {
-        placeholder.textContent = "Remote image URL is no longer valid.";
+    const checked = classifyMarkdownImageSource(placeholder.dataset.remoteImageSrc || "");
+    if (checked.kind !== "remote" || checked.host !== placeholder.dataset.remoteImageHost) {
+      placeholder.textContent = "Remote image URL is invalid.";
+      continue;
+    }
+    const resource: ContentResource = { kind: "image", url: checked.src, from };
+    const evaluate = () => void decideContent(resource).then((verdict) => {
+      if (!placeholder.isConnected) {
+        document.removeEventListener("pi-web-content-policy-changed", evaluate);
         return;
       }
-      const image = document.createElement("img");
-      image.alt = placeholder.dataset.remoteImageAlt || "";
-      if (placeholder.dataset.remoteImageTitle) image.title = placeholder.dataset.remoteImageTitle;
-      image.referrerPolicy = "no-referrer";
-      image.loading = "lazy";
-      image.src = checked.src;
-      placeholder.replaceWith(image);
-      enhanceImage(image);
+      const show = () => {
+        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        const image = createImage(placeholder, checked);
+        placeholder.replaceWith(image);
+        enhanceImage(image);
+      };
+      if (verdict.action === "allow") {
+        show();
+        return;
+      }
+      if (verdict.action === "block") {
+        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        placeholder.textContent = `Remote image from ${checked.host} was blocked.`;
+        return;
+      }
+      placeholder.setAttribute("role", "group");
+      placeholder.setAttribute("aria-label", "Remote image");
+      const detail = document.createElement("span");
+      detail.className = "remoteMarkdownImageDetail";
+      detail.append("Image from ");
+      const host = document.createElement("code");
+      host.textContent = checked.host;
+      detail.append(host);
+      const load = document.createElement("button");
+      load.type = "button";
+      load.textContent = "Load";
+      load.addEventListener("click", show);
+      const persist = document.createElement("button");
+      persist.type = "button";
+      persist.textContent = "Always allow this host";
+      persist.addEventListener("click", async () => {
+        persist.disabled = true;
+        try { await alwaysAllowHost(checked.host); show(); }
+        catch (error) {
+          persist.disabled = false;
+          persist.title = error instanceof Error ? error.message : String(error);
+        }
+      });
+      placeholder.replaceChildren(detail, load, persist);
     });
-    placeholder.replaceChildren(detail, load);
+    document.addEventListener("pi-web-content-policy-changed", evaluate);
+    evaluate();
   }
 }

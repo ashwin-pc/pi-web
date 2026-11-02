@@ -442,6 +442,42 @@ const cleanArtifactKinds = (value: unknown) => Array.isArray(value)
   ? value.filter((kind): kind is typeof artifactKinds[number] => artifactKinds.includes(kind as typeof artifactKinds[number])).slice(0, artifactKinds.length)
   : undefined;
 
+function cleanPanelDeepLinks(value: PiWebPanel["deepLinks"]) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || !Array.isArray(value.allowedKeys)
+    || value.allowedKeys.length === 0 || value.allowedKeys.length > 32) {
+    throw new TypeError("panel.deepLinks.allowedKeys must contain between 1 and 32 keys");
+  }
+  const allowedKeys = [...new Set(value.allowedKeys.map((key) => {
+    const cleaned = cleanHeaderActionText(key, 64);
+    if (!cleaned || !/^[A-Za-z0-9_-]+$/.test(cleaned)) throw new TypeError("panel.deepLinks keys must use letters, numbers, _ or -");
+    return cleaned;
+  }))];
+  const allowed = new Set(allowedKeys);
+  if (value.requiredKeys !== undefined && !Array.isArray(value.requiredKeys)) throw new TypeError("panel.deepLinks.requiredKeys must be an array");
+  const requiredKeys = [...new Set((value.requiredKeys || []).map((key) => {
+    if (typeof key !== "string" || !allowed.has(key)) throw new TypeError("panel.deepLinks.requiredKeys must be declared in allowedKeys");
+    return key;
+  }))];
+  return { allowedKeys, ...(requiredKeys.length ? { requiredKeys } : {}), hasDescribe: typeof value.describe === "function" };
+}
+
+function cleanPanelDeepLinkPayload(panel: PiWebPanel, value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError("Invalid panel deep-link payload", 400);
+  const raw = Object.entries(value as Record<string, unknown>);
+  if (raw.length > 64) throw new HttpError("Invalid panel deep-link payload", 400);
+  const schema = cleanPanelDeepLinks(panel.deepLinks);
+  const allowed = schema ? new Set(schema.allowedKeys) : undefined;
+  const payload: Record<string, string> = {};
+  for (const [key, item] of raw) {
+    if (allowed && !allowed.has(key)) continue;
+    if (key.length > 64 || typeof item !== "string" || item.length > 2_000) throw new HttpError("Invalid panel deep-link payload", 400);
+    payload[key] = item;
+  }
+  if (schema?.requiredKeys?.some((key) => !payload[key])) throw new HttpError("Invalid panel deep-link payload", 400);
+  return payload;
+}
+
 // `allowedKinds`, budgets, and field limits are executable guards. `viewFields`
 // and `effects` document each slot's output contract; the slot-specific
 // sanitizers below enforce those structural shapes.
@@ -474,7 +510,9 @@ const contributionPolicies = {
   },
   panel: {
     allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000, maxFields: 128,
-    descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}),
+    descriptor: (entry: Extract<WebContribution, { slot: "panel" }>) => ({
+      ...(cleanPanelDeepLinks(entry.source.deepLinks) ? { deepLinks: cleanPanelDeepLinks(entry.source.deepLinks) } : {}),
+    }),
   },
   "system-info": {
     allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000,
@@ -583,6 +621,7 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, render: (event) => spec.render({ action: event?.action, payload: event?.payload, fields: event?.fields }) } as PiWebPanel,
     };
+    if (spec.slot === "panel") cleanPanelDeepLinks(spec.deepLinks);
     return {
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, render: spec.render } as PiWebPanel,
@@ -945,7 +984,7 @@ async function bindWebExtensions(value: any) {
     };
   }
 
-  async function invokePanel(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown }) {
+  async function invokePanel(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown; source?: unknown }) {
     const { contribution } = renderedContribution(value, "panel", input.key);
     if (!contribution) throw new Error("Panel not found");
     const rawFields = input.fields && typeof input.fields === "object" && !Array.isArray(input.fields)
@@ -961,10 +1000,18 @@ async function bindWebExtensions(value: any) {
       else if (Array.isArray(field)) cleaned[cleanName] = field.flatMap((item) => typeof item === "string" ? [cleanFieldValue(item)] : []).slice(0, 100);
       return cleaned;
     }, {}) : undefined;
+    if (input.action === "__pi_web_describe_deep_link" && contribution.source.deepLinks?.describe) {
+      const payload = cleanPanelDeepLinkPayload(contribution.source, input.payload);
+      return { description: cleanHeaderActionText(await contribution.source.deepLinks.describe(payload), 300) || contribution.source.title };
+    }
+    const panelPayload = input.action === "deep-link" && input.source === "message"
+      ? cleanPanelDeepLinkPayload(contribution.source, input.payload)
+      : input.payload;
     const result = await contribution.source.render({
       action: cleanHeaderActionText(input.action, 200),
-      payload: input.payload,
+      payload: panelPayload,
       fields,
+      source: input.source === "message" ? "message" : undefined,
     });
     const html = cleanFooterText(result?.html, contributionPolicies.panel.viewBudget);
     if (!html) throw new Error("Panel returned no HTML");
@@ -1056,7 +1103,7 @@ async function bindWebExtensions(value: any) {
       return invokeGitTab(value, { key: input.key, action: event.action, payload: event.payload, repo: event.context });
     }
     if (slot === "panel") {
-      return invokePanel(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });
+      return invokePanel(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields, source: event.source });
     }
     if (slot === "system-info") {
       return invokeSystemInfo(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });

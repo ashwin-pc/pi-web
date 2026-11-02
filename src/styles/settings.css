@@ -344,6 +344,18 @@
   color: var(--text);
   padding: 6px 8px;
 }
+.settingsRemoteHostsField { display: grid; gap: 8px; }
+.settingsRemoteHostsField textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, monospace;
+}
 .settingsBucketNamesField {
   display: flex;
   flex-direction: column;

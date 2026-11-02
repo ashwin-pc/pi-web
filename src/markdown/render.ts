@@ -13,6 +13,7 @@ import {
 import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
 import { createStreamingReveal } from "./streamingReveal.js";
 import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
+import { enhancePanelDeepLinks } from "../messages/panelDeepLinks.js";
 
 marked.setOptions({
   async: false,
@@ -42,6 +43,8 @@ let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type
 let artifactActionSessionId = () => "";
 let openArtifactInPanel: (url: string, opener?: HTMLElement) => void = () => {};
 let artifactPreviewId = 0;
+const interactiveArtifactCards = new Set<HTMLElement>();
+let artifactInteractionListenerAttached = false;
 
 export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
   artifactActionHeaders = options.headers;
@@ -396,10 +399,6 @@ function ensureInlineHtmlResizeListener() {
   });
 }
 
-function inlineHtmlReporter() {
-  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0,measured=false;for(const n of b.childNodes){let r;if(n.nodeType===1)r=n.getBoundingClientRect();else if(n.nodeType===3&&n.textContent.trim()){const range=document.createRange();range.selectNodeContents(n);r=range.getBoundingClientRect()}if(!r)continue;measured=true;right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=measured?Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0')):e.clientWidth;parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
-}
-
 function enhanceInlineHtmlPreviews(root: ParentNode) {
   for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-html-preview"))) {
     const pre = code.closest<HTMLPreElement>("pre");
@@ -414,7 +413,7 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
     const container = createHtmlPreviewGate({
       source,
       sourceElement: pre,
-      mount: (frame) => { frame.srcdoc = source + inlineHtmlReporter(); },
+      from: { sessionId: artifactActionSessionId(), role: "assistant" },
       onMount: (frame) => {
         inlineHtmlFrames.add(frame);
         ensureInlineHtmlResizeListener();
@@ -457,7 +456,11 @@ function enhanceCodeBlocks(root: ParentNode) {
 }
 
 function enhanceImages(root: ParentNode) {
-  enhanceRemoteMarkdownImages(root, attachImageActions);
+  const message = root instanceof Element ? root.closest(".message") : null;
+  const role = message?.classList.contains("user") ? "user"
+    : message?.classList.contains("system") ? "system"
+      : message?.classList.contains("tool") ? "tool" : "assistant";
+  enhanceRemoteMarkdownImages(root, attachImageActions, { sessionId: artifactActionSessionId(), role });
   for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) attachImageActions(img);
 }
 
@@ -565,6 +568,39 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
 
 function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
   card.classList.toggle("artifactPreview--interactive", interactive);
+  if (interactive) interactiveArtifactCards.add(card);
+  else interactiveArtifactCards.delete(card);
+}
+
+function ensureArtifactInteractionListener() {
+  if (artifactInteractionListenerAttached) return;
+  artifactInteractionListenerAttached = true;
+  document.addEventListener("pointerdown", (event) => {
+    for (const card of interactiveArtifactCards) {
+      if (!card.isConnected) {
+        interactiveArtifactCards.delete(card);
+        continue;
+      }
+      if (!card.contains(event.target as Node)) setArtifactFrameInteraction(card, false);
+    }
+  }, true);
+}
+
+function attachArtifactInteractionShield(card: HTMLElement, content: HTMLElement, label: string) {
+  const shield = document.createElement("button");
+  shield.type = "button";
+  shield.className = "artifactPreviewShield";
+  shield.setAttribute("aria-label", `Click to interact with ${label}`);
+  const hint = document.createElement("span");
+  hint.textContent = "Click to interact";
+  shield.append(hint);
+  shield.addEventListener("click", () => {
+    setArtifactFrameInteraction(card, true);
+    content.querySelector<HTMLIFrameElement>("iframe")?.focus();
+  });
+  card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+  content.append(shield);
+  ensureArtifactInteractionListener();
 }
 
 function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {
@@ -710,10 +746,9 @@ function enhanceArtifactLinks(root: ParentNode) {
         title: `Interactive preview of ${title.textContent}`,
         className: "htmlPreviewFrame artifactPreviewFrame",
         isCurrent: () => card.isConnected,
-        onMount: () => setArtifactFrameInteraction(card, true),
-        onStop: () => setArtifactFrameInteraction(card, false),
       }).then((mounted) => {
         if (!mounted || !card.isConnected) return;
+        attachArtifactInteractionShield(card, content, title.textContent || fileName);
         refreshOverflow();
       }).catch((error) => {
         if (!card.isConnected) return;
@@ -725,6 +760,12 @@ function enhanceArtifactLinks(root: ParentNode) {
     }
 
     if (kind === "html") {
+      const loadingFrame = document.createElement("div");
+      loadingFrame.className = "artifactPreviewFrame artifactPreviewFrame--loading";
+      loadingFrame.setAttribute("role", "status");
+      loadingFrame.setAttribute("aria-label", "Loading HTML preview");
+      content.replaceChildren(loadingFrame);
+      refreshOverflow();
       void fetch(url.pathname, { headers: artifactActionHeaders(), credentials: "same-origin" })
         .then(async (response) => {
           if (!response.ok) throw new Error(`Preview failed (${response.status})`);
@@ -732,14 +773,12 @@ function enhanceArtifactLinks(root: ParentNode) {
           if (!card.isConnected) return;
           const gate = createHtmlPreviewGate({
             source,
-            showSourceInitially: false,
             frameClassName: "htmlPreviewFrame artifactPreviewFrame",
             frameTitle: `Preview of ${title.textContent}`,
-            mount: (frame) => { frame.srcdoc = source; },
-            onMount: () => setArtifactFrameInteraction(card, true),
-            onStop: () => setArtifactFrameInteraction(card, false),
+            from: { sessionId: artifactActionSessionId(), role: "assistant" },
           });
           content.replaceChildren(gate);
+          attachArtifactInteractionShield(card, content, title.textContent || fileName);
           refreshOverflow();
         })
         .catch((error) => {
@@ -798,6 +837,7 @@ export function renderStandaloneMarkdown(
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceSessionCitationLinks(body);
+  enhancePanelDeepLinks(body);
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
@@ -837,6 +877,7 @@ export function createMarkdownRenderer(
   const finalizeStreaming = (body: HTMLElement, text: string) => {
     renderStreaming(body, text);
     enhanceSessionCitationLinks(body);
+    enhancePanelDeepLinks(body);
     enhanceMermaid(body);
     enhanceInlineHtmlPreviews(body);
     enhanceCodeBlocks(body);

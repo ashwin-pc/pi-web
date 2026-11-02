@@ -13,7 +13,7 @@ test("real registered Wavy preview is opaque, HTML-only, and keeps local selecti
   await page.goto(server.origin); await expect(page.locator("#statusTitle")).toBeVisible();
   const preview = page.locator(".artifactPreview--file", { has: page.locator("iframe") }); const iframe = preview.locator("iframe");
   await expect(iframe).toHaveAttribute("sandbox", "allow-scripts"); await expect(iframe).not.toHaveAttribute("sandbox", /allow-same-origin/);
-  const frame = iframe.contentFrame(); await expect(frame.getByRole("heading", { name: "Registered Wavy fixture" })).toBeVisible();
+  const frame = iframe.contentFrame(); await expect(frame.getByRole("heading", { name: "Registered Wavy fixture" })).toBeVisible(); await preview.getByRole("button", { name: /Click to interact/i }).click();
   // The registered iframe passed through core's exact cleanFooterText path. Compare
   // its line-continuation semantics with canonical extension rendering.
   const hostedEvents = await frame.locator("body").evaluate(() => (window as any).__wavyTest.events());

@@ -119,6 +119,9 @@ export type PiWebSettings = {
     queueMode: QueueMode;
     expanded: boolean;
   };
+  security: {
+    remoteContentHosts: string[];
+  };
   defaults: {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
@@ -626,6 +629,7 @@ export const defaultPiWebSettings: PiWebSettings = {
   identity: structuredClone(defaultAppIdentity),
   appearance: { density: "comfortable", accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
+  security: { remoteContentHosts: [] },
   defaults: {},
 };
 

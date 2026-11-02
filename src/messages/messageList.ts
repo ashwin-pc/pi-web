@@ -14,7 +14,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
-import { confirmPanelDeepLink, parsePanelDeepLink } from "./panelDeepLinks.js";
+import { panelDeepLinkEvent } from "./panelDeepLinks.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -299,7 +299,7 @@ export function createMessageList(options: {
   citationHref?: (reference: SessionCitation) => string;
   /** Open an extension panel from a transcript deep link. */
   openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
-  /** Check the live extension registry before asking for deep-link consent. */
+  /** Check the live extension registry before opening a panel deep link. */
   isPanelRegistered?: (key: string) => boolean;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
@@ -534,12 +534,11 @@ export function createMessageList(options: {
       void Promise.resolve(openCitation(reference));
       return;
     }
-    const panelLink = parsePanelDeepLink(href);
+    const panelLink = panelDeepLinkEvent(anchor);
     if (!panelLink) return;
     event.preventDefault();
     if (!isPanelRegistered?.(panelLink.key)) return;
-    if (!confirmPanelDeepLink(panelLink)) return;
-    openPanel?.(panelLink.key, { action: "deep-link", payload: panelLink.payload });
+    openPanel?.(panelLink.key, panelLink.event);
   });
   function settlePointerIntent() {
     if (!pendingUserScrollIntent || Math.abs(messagesEl.scrollTop - pendingUserScrollTop) > 1) return;
@@ -832,7 +831,7 @@ export function createMessageList(options: {
       const latest = Boolean(latestResponseKey && message.dataset.assistantResponseKey === latestResponseKey);
       message.classList.toggle("collapsed", !latest);
       const toggle = message.querySelector<HTMLButtonElement>(".messageToggle");
-      if (toggle) toggle.textContent = message.classList.contains("collapsed") ? "Show more" : "Show less";
+      if (toggle) toggle.textContent = latest ? "Show less" : "Show more";
       if (latest && !bulkRendering) {
         const body = message.querySelector<HTMLElement>(":scope > .body");
         const text = assistantMessageText.get(message) || "";
