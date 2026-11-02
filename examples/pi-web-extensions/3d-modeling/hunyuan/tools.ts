@@ -62,8 +62,11 @@ export function registerHunyuanTools(pi: PiWebExtensionAPI) {
         onUpdate?.({ content: [{ type: "text", text: "Generating local untextured Hunyuan3D geometry…" }], details: { seed, steps, resolution } });
         const result = JSON.parse(await runOwned(request.path, signal)) as { output: string };
         // Never trust a backend-returned absolute path as a public artifact.
-        const rel = pathRelative(join(ctx.cwd, ".pi/web/artifacts"), result.output);
-        if (!rel.replaceAll("\\", "/").startsWith(`${prefix}/output/`)) throw new Error("Backend output escapes owned run");
+        // root comes from resolveArtifactWrite and is already canonical, even
+        // when the artifact directory (or cwd) was reached through a symlink.
+        const withinRun = pathRelative(root, result.output).replaceAll("\\", "/");
+        if (!withinRun.startsWith("output/")) throw new Error("Backend output escapes owned run");
+        const rel = `${prefix}/${withinRun}`;
         const output = await resolveArtifactRead(ctx.cwd, rel, ".glb", 250_000_000, "GLB");
         const url = `/api/artifacts/${output.relative.split("/").map(encodeURIComponent).join("/")}`;
         await writeFile(join(root, "metadata.json"), JSON.stringify({ seed, steps, resolution, output: output.relative, textured: false, ownedProcessStopped: true }, null, 2));
