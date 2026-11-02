@@ -36,6 +36,9 @@ Feature modules receive the pieces they need explicitly. Prefer passing `state`,
 - `src/sessions/sessionDrawer.ts` - sessions drawer, cwd grouping, new/open session flows, folder picker, empty-cwd chooser.
 - `src/realtime/realtime.ts` - WebSocket lifecycle and Pi event dispatch.
 - `src/git/*` - Git panel API, state, and views.
+- `src/client/*` - the client state layer (issue #181): framework-free `getSnapshot()`/`subscribe()` stores for sessions, transcripts and neutral events (`turn/start`, `assistant/delta`, `tool/call`, `tool/result`, `turn/end`), plus `files.tree` and actions. `events.ts` is the one place pi events are translated. It shares the 2D app's API headers and realtime socket (`createRealtime({ onEnvelope })`) and is a lazy chunk, loaded only by alternative views.
+- `src/views/*` - typed UI slots (`slots.ts`, dsh's `single` / `list` / `keyed` / `chain` kinds) and the `root-view` slot host (`rootView.ts`). A view is `{ id, title, mount(el, { client, exit }) → dispose }`, reached at `/view/<id>`; while it is mounted the 2D app stays alive but hidden.
+- `src/views/vr/*` - the built-in VR view (`/view/vr`): `index.ts` is the small registration in the main bundle; `vrApp.ts`, `cityClient.ts` and `city/` (the ported vr-city scene, see `city/PORTING.md`) are lazy chunks with three.js.
 
 ## State and data flow
 
