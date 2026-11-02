@@ -28,6 +28,8 @@ export type ExtensionLoadStatus = {
 
 export type ResilientResourceLoaderOptions = {
   loaderOptions: LoaderOptions;
+  resolveAdditionalExtensionPaths?: (projectTrusted?: boolean) => string[];
+  resolveProjectTrust?: () => boolean | Promise<boolean>;
   loadTimeoutMs?: number;
   fetchTimeoutMs?: number;
   createLoader?: LoaderFactory;
@@ -123,7 +125,12 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly loadTimeoutMs: number;
   private readonly fetchTimeoutMs: number;
   private readonly primaryOptions: LoaderOptions;
+  private readonly resolveAdditionalExtensionPaths?: (projectTrusted?: boolean) => string[];
+  private readonly resolveProjectTrust?: () => boolean | Promise<boolean>;
   private readonly fallbackOptions: LoaderOptions;
+  private activePrimaryPathsKey = "";
+  /** Whether the last completed load applied project extensions; the extension-free fallback records false. */
+  private appliedProjectTrust?: boolean;
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
   private attempt = 0;
   private reloadPromise?: Promise<void>;
@@ -135,6 +142,8 @@ export class ResilientResourceLoader implements ResourceLoader {
     this.loadTimeoutMs = positiveMs(options.loadTimeoutMs, 8_000);
     this.fetchTimeoutMs = positiveMs(options.fetchTimeoutMs, 3_000);
     this.primaryOptions = options.loaderOptions;
+    this.resolveAdditionalExtensionPaths = options.resolveAdditionalExtensionPaths;
+    this.resolveProjectTrust = options.resolveProjectTrust;
     this.fallbackOptions = {
       ...options.loaderOptions,
       additionalExtensionPaths: [],
@@ -159,6 +168,10 @@ export class ResilientResourceLoader implements ResourceLoader {
       ...this.status,
       errors: this.status.errors.map((error) => ({ ...error })),
     };
+  }
+
+  getAppliedProjectTrust(): boolean | undefined {
+    return this.appliedProjectTrust;
   }
 
   getExtensions() {
@@ -226,19 +239,35 @@ export class ResilientResourceLoader implements ResourceLoader {
     };
     this.log.info(`[extensions] load started cwd=${this.primaryOptions.cwd} attempt=${attempt} timeoutMs=${this.loadTimeoutMs} fetchTimeoutMs=${this.fetchTimeoutMs}`);
 
+    await this.primaryOptions.settingsManager?.reload();
+    const projectTrusted = this.resolveProjectTrust
+      ? await this.resolveProjectTrust()
+      : undefined;
+    const additionalExtensionPaths = this.resolveAdditionalExtensionPaths?.(projectTrusted)
+      ?? this.primaryOptions.additionalExtensionPaths
+      ?? [];
+    const primaryOptions = { ...this.primaryOptions, additionalExtensionPaths };
+    const primaryPathsKey = JSON.stringify(additionalExtensionPaths);
+
     // Reuse the successful primary loader on reload. DefaultResourceLoader only
     // clears pi's process-global extension factory cache after that same loader
     // has loaded once; replacing it with a fresh instance here made every
-    // pi-web /reload silently reuse stale extension source.
-    const candidate = this.activeIsPrimary ? this.active : this.createLoader(this.primaryOptions);
-    if (!this.activeIsPrimary) {
+    // pi-web /reload silently reuse stale extension source. A trust-list change
+    // deliberately creates a new loader so newly allowed or revoked paths take
+    // effect on this reload.
+    const reusePrimary = this.activeIsPrimary && this.activePrimaryPathsKey === primaryPathsKey;
+    const candidate = reusePrimary ? this.active : this.createLoader(primaryOptions);
+    if (!reusePrimary) {
       for (const paths of this.extendedResources) candidate.extendResources(paths);
     }
     try {
+      const reloadOptions = projectTrusted !== undefined
+        ? { ...options, resolveProjectTrust: async () => projectTrusted }
+        : options;
       await withTimeout(
         extensionFetchContext.run(
           { timeoutMs: this.fetchTimeoutMs, log: this.log },
-          () => candidate.reload(options),
+          () => candidate.reload(reloadOptions),
         ),
         this.loadTimeoutMs,
         `Extension loading timed out after ${this.loadTimeoutMs}ms`,
@@ -246,6 +275,7 @@ export class ResilientResourceLoader implements ResourceLoader {
       const result = candidate.getExtensions();
       this.active = candidate;
       this.activeIsPrimary = true;
+      this.activePrimaryPathsKey = primaryPathsKey;
       const durationMs = Date.now() - started;
       this.status = {
         state: result.errors.length > 0 ? "degraded" : "ready",
@@ -262,6 +292,9 @@ export class ResilientResourceLoader implements ResourceLoader {
           ? `Loaded ${result.extensions.length} extensions with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}.`
           : `Loaded ${result.extensions.length} extension${result.extensions.length === 1 ? "" : "s"}.`,
       };
+      if (projectTrusted !== undefined) {
+        this.appliedProjectTrust = projectTrusted;
+      }
       this.log.info(`[extensions] load ${this.status.state} cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs} extensions=${result.extensions.length} errors=${result.errors.length}`);
       for (const error of result.errors) this.log.error(`[extensions] failed path=${error.path}: ${error.error}`);
       return;
@@ -271,9 +304,13 @@ export class ResilientResourceLoader implements ResourceLoader {
       const fallback = this.createLoader(this.fallbackOptions);
       for (const paths of this.extendedResources) fallback.extendResources(paths);
       try {
-        await fallback.reload(options);
+        const fallbackOptions = projectTrusted !== undefined
+          ? { ...options, resolveProjectTrust: async () => projectTrusted }
+          : options;
+        await fallback.reload(fallbackOptions);
         this.active = fallback;
         this.activeIsPrimary = false;
+        this.appliedProjectTrust = false;
       } catch (fallbackError) {
         this.log.error(`[extensions] extension-free fallback failed cwd=${this.primaryOptions.cwd}: ${errorMessage(fallbackError)}`);
         throw fallbackError;
