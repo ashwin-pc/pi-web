@@ -401,7 +401,7 @@ describe("pi-web mock API", () => {
     expect(liveEvents.some((event) => String(event.testMarker).startsWith("oversized-"))).toBe(false);
     live.close();
 
-    const replay = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
+    const replay = await mockWebSocket(baseUrl, `sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
     const replayEvents: any[] = [];
     replay.on("message", (data) => replayEvents.push(JSON.parse(String(data))));
     await once(replay, "open");
