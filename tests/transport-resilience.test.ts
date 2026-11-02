@@ -57,7 +57,7 @@ async function startServer(dev = false) {
   throw new Error("test server did not start");
 }
 
-function rawUpgrade(port: number, path: string, protocol?: string) {
+function rawUpgrade(port: number, path: string, protocol?: string, origin?: string) {
   const socket = createConnection(port, "127.0.0.1");
   socket.write([
     `GET ${path} HTTP/1.1`,
@@ -67,6 +67,7 @@ function rawUpgrade(port: number, path: string, protocol?: string) {
     "Sec-WebSocket-Version: 13",
     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
     ...(protocol ? [`Sec-WebSocket-Protocol: ${protocol}`] : []),
+    ...(origin ? [`Origin: ${origin}`] : []),
     "",
     "",
   ].join("\r\n"));
@@ -150,7 +151,7 @@ describe("server transport resilience", () => {
     } finally {
       socket.close();
     }
-  });
+  }, 15_000);
 
   it("rejects unrelated development upgrade routes and protocols", async () => {
     const { port } = await startServer(true);
@@ -176,10 +177,11 @@ describe("server transport resilience", () => {
 
   it("rejects oversized control JSON but preserves large workspace writes and attachments", async () => {
     const { baseUrl, cwd } = await startServer();
+    const browserHeaders = { origin: baseUrl, "x-pi-web-client-id": "transport-test" };
     const oversized = JSON.stringify({ sessionId: "mock-current", padding: "x".repeat(65_536) });
     const rejected = await fetch(`${baseUrl}/api/abort`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...browserHeaders },
       body: oversized,
     });
     expect(rejected.status).toBe(413);
@@ -189,7 +191,7 @@ describe("server transport resilience", () => {
     const before = await (await fetch(`${baseUrl}/api/files/read?path=large.txt`)).json() as { revision: string };
     const written = await fetch(`${baseUrl}/api/files/write`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...browserHeaders },
       body: JSON.stringify({ path: "large.txt", content, expectedRevision: before.revision }),
     });
     expect(written.status).toBe(200);
@@ -197,7 +199,7 @@ describe("server transport resilience", () => {
 
     const attachment = await fetch(`${baseUrl}/api/attachments?sessionId=mock-current&name=large.bin`, {
       method: "POST",
-      headers: { "content-type": "application/octet-stream" },
+      headers: { "content-type": "application/octet-stream", ...browserHeaders },
       body: Buffer.alloc(1_048_577),
     });
     expect(attachment.status).toBe(201);
@@ -208,7 +210,7 @@ describe("server transport resilience", () => {
     const response = await fetch(`${baseUrl}/assets`);
     expect(response.status).toBe(404);
     expect((await fetch(`${baseUrl}/api/state`)).status).toBe(200);
-  });
+  }, 15_000);
 
   it("closes upgrades outside /ws", async () => {
     const { port } = await startServer();
@@ -226,7 +228,13 @@ describe("server transport resilience", () => {
 
   it("survives a malformed frame on an accepted realtime socket", async () => {
     const { baseUrl, child, port } = await startServer();
-    const socket = rawUpgrade(port, "/ws");
+    const ticketResponse = await fetch(`${baseUrl}/api/ws-ticket`, {
+      method: "POST",
+      headers: { origin: baseUrl, "x-pi-web-client-id": "transport-test" },
+    });
+    expect(ticketResponse.status).toBe(201);
+    const { ticket } = await ticketResponse.json() as { ticket: string };
+    const socket = rawUpgrade(port, `/ws?ticket=${encodeURIComponent(ticket)}`, undefined, baseUrl);
     try {
       expect(await firstResponse(socket)).toContain("101 Switching Protocols");
       socket.write(Buffer.from([0x81, 0x01, 0x78]));

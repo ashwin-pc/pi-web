@@ -422,10 +422,14 @@ describe("pi-web mock API", () => {
     const declared = await rawPost(port, "/api/mock/event", declaredBody, {
       "content-type": "application/json",
       "content-length": String(declaredBody.length),
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     const streamed = await rawPost(port, "/api/mock/event", streamedBody, {
       "content-type": "application/json",
       "transfer-encoding": "chunked",
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     expect([declared.status, streamed.status]).toEqual([413, 413]);
     await new Promise((resolve) => setTimeout(resolve, 100));
