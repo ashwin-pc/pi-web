@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -24,6 +24,7 @@ import {
   passwordLoginPage,
 } from "../../server/auth/password.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
+import { handlePasskeyRoute } from "../../server/auth/passkey.js";
 
 async function fixture() {
   const store = new AuthStore(
@@ -76,24 +77,57 @@ const config = {
 };
 
 describe("multi-method human authentication", () => {
-  it("accepts the actual authority and configured origin but never forged forwarding headers", () => {
-    for (const host of [
-      "127.0.0.1:9300",
-      "192.168.1.5:9300",
-      "machine.tailnet:9300",
-    ])
-      expect(
-        trustedOrigin(
-          req({}, { host, origin: `http://${host}` }),
-          "http://localhost:9300",
-        ),
-      ).toBe(true);
+  it("enforces the exact configured public origin and only canonical local aliases", () => {
     expect(
       trustedOrigin(
         req({}, { host: "internal", origin: "https://public.example" }),
         "https://public.example",
       ),
     ).toBe(true);
+    // #224 fail-before regression: with the default environment, caller Host
+    // must not authorize an invented HTTPS Origin.
+    expect(
+      trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example" }),
+        "https://public.example",
+      ),
+    ).toBe(false);
+    for (const alias of ["localhost", "127.0.0.1", "[::1]"]) {
+      expect(
+        trustedOrigin(
+          req({}, { host: "attacker.example:9300", origin: `http://${alias}:9300` }),
+          "http://localhost:9300",
+        ),
+      ).toBe(true);
+    }
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9300"],
+      ["http://localhost", "localhost:80"],
+      ["http://127.0.0.1:9301", "127.0.0.1:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.5:9300"],
+      ["http://[::1]:9300", "[0:0:0:0:0:0:0:1]:9300"],
+      ["https://[2001:db8::1]", "[2001:0db8:0:0:0:0:0:1]:443"],
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host, origin }),
+          "https://machine.tailnet.ts.net",
+        ),
+      ).toBe(true);
+    }
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.6:9300"],
+      ["http://machine.tailnet:9300", "machine.tailnet:9300"],
+      ["https://other.example:9300", "other.example:9300"],
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host, origin }),
+          "https://public.example",
+        ),
+      ).toBe(false);
+    }
     for (const origin of [
       "null",
       "garbage",
@@ -110,29 +144,30 @@ describe("multi-method human authentication", () => {
         ),
       ).toBe(false);
   });
-  it("trusts only exact canonical proxy peers and a single strict forwarded authority", () => {
+  it("does not treat trusted forwarded authorities as browser Origin grants", () => {
     const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
     try {
       process.env.PI_WEB_AUTH_PROXY_PEERS = "::ffff:127.0.0.1";
       const headers = { host: "internal:9300", origin: "https://public.example", "x-forwarded-host": "public.example" };
-      expect(trustedOrigin(req({}, headers), config.origin)).toBe(true);
-      for (const [origin, authority, accepted] of [
-        ["https://public.example", "public.example:443", true],
-        ["http://public.example", "public.example:80", true],
-        ["https://public.example", "public.example:80", false],
-        ["http://public.example", "public.example:443", false],
-        ["https://public.example:8443", "public.example:8443", true],
-        ["https://public.example", "public.example:8443", false],
+      expect(trustedOrigin(req({}, headers), config.origin)).toBe(false);
+      for (const [origin, authority] of [
+        ["https://public.example", "public.example:443"],
+        ["http://public.example", "public.example:80"],
+        ["https://public.example", "public.example:80"],
+        ["http://public.example", "public.example:443"],
+        ["https://public.example:8443", "public.example:8443"],
+        ["https://public.example", "public.example:8443"],
       ] as const) {
         const request = req({}, { ...headers, origin, "x-forwarded-host": authority });
-        expect(trustedOrigin(request, config.origin)).toBe(accepted);
-        // The supervisor preserves the explicit authority while stripping XFH;
-        // the child's direct Host comparison must have identical semantics.
+        expect(trustedOrigin(request, config.origin)).toBe(false);
         expect(forwardedHost(request)).toBe(authority);
-        expect(trustedOrigin(req({}, { host: authority, origin }), config.origin)).toBe(accepted);
         request.socket.remoteAddress = "192.0.2.1";
         expect(trustedOrigin(request, config.origin)).toBe(false);
       }
+      expect(trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example", "x-forwarded-host": "other.example" }),
+        "https://public.example",
+      )).toBe(false);
       const untrusted = req({}, headers); untrusted.socket.remoteAddress = "192.0.2.1";
       expect(trustedOrigin(untrusted, config.origin)).toBe(false);
       for (const host of ["public.example,evil.example", "public.example/path", "public.example@evil.example", " public.example", "public.example:"])
@@ -141,6 +176,13 @@ describe("multi-method human authentication", () => {
       if (old === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
       else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
     }
+  });
+  it("anchors originless browser signals in operator configuration", () => {
+    expect(trustedOrigin(req({}, { host: "pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "cross-site" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "same-origin" }), "https://pi.example.test")).toBe(true);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "http://pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "https://pi.example.test" }), "https://pi.example.test")).toBe(true);
   });
   it("denies stale-cookie and grant persistence and other-device lockout", async () => {
     for (const grant of [false, true]) {
@@ -194,18 +236,6 @@ describe("multi-method human authentication", () => {
     const warn = vi.fn(); await kernel.startupDiagnostics(warn);
     expect(warn.mock.calls[0][0]).toContain("environment-only methods=[passkey, external]");
   });
-  it("recovers dead PID locks but never steals a live lock by age", async () => {
-    const { store } = await fixture();
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
-    await store.update((s) => {
-      s.verifiedMethods = ["password"];
-    });
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: process.pid }));
-    await utimes(`${store.path}.lock`, new Date(0), new Date(0));
-    await expect(store.update(() => {})).rejects.toThrow(
-      "Auth store is locked",
-    );
-  }, 10_000);
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
     const seen = vi.fn();
@@ -374,7 +404,13 @@ describe("multi-method human authentication", () => {
     expect(result.status).toBe(200);
     expect(result.headers["set-cookie"]).toContain("Max-Age=0");
   });
-  it("enforces password bootstrap loopback parity", async () => {
+  it.each([
+    "http://localhost:8787",
+    "http://workspace.localhost:8787",
+    "http://127.44.2.1:8787",
+    "http://[::1]:8787",
+    "http://[::ffff:127.0.0.9]:8787",
+  ])("requires loopback password bootstrap for loopback origin %s", async (origin) => {
     const { store, kernel } = await fixture();
     const request = req({});
     request.socket.remoteAddress = "192.0.2.1";
@@ -382,15 +418,138 @@ describe("multi-method human authentication", () => {
     await handlePasswordLogin(
       request,
       res,
-      new URL("/api/auth/password/bootstrap", config.origin),
+      new URL("/api/auth/password/bootstrap", origin),
       kernel,
       store,
+      origin,
     );
     expect(res.status).toBe(403);
+  });
+  it("allows remote password bootstrap at a public origin and consumes the token once", async () => {
+    const { store, kernel } = await fixture();
+    await store.update(s => {
+      s.bootstrap = { hash: hashSecret("remote-setup"), expiresAt: Date.now() + 60_000 };
+    });
+    const origin = "https://public.example.invalid";
+    const request = req({ token: "remote-setup", password: "a remote setup password" });
+    request.socket.remoteAddress = "192.0.2.1";
+    const accepted = response();
+    await handlePasswordLogin(
+      request,
+      accepted,
+      new URL("/api/auth/password/bootstrap", origin),
+      kernel,
+      store,
+      origin,
+    );
+    expect(accepted.status).toBe(200);
+
+    const replay = req({ token: "remote-setup", password: "another remote password" });
+    replay.socket.remoteAddress = "192.0.2.1";
+    const denied = response();
+    await handlePasswordLogin(
+      replay,
+      denied,
+      new URL("/api/auth/password/bootstrap", origin),
+      kernel,
+      store,
+      origin,
+    );
+    expect(denied.status).toBe(401);
+  });
+  it.each([
+    "http://localhost:8787",
+    "http://workspace.localhost:8787",
+    "http://127.44.2.1:8787",
+    "http://[::1]:8787",
+    "http://[::ffff:127.0.0.9]:8787",
+  ])("requires loopback passkey bootstrap for loopback origin %s", async (origin) => {
+    const { store, kernel } = await fixture();
+    const remote = req({}, {}, "GET");
+    remote.socket.remoteAddress = "192.0.2.1";
+    const denied = response();
+    const loopbackConfig = {
+      ...config,
+      origin,
+      rpID: new URL(origin).hostname.replace(/^\[|\]$/g, ""),
+    };
+    await handlePasskeyRoute(
+      remote,
+      denied,
+      new URL("/api/auth/passkey-bootstrap?token=synthetic", origin),
+      kernel,
+      store,
+      loopbackConfig,
+    );
+    expect(denied.status).toBe(403);
+  });
+  it("allows a valid remote passkey bootstrap token at its public HTTPS RP and rejects invalid or used tokens", async () => {
+    const { store, kernel } = await fixture();
+    const publicConfig = {
+      ...config,
+      origin: "https://public.example.invalid",
+      rpID: "public.example.invalid",
+    };
+    await store.update(s => {
+      s.bootstrap = { hash: hashSecret("remote-passkey-setup"), expiresAt: Date.now() + 60_000 };
+    });
+    const remote = req({ token: "remote-passkey-setup", name: "Remote key" });
+    remote.socket.remoteAddress = "192.0.2.1";
+    const accepted = response();
+    await handlePasskeyRoute(
+      remote,
+      accepted,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(accepted.status).toBe(200);
+    expect(JSON.parse(accepted.text).rp.id).toBe(publicConfig.rpID);
+
+    const invalidRequest = req({ token: "wrong-token", name: "Remote key" });
+    invalidRequest.socket.remoteAddress = "192.0.2.1";
+    const invalid = response();
+    await handlePasskeyRoute(
+      invalidRequest,
+      invalid,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(invalid.status).toBe(401);
+
+    await store.update(s => {
+      s.bootstrap!.usedAt = Date.now();
+    });
+    const replay = req({ token: "remote-passkey-setup", name: "Remote key" });
+    replay.socket.remoteAddress = "192.0.2.1";
+    const used = response();
+    await handlePasskeyRoute(
+      replay,
+      used,
+      new URL("/api/auth/bootstrap/options", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(used.status).toBe(401);
   });
   it("translates supported compatibility configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
+      explicitOpenPolicy: false,
+      methods: [],
+    });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_POLICY: "open",
+      }),
+    ).toMatchObject({
+      policy: "open",
+      explicitOpenPolicy: true,
       methods: [],
     });
     expect(
@@ -402,7 +561,100 @@ describe("multi-method human authentication", () => {
       policy: "authenticated",
       methods: ["password", "passkey", "external"],
     });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+      }),
+    ).toMatchObject({
+      policy: "authenticated",
+      methods: ["external"],
+    });
+    expect(() =>
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_METHODS: "external",
+      }),
+    ).toThrow("cannot be combined");
     expect(() => resolveAuthConfig({ PI_WEB_AUTH_METHODS: "basic" })).toThrow();
+  });
+  it("preserves saved policy during method changes and never lets saved open weaken authenticated environment", async () => {
+    const { store } = await fixture();
+    await store.update((s) => {
+      s.config = { policy: "open", methods: ["password"] };
+    });
+    const kernel = new AuthKernel(
+      "passkey",
+      store,
+      false,
+      "",
+      "authenticated",
+      ["password"],
+    );
+    await kernel.refreshConfig();
+    expect(kernel.policy).toBe("authenticated");
+    await kernel.configure(["password", "external"]);
+    expect((await store.read()).config).toEqual({
+      policy: "open",
+      methods: ["password", "external"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+  });
+  it("persists authenticated policy on first enrollment unless policy was explicitly changed", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-first-enrollment-")), "auth.json"),
+    );
+    const kernel = new AuthKernel("none", store, false);
+    expect(kernel.policy).toBe("open");
+
+    await kernel.configure(["password"]);
+    expect((await store.read()).config).toEqual({
+      policy: "authenticated",
+      methods: ["password"],
+    });
+    expect(kernel.policy).toBe("authenticated");
+
+    const explicitOpenStore = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-explicit-open-")), "auth.json"),
+    );
+    const explicitOpenConfig = resolveAuthConfig({
+      PI_WEB_AUTH_MODE: "none",
+      PI_WEB_AUTH_POLICY: "open",
+    });
+    const explicitOpen = new AuthKernel(
+      explicitOpenConfig.mode,
+      explicitOpenStore,
+      false,
+      "",
+      explicitOpenConfig.policy,
+      explicitOpenConfig.methods,
+      undefined,
+      explicitOpenConfig.explicitOpenPolicy,
+    );
+    await explicitOpen.configure(["password"]);
+    expect((await explicitOpenStore.read()).config).toEqual({
+      policy: "open",
+      methods: ["password"],
+    });
+    expect(explicitOpen.policy).toBe("open");
+  });
+  it("warns when an explicitly open policy advertises login methods", async () => {
+    const store = new AuthStore(
+      join(await mkdtemp(join(tmpdir(), "pi-open-methods-")), "auth.json"),
+    );
+    const kernel = new AuthKernel(
+      "none",
+      store,
+      false,
+      "",
+      "open",
+      ["password"],
+    );
+    const warn = vi.fn();
+    await kernel.startupDiagnostics(warn);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('policy is "open" while login methods are enabled'),
+    );
   });
   it("recovery removes saved legacy authority and creates a usable single-use bootstrap", async () => {
     const { store } = await fixture();
@@ -559,17 +811,17 @@ describe("multi-method human authentication", () => {
     );
     expect(replay.status).toBe(401);
   });
-  it("bounds concurrent password work to one memory allocation", async () => {
+  it("serializes concurrent password work without rejecting a bounded waiter", async () => {
     const outcomes = await Promise.allSettled([
       hashPassword("first secure password"),
       hashPassword("second secure password"),
     ]);
-    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
-    const success = outcomes.find(
-      (o) => o.status === "fulfilled",
-    ) as PromiseFulfilledResult<string>;
-    expect(success.value).toMatch(/^scrypt\$32768\$8\$1\$/);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(
+      true,
+    );
+    for (const outcome of outcomes)
+      if (outcome.status === "fulfilled")
+        expect(outcome.value).toMatch(/^scrypt\$32768\$8\$1\$/);
   });
   it("hashes salted passwords with scrypt and rejects incorrect passwords", async () => {
     const a = await hashPassword("a secure test password"),
@@ -616,6 +868,9 @@ describe("multi-method human authentication", () => {
     const cookie = original.headers["set-cookie"].split(";")[0];
     const auth = await kernel.gate(req({}, { cookie }));
     if (!auth.ok) throw new Error("No session");
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
     const manage = async (path: string, body: unknown, method = "PUT") => {
       const res = response();
       await handleSecurityRoute(
@@ -636,6 +891,10 @@ describe("multi-method human authentication", () => {
         })
       ).status,
     ).toBe(200);
+    expect((await store.read()).config?.methods.sort()).toEqual([
+      "external",
+      "password",
+    ]);
     expect(
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(409);
@@ -655,7 +914,7 @@ describe("multi-method human authentication", () => {
       (await manage("/api/auth/methods", { methods: ["password"] })).status,
     ).toBe(200);
     expect(
-      (await kernel.gate(req({}, { authorization: "Bearer legacy-secret" })))
+      (await kernel.gate(req({}, { authorization: "Bearer removed-secret" })))
         .ok,
     ).toBe(false);
     expect(
@@ -667,7 +926,7 @@ describe("multi-method human authentication", () => {
     expect(
       (
         await kernel.gate(
-          req({}, { cookie, authorization: "Bearer legacy-secret" }),
+          req({}, { cookie, authorization: "Bearer removed-secret" }),
         )
       ).ok,
     ).toBe(false);

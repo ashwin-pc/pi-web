@@ -4,7 +4,7 @@ pi-web has one access policy and a set of enabled sign-in methods. Methods are a
 
 ## Upgrade: proxies that rewrite Host
 
-Before upgrading, preserve the public `Host` header or set `PI_WEB_AUTH_ORIGIN` to the exact public origin. Alternatively, explicitly configure `PI_WEB_AUTH_PROXY_PEERS` with exact proxy IPs: only those socket peers may supply one strictly parsed `X-Forwarded-Host` authority (no chains). The same canonical IP trust applies to X-Forwarded-For, including IPv4-mapped IPv6 sockets. Proxies must overwrite caller-supplied forwarding headers; restrict direct backend access. Untrusted forwarding headers never authorize an origin. Rejections carry an actionable hint and emit at most one fixed diagnostic per process. HTTP, public auth, WebSockets and supervisor share this rule; the supervisor preserves the validated authority without laundering untrusted forwarding headers through its loopback connection.
+Set `PI_WEB_AUTH_ORIGIN` to the exact public origin. Browser Origin checks do not trust the caller's `Host` or `X-Forwarded-Host` header, and an explicitly configured public HTTPS origin has no alternate authorities. Plain HTTP local development also accepts the canonical loopback aliases (`localhost`, `127.0.0.1`, and `::1`) only with the configured port. `PI_WEB_AUTH_PROXY_PEERS` controls client-IP forwarding and cookie fail-closed behavior; it does not add browser origins. The same canonical IP trust applies to X-Forwarded-For, including IPv4-mapped IPv6 sockets. Proxies must overwrite caller-supplied forwarding headers; restrict direct backend access. Browser mutations require the configured origin (or same-origin Fetch Metadata), while Bearer API clients remain origin-independent.
 
 ## Configuration and migration
 
@@ -22,7 +22,7 @@ PI_WEB_AUTH_RP_ID=example.ts.net
 - Once Settings or bootstrap writes canonical configuration, that saved configuration is authoritative across restarts; changing the old mode variable does not silently restore a retired method. Startup prints a warning on environment/store disagreement and when no login method is usable. Use Settings for subsequent method changes, or terminal recovery when locked out.
 - External mode without a trusted identity header fails closed. Use an explicit open policy if unauthenticated access is genuinely intended.
 
-Use HTTPS for remote access and set the exact public origin, including the public port when nonstandard. Localhost HTTP is supported for local setup and WebAuthn; IP-address RP IDs are not portable across authenticators. The supervisor supplies its public localhost origin by default. Configure the real public origin when using a reverse proxy.
+Use HTTPS for remote access and set the exact public origin, including the public port when nonstandard. The unspecialized local CLI default supports localhost HTTP and WebAuthn without requiring browsers to accept Secure cookies over plaintext. With no configured origin, only a loopback request Host on an unproxied loopback listener receives a plaintext-compatible cookie; a Host-preserving public tunnel and a configured trusted proxy remain Secure. An explicitly configured HTTP origin opts into plaintext cookies so password and external authentication remain usable on a LAN, although HTTPS is strongly recommended and WebAuthn may reject non-secure contexts. IP-address RP IDs are not portable across authenticators.
 
 ### Migrate a legacy installation
 
@@ -48,19 +48,19 @@ pi-web auth credential-revoke <id>
 pi-web auth sessions-revoke-all
 ```
 
-An expired automatic link is not silently regenerated on every restart; use the terminal command. Explicitly configured but unenrolled installations also use the terminal command. Terminal bootstrap/recovery makes both setup ceremonies available without enabling either login method. Only successful enrollment enables the chosen method; recovering a passkey does not restore a retired password method. Resetting a password through recovery revokes existing sessions; enrolling a recovery passkey does not automatically revoke unrelated credentials. Revoke lost credentials/sessions deliberately afterward.
+An expired automatic link is not silently regenerated on every restart; use the terminal command. Explicitly configured but unenrolled installations also use the terminal command. Terminal bootstrap/recovery makes both setup ceremonies available without enabling either login method. For an origin whose host is `localhost`, a `*.localhost` name, `127.0.0.0/8`, `::1`, or an IPv4-mapped loopback address, setup must also arrive from a loopback peer. Public HTTPS origins may redeem the random short-lived token remotely so WebAuthn can use the configured public RP ID. Only successful enrollment enables the chosen method; recovering a passkey does not restore a retired password method. Resetting a password through recovery revokes existing sessions; enrolling a recovery passkey does not automatically revoke unrelated credentials. Revoke lost credentials/sessions deliberately afterward.
 
 ## Password security
 
 Password authentication uses an HTML login form, **not HTTP Basic**. Passwords are 12–1024 characters, salted with 128 random bits and hashed using Node's scrypt (`N=32768`, `r=8`, `p=1`, 64-byte output); hashes encode their parameters. Comparison is timing-safe. Passwords are never returned in security inventory.
 
-Password/external login and password-bootstrap attempts share a bounded per-store, per-peer failure cooldown (100ms escalating to at most two seconds), with at most one concurrent login handler. All scrypt work, including password rotation, has a single process-wide slot; existing N=131072 hashes remain supported, bounded to one verification at a time. A busy slot returns a retryable failure rather than queuing unbounded work. The peer defaults to the actual socket address. Operators may explicitly set `PI_WEB_AUTH_PROXY_PEERS=127.0.0.1,::1` to trust a proxy that overwrites X-Forwarded-For with exactly one validated client IP. Loopback alone does not imply proxy trust; never enable this unless direct backend access is restricted and the proxy strips supplied headers. Setup validation errors do not consume the credential-failure cooldown. Rate limits are in-memory and reset on process restart. Body size and password length are bounded. Internet-facing deployments should also apply edge rate limiting.
+Password/external login and password-bootstrap attempts share a bounded per-store, per-peer failure cooldown (100ms escalating to at most two seconds). Request bodies are bounded and read before credential work is admitted. All scrypt work, including password rotation, uses one process-wide slot with short bounded login and credential queues; credential changes take the next available slot so unauthenticated verification traffic cannot crowd them out. Existing N=131072 hashes remain supported. A saturated or timed-out queue returns a retryable failure. Passkey option requests have a per-peer cooldown and quota, and cannot evict another peer's pending ceremony. The peer defaults to the actual socket address. Operators may explicitly set `PI_WEB_AUTH_PROXY_PEERS=127.0.0.1,::1` to trust a proxy that overwrites X-Forwarded-For with exactly one validated client IP. Loopback alone does not imply proxy trust; never enable this unless direct backend access is restricted and the proxy strips supplied headers. Setup validation errors do not consume the credential-failure cooldown. Rate limits are in-memory and reset on process restart. Body size and password length are bounded. Internet-facing deployments should also apply edge rate limiting.
 
-API-token minting, device-grant minting, revoking another device, password changes, method changes, revoke-all, passkey enrollment and deletion require a credential-backed sign-in within five minutes. The Security page has an explicit sign-in link; sign in, reopen Security, and retry. Grant sessions and historical sessions lacking reauthentication metadata cannot satisfy this gate. This is recent authentication, not MFA. An authenticated browser may set/change the owner password. Rotation revokes every *other* browser session and preserves the initiating session; Settings states this policy explicitly. Use **Sign out all devices** when all devices, including the current one, must sign out. Rotation and revoke-all cancel pending device grants and default to revoking all API tokens atomically with the sessions; active token WebSockets are closed by the same store listener. The password view and sign-out confirmation offer a checked **Also revoke API tokens** option. Unchecking it explicitly preserves automation access, including any stolen token: do not uncheck during suspected compromise. API clients may send `revokeApiTokens: false`; omission defaults to secure revocation. Self-revocation/logout needs no recent sign-in. Password setup/change enables password login but a fresh successful password login is required before it qualifies as a verified replacement.
+API-token minting and revocation, device-grant minting, revoking another device, password changes, method changes, revoke-all, passkey enrollment and deletion require a credential-backed sign-in within five minutes. The Security page has an explicit sign-in link; sign in, reopen Security, and retry. Grant sessions and historical sessions lacking reauthentication metadata cannot satisfy this gate. This is recent authentication, not MFA. An authenticated browser may set/change the owner password. Rotation revokes every *other* browser session and preserves the initiating session; Settings states this policy explicitly. Use **Sign out all devices** when all devices, including the current one, must sign out. Rotation and revoke-all cancel pending device grants and default to revoking all API tokens atomically with the sessions; active token WebSockets are closed by the same store listener. The password view and sign-out confirmation offer a checked **Also revoke API tokens** option. Unchecking it explicitly preserves automation access, including any stolen token: do not uncheck during suspected compromise. API clients may send `revokeApiTokens: false`; omission defaults to secure revocation. Self-revocation/logout needs no recent sign-in. Password setup/change enables password login but a fresh successful password login is required before it qualifies as a verified replacement.
 
 ## Shared sessions and device handoff
 
-All human methods use the same persistent, opaque, revocable HttpOnly session cookie. Cookies have SameSite=Lax, a 30-day absolute lifetime, and Secure when the configured public origin is HTTPS. Session secrets are SHA-256 hashed at rest. Explicit reauthentication rotates the cookie and revokes its predecessor. Last-seen tracking is throttled to five-minute writes; it does not extend the absolute expiry.
+All human methods use the same persistent, opaque, revocable HttpOnly session cookie. Cookies have SameSite=Lax, a 30-day absolute lifetime, and are Secure by default. Secure is omitted for an explicit valid HTTP origin, and for a request with a loopback Host on the default unproxied loopback CLI launch. When the origin is omitted, configured proxy peers force Secure cookies even if they rewrite Host to localhost. Forwarding headers do not downgrade this decision. Session secrets are SHA-256 hashed at rest. Explicit reauthentication rotates the cookie and revokes its predecessor. Last-seen tracking is throttled to five-minute writes; it does not extend the absolute expiry.
 
 **Settings → Security** opens a responsive overview, with focused views for passkeys, password changes, device links, API tokens, and advanced sign-in options. Loading and request failures appear inside Security, including on mobile. Passkeys run directly from the public sign-in page; password entry expands in place, and only enabled, ready alternatives are offered. Successful self/all-device revocation and passkey deletion navigate to explicit sign-in; cancellation or failed requests do not claim sign-out.
 
@@ -68,7 +68,7 @@ All human methods use the same persistent, opaque, revocable HttpOnly session co
 
 Single-use, cancellable add-device grants last two minutes and create a normal shared session for the added device, regardless of the owner's sign-in method. A grant becomes unusable when its minting session is revoked/expired. Grant redemption does not count as verifying a replacement authentication method; the added device can enroll its own credential in Settings after an existing-credential sign-in. Enrollment also requires recent authentication so an old/grant session cannot bypass step-up by adding its own passkey first. Grants remain full-owner application access, not a restricted account or MFA factor.
 
-Session-bound WebSocket tickets are checked again at redemption. WebSocket connections close immediately on in-process session revocation; terminal revocations and absolute expiry are picked up within 15 seconds. HTTP checks read current persistent state for every request. Tickets are single-use, hashed in memory, and expire after 30 seconds. Machine-token WebSockets remain separate from the human session inventory but are checked at ticket redemption and closed on token revocation/expiry using the same listener and 15-second sweep.
+Session-bound WebSocket tickets are checked again at redemption. WebSocket connections close immediately on in-process session revocation; terminal revocations and absolute expiry are picked up within 15 seconds. Sign-out-all advances a shared epoch and closes current sockets for every authentication class, but open-policy and external-auth clients can reconnect immediately while their ambient authorization remains valid; this is connection invalidation, not revocation of those ambient credentials. HTTP checks read current persistent state for every request. Tickets are single-use, hashed in memory, and expire after 30 seconds. Machine-token WebSockets remain separate from the human session inventory but are checked at ticket redemption and closed on token revocation/expiry using the same listener and 15-second sweep.
 
 ## Trusted external authentication
 
@@ -81,6 +81,59 @@ External identity is accepted only from the explicitly configured header. The ap
 
 **Only enable external authentication when the backend is reachable exclusively through a trusted proxy which removes caller-supplied copies and sets the verified header.** Direct callers, including loopback callers, can forge headers. This release does not infer trust from Tailscale or implement OIDC/GitHub flows. Header selection and network restrictions are server-operator decisions, not unauthenticated web settings.
 
+For an opt-in local identity boundary, run the supervisor with a Unix-domain
+listener in a dedicated directory owned by the pi-web user:
+
+```sh
+install -d -m 0700 /run/user/1000/pi-web
+PI_WEB_TUNNEL_SOCKET=/run/user/1000/pi-web/tunnel.sock \
+PI_WEB_AUTH_METHODS=external,password,passkey \
+PI_WEB_AUTH_TRUSTED_HEADER=X-Verified-User \
+pi-web
+
+tunnel create unix:/run/user/1000/pi-web/tunnel.sock --name pi
+```
+
+The path must be absolute and its existing parent must be owned by the running
+user with no group or other access. The supervisor creates the socket as mode
+0600 with the running user's ownership while continuing to listen on TCP.
+Only requests received on that socket may assert the configured external
+identity header. The Unix listener deliberately discards `X-Forwarded-For`
+and `X-Forwarded-Host`: filesystem access authenticates the tunnel process,
+but does not prove that it overwrites caller-supplied forwarding headers.
+Tunnel clients therefore share the bounded `unknown` peer bucket. The tunnel
+must remove every caller-supplied copy of the identity header and set one
+verified value. Other processes running as
+the same account remain trusted because they can open the user-owned socket;
+other local accounts cannot open it.
+
+TCP continues to accept browser cookies and API Bearer tokens. The supervisor
+strips external identity and its private provenance headers from TCP traffic,
+and a directly reached child rejects both a raw identity header and forged
+provenance. The supervisor and child share a new random secret for each
+supervisor launch. The child captures it during module startup and immediately
+deletes it from its environment before sessions, tools, or extensions can spawn,
+so subprocesses do not inherit it. The child also consumes and clears the tunnel
+socket setting so nested scripts do not try to bind the operator's live socket.
+Restart and status strip the identity header on TCP before authentication and
+preserve it only on the filesystem-protected socket. The child separately
+requires the secret-signed tunnel bit rather than trusting inbound marker
+headers. WebSocket upgrades through the Unix socket preserve the same identity and retain the existing Origin validation.
+
+Startup fails closed if the parent is not private, the path is occupied by a
+file or live socket, the socket cannot be created, or its mode/owner cannot be
+verified. A private user-owned stale socket is probed, rechecked by device and
+inode, and reclaimed automatically after a crash; a live or replaced entry is
+never removed. Clean shutdown removes the socket.
+Startup environment changes apply only when the supervisor itself is launched
+again. `POST /api/restart` restarts the child only, so it cannot activate
+`PI_WEB_TUNNEL_SOCKET` for an already-running supervisor. Use the deployment's
+service manager to perform a supervised supervisor re-launch; never kill the
+child directly.
+Leaving `PI_WEB_TUNNEL_SOCKET` unset preserves the legacy trusted-header
+behavior, including its documented risk. When the socket setting is enabled,
+running `server.ts` directly cannot accept raw external identity headers.
+
 ## Machine credentials and request security
 
 Named, expiring API tokens work through the canonical Authorization-header gate independently of the human methods. Tokens may read security inventory as before, but cannot mutate credentials, issue additional tokens, enroll passkeys, change passwords/methods, delegate devices, or revoke sessions. Token secrets are shown once and stored hashed. They never become browser sessions.
@@ -91,13 +144,15 @@ curl -H 'Authorization: Bearer piw_…' https://host/api/state
 pi-web auth token-revoke <token-id>
 ```
 
-Cookie-authenticated mutations require the app client header and validate supplied Origin against the actual Host authority or the exact configured public origin. Public authentication POSTs and WebSocket upgrades share this rule. Forwarded-Host is accepted only from explicitly configured exact proxy peers as described in the migration section; otherwise preserve Host or configure the public origin. Revoked cookies keep failing ordinary API requests; challenge redirects them to explicit sign-in, and CSRF-checked logout can always clear them. WebAuthn independently verifies the exact origin and RP ID and requires user verification. Registration challenges for Settings are bound to the initiating session. Bootstrap secrets embedded in pages are script-escaped; setup pages prevent framing/referrer leakage. Query credentials are never accepted for WebSocket upgrades.
+Cookie-authenticated mutations require the app client header and validate supplied Origin against the exact configured public origin. Public authentication POSTs and WebSocket upgrades share this rule. Caller-controlled Host and Forwarded-Host never authorize a different public Origin. Canonical plain-HTTP loopback aliases with the same port remain available for local development; hostname proxies must set the exact `PI_WEB_AUTH_ORIGIN`. Revoked cookies keep failing ordinary API requests; challenge redirects them to explicit sign-in, and CSRF-checked logout can always clear them. WebAuthn independently verifies the exact origin and RP ID and requires user verification. Registration challenges for Settings are bound to the initiating session. Bootstrap secrets embedded in pages are script-escaped; setup pages prevent framing/referrer leakage. Query credentials are never accepted for WebSocket upgrades.
 
 Supervisor restart/status authorization runs the same canonical store-backed kernel directly, independent of child liveness. There is no permanent token fallback. Restart requires POST and cookie mutations require CSRF validation. Use a named API token (`Authorization: Bearer piw_…`) for scripted restarts; revoked API tokens fail immediately. Store read failures fail closed.
 
+Passkey options are limited per peer and globally. A distributed burst that fills all 256 pending ceremony slots can temporarily reject new options until a ceremony completes or its 120-second challenge expires.
+
 ## Storage, isolation, and validation
 
-The store defaults to `~/.pi/agent/web/auth.json`; override with `PI_WEB_AUTH_STORE`. Files are atomically replaced with mode 0600. A per-store exclusive lock serializes server/CLI writes. Locks record the writer PID; a confirmed dead PID (ESRCH) is recoverable. Age alone never authorizes stealing a lock; live PIDs, permission-denied liveness checks and malformed/old locks fail closed. Concurrent recovery is serialized with `.lock.recovery`; if a recovery process itself crashes, stop writers and remove its recovery marker. Malformed lock metadata likewise requires operator cleanup. The default store is intentionally shared: multiple instances using it observe policy/method and revocation changes live. Set a different `PI_WEB_AUTH_STORE` for every independent dev/production instance.
+The store defaults to `~/.pi/agent/web/auth.json`; override with `PI_WEB_AUTH_STORE`. Files are atomically replaced with mode 0600. A per-store exclusive directory lock serializes server/CLI writes and safely recovers locks left by dead modern writers. The lock is installed already populated with a unique immutable owner record, so cleanup cannot unlink a replacement writer's record. After all writers are upgraded, a valid regular-file PID lock left by a confirmed-dead older writer is migrated automatically; live and malformed older records remain fail-closed. Mixed-version writers sharing a store are unsupported, so upgrade all of them together: an unpatched writer still uses the older file protocol and can race outside the guarantees of the populated-directory protocol. The in-process write backlog is bounded, and no-op mutations skip the file replacement and listener cycle. The default store is intentionally shared: multiple instances using it observe policy/method and revocation changes live. Set a different `PI_WEB_AUTH_STORE` for every independent dev/production instance.
 
 Tests **never inherit the live auth store or authentication environment**. Every spawned API, supervisor, and Playwright server has a unique temporary store and explicit test policy. Coverage includes kernel/config migration, setup single use, hashing, login limiting, session metadata/revocation, machine restrictions, and a Chromium UI flow using a virtual authenticator for enrollment and passkey login alongside password login.
 

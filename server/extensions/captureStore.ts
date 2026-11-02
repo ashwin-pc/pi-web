@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { HttpError } from "../shared/httpError.js";
@@ -11,6 +11,8 @@ const MAX_PENDING_CAPTURES = 32;
 const MAX_PENDING_BYTES = 100_000_000;
 const MAX_ACTIVE_UPLOADS = 4;
 const MAX_ACTIVE_UPLOAD_BYTES = 50_000_000;
+const CONTENT_TYPE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+const AUDIO_MIME_TYPE_RE = /^audio\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 
 export type AudioCapturePolicy = {
   media: "audio";
@@ -72,15 +74,45 @@ export class CaptureUploadLimiter {
 
 export class EphemeralCaptureStore {
   private readonly captures = new Map<string, StoredCapture>();
+  private readonly claimed = new Map<string, StoredCapture>();
+  private readonly claimedByPath = new Map<string, string>();
   private rootPromise?: Promise<string>;
-  /** Includes both writes in flight and completed captures. */
+  /** Includes writes in flight, stored captures, and claimed files awaiting release. */
   private pendingCount = 0;
   private pendingBytes = 0;
 
   constructor(private readonly ttlMs = DEFAULT_TTL_MS) {}
 
-  private root() {
-    return this.rootPromise ??= mkdtemp(join(tmpdir(), "pi-web-captures-"));
+  private async root(): Promise<string> {
+    while (true) {
+      const current = this.rootPromise;
+      if (!current) {
+        const promise = mkdtemp(join(tmpdir(), "pi-web-captures-"));
+        this.rootPromise = promise;
+        try {
+          return await promise;
+        } catch (error) {
+          if (this.rootPromise === promise) this.rootPromise = undefined;
+          throw error;
+        }
+      }
+
+      let root: string;
+      try {
+        root = await current;
+      } catch (error) {
+        if (this.rootPromise === current) this.rootPromise = undefined;
+        throw error;
+      }
+
+      try {
+        await access(root);
+        return root;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (this.rootPromise === current) this.rootPromise = undefined;
+      }
+    }
   }
 
   private releaseReservation(bytes: number) {
@@ -101,8 +133,9 @@ export class EphemeralCaptureStore {
     if (!input.bytes.byteLength) throw new HttpError("Audio capture is empty", 400);
     if (input.bytes.byteLength > policy.maxBytes || input.bytes.byteLength > MAX_CAPTURE_BYTES) throw new HttpError("Audio capture is too large", 413);
     if (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > policy.maxSeconds * 1000) throw new HttpError("Audio capture duration is invalid", 400);
+    if (CONTENT_TYPE_CONTROL_RE.test(input.mimeType)) throw new HttpError("Audio capture MIME type is invalid", 400);
     const mimeType = input.mimeType.split(";", 1)[0]?.trim().toLowerCase() || "";
-    if (!mimeType.startsWith("audio/")) throw new HttpError("Audio capture MIME type is invalid", 400);
+    if (!AUDIO_MIME_TYPE_RE.test(mimeType)) throw new HttpError("Audio capture MIME type is invalid", 400);
     if (policy.mimeTypes?.length && !policy.mimeTypes.includes(mimeType)) throw new HttpError("Audio capture MIME type is not accepted", 400);
 
     // Reserve synchronously before the first await so parallel stores cannot all
@@ -154,33 +187,50 @@ export class EphemeralCaptureStore {
       throw new HttpError("Audio capture no longer satisfies the contribution policy", 409);
     }
     this.captures.delete(id);
-    this.releaseReservation(capture.size);
     clearTimeout(capture.timer);
+    const expiresAt = Date.now() + this.ttlMs;
+    const timer = setTimeout(() => { void this.delete(id); }, this.ttlMs);
+    timer.unref?.();
+    const claimed = { ...capture, expiresAt, timer };
+    this.claimed.set(id, claimed);
+    this.claimedByPath.set(capture.path, id);
     return { path: capture.path, mimeType: capture.mimeType, size: capture.size, durationMs: capture.durationMs };
   }
 
   async releasePath(path: string) {
+    const id = this.claimedByPath.get(path);
+    const capture = id ? this.claimed.get(id) : undefined;
+    if (id && capture) {
+      this.claimed.delete(id);
+      this.claimedByPath.delete(path);
+      clearTimeout(capture.timer);
+      this.releaseReservation(capture.size);
+    }
     await rm(dirname(path), { recursive: true, force: true });
   }
 
   async delete(id: string) {
-    const capture = this.captures.get(id);
+    const capture = this.captures.get(id) ?? this.claimed.get(id);
     if (!capture) return;
     this.captures.delete(id);
+    this.claimed.delete(id);
+    this.claimedByPath.delete(capture.path);
     this.releaseReservation(capture.size);
     clearTimeout(capture.timer);
-    await this.releasePath(capture.path);
+    await rm(dirname(capture.path), { recursive: true, force: true });
   }
 
   async releaseOwner(sessionId: string) {
-    await Promise.all([...this.captures.values()].filter((capture) => capture.sessionId === sessionId).map((capture) => this.delete(capture.id)));
+    const captures = [...this.captures.values(), ...this.claimed.values()];
+    await Promise.all(captures.filter((capture) => capture.sessionId === sessionId).map((capture) => this.delete(capture.id)));
   }
 
   async dispose() {
-    await Promise.all([...this.captures.keys()].map((id) => this.delete(id)));
+    await Promise.all([...new Set([...this.captures.keys(), ...this.claimed.keys()])].map((id) => this.delete(id)));
     if (this.rootPromise) await rm(await this.rootPromise, { recursive: true, force: true });
     this.rootPromise = undefined;
     this.pendingCount = 0;
     this.pendingBytes = 0;
+    this.claimedByPath.clear();
   }
 }
