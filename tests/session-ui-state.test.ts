@@ -86,8 +86,14 @@ describe("session UI state store", () => {
       sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
     }));
 
-    await expect(createSessionUiStateStore(file).read()).resolves.toMatchObject({
+    const store = createSessionUiStateStore(file);
+    await expect(store.read()).resolves.toMatchObject({
       revision: 9,
+      sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
+    });
+    await expect(store.patch({ expectedRevision: 9, pinnedFolders: ["/tmp/project"] })).resolves.toMatchObject({
+      revision: 10,
+      pinnedFolders: ["/tmp/project"],
       sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
     });
   });

@@ -542,7 +542,6 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     const current = await loadCommitted();
     const revision = Math.max(current.revision, highWater) + 1;
     if (!Number.isSafeInteger(revision)) throw new SessionUiStateUnavailableError("Session UI state revision exhausted");
-    assertSessionUiStateBounds(state);
     const next: SessionUiState = { ...normalizeSessionUiState(state), initialized: true, revision };
     // The same validator used on restart must accept every state we commit.
     // Validate before touching history, backups, temp files, or the cache.
