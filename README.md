@@ -1,6 +1,6 @@
 # PR #262 visual evidence
 
-Captured from `security/markdown-rendering` at `7d6b934` using the production build and synthetic content.
+Captured from `security/markdown-rendering` at `fccc738` using the production build and synthetic content.
 
 Each state is shown at:
 
@@ -14,3 +14,4 @@ States:
 - `preview-reach-*`: contained preview reporting blocked network access
 - `navigation-notice-*`: contained preview reporting attempted navigation
 - `notepad-chip-*`: schema-validated Notepad deep link
+- `warn-image-*`: policy warning marker and session-scoped Block host action
