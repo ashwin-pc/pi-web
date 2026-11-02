@@ -600,7 +600,7 @@ import { createGitFooterExtension } from "/absolute/path/to/pi-web/examples/pi-w
 export default createGitFooterExtension({ autoFetch: true });
 ```
 
-Set `autoFetch: false` to explicitly opt out; it overrides even an injected `fetchGit` runner. Supplying `fetchGit` alone is an explicit opt-in for custom/test runners. An opted-out instance never schedules network work, although another opted-in session sharing the repository can still update its local refs. A fetch can briefly hold a remote-tracking ref lock and conflict with a simultaneous manual fetch/pull; retry the manual operation if necessary.
+Set `autoFetch: false` to explicitly opt out; it overrides even an injected `fetchGit` runner. Supplying `fetchGit` alone is an explicit opt-in for custom/test runners. An opted-out instance never schedules network work, although another opted-in session sharing the repository can still update its local refs. The footer assumes cooperating local repository writers: it requires a `refs/remotes/` destination and rejects an existing symbolic ref before fetching. Standard Git fetch transaction semantics apply. It does not defend against concurrent destination symref substitution, filesystem indirection, or manual updates made before Git captures its destination snapshot; it does not preserve a separate pre-network snapshot. A fetch can briefly hold a remote-tracking ref lock and conflict with a simultaneous manual fetch/pull; retry the manual operation if necessary.
 
 Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
 

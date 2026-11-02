@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitFooterExtension, runFetchGit, runFetchProcess, safeFetchDestination } from "../examples/pi-web-extensions/git-footer.js";
+import { createGitFooterExtension, runFetchGit, runFetchProcess } from "../examples/pi-web-extensions/git-footer.js";
 
 type Result = { ok: boolean; output: string; notRepo?: boolean };
 type Runner = (args: string[], cwd: string) => Promise<Result>;
@@ -554,78 +554,23 @@ describe("automatic upstream fetch", () => {
 
 
 describe("real background fetch safety", () => {
-  it("rejects symrefs and filesystem symlinks without advancing a local branch", async () => {
+  it("rejects existing symrefs and non-remote destinations; fetches only the explicit remote ref", async () => {
     const cwd = temp();
     gitCommand(cwd, "init", "-b", "main");
     gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
     gitCommand(cwd, "branch", "victim");
     const before = gitCommand(cwd, "rev-parse", "victim");
     gitCommand(cwd, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/victim");
-    expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/origin/main", cwd)).toBe(false);
-    expect((await runFetchGit(["fetch", "--refmap=", "--", ".", "+refs/heads/main:refs/remotes/origin/main"], cwd)).ok).toBe(false);
+    const fetch = (destination: string) => runFetchGit(["fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", ".", `+refs/heads/main:${destination}`], cwd);
+    expect((await fetch("refs/remotes/origin/main")).ok).toBe(false);
+    expect((await fetch("refs/heads/victim")).ok).toBe(false);
     expect(gitCommand(cwd, "rev-parse", "victim")).toBe(before);
-    if (process.platform !== "win32") {
-      mkdirSync(join(cwd, ".git/refs/remotes/linked"));
-      symlinkSync("../../heads/victim", join(cwd, ".git/refs/remotes/linked/main"));
-      expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/linked/main", cwd)).toBe(false);
-      symlinkSync("../heads", join(cwd, ".git/refs/remotes/alias"));
-      expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/alias/victim", cwd)).toBe(false);
-    }
-    expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/origin/new", cwd)).toBe(true);
-    expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/main:refs/remotes/origin/new"], cwd)).ok).toBe(true);
+    expect((await fetch("refs/remotes/origin/new")).ok).toBe(true);
     expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/new")).toBe(before);
-    expect(gitCommand(cwd, "for-each-ref", "refs/remotes/pi-web-fetch-")).toBe("");
-    if (process.platform !== "win32") {
-      gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "newer");
-      const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
-      const bin = join(cwd, "bin");
-      mkdirSync(bin);
-      // Install a symref after the final validation, immediately before publish.
-      writeFileSync(join(bin, "git"), `#!/bin/sh
-if [ "$1" = update-ref ] && [ "$2" = --no-deref ] && [ "$3" = refs/remotes/origin/new ]; then
-  '${realGit}' symbolic-ref refs/remotes/origin/new refs/heads/victim
-fi
-exec '${realGit}' "$@"
-`, { mode: 0o755 });
-      const oldPath = process.env.PATH;
-      process.env.PATH = `${bin}:${oldPath}`;
-      try {
-        expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/main:refs/remotes/origin/new"], cwd)).ok).toBe(true);
-      } finally { process.env.PATH = oldPath; }
-      expect(gitCommand(cwd, "rev-parse", "victim")).toBe(before);
-      expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/new")).toBe(gitCommand(cwd, "rev-parse", "main"));
-    }
-  });
-
-  it.skipIf(process.platform === "win32")("preserves a newer concurrent manual fetch when publishing", async () => {
-    const cwd = temp();
-    gitCommand(cwd, "init", "-b", "main");
-    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
-    const old = gitCommand(cwd, "rev-parse", "HEAD");
-    gitCommand(cwd, "branch", "snapshot");
-    gitCommand(cwd, "update-ref", "refs/remotes/origin/main", old);
-    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "manual fetch newer");
-    const newer = gitCommand(cwd, "rev-parse", "HEAD");
-    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
-    const bin = join(cwd, "bin"); mkdirSync(bin);
-    writeFileSync(join(bin, "git"), `#!/bin/sh
-if [ "$1" = update-ref ] && [ "$2" = --no-deref ] && [ "$3" = refs/remotes/origin/main ]; then
-  '${realGit}' for-each-ref --format='%(refname)' > '${join(cwd, "after-transfer-refs")}'
-  '${realGit}' update-ref refs/remotes/origin/main '${newer}'
-fi
-exec '${realGit}' "$@"
-`, { mode: 0o755 });
-    const oldPath = process.env.PATH;
-    process.env.PATH = `${bin}:${oldPath}`;
-    try {
-      expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/snapshot:refs/remotes/origin/main"], cwd)).ok).toBe(false);
-    } finally { process.env.PATH = oldPath; }
-    expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/main")).toBe(newer);
-    expect(readFileSync(join(cwd, "after-transfer-refs"), "utf8").trim().split("\n")).toEqual([
-      "refs/heads/main", "refs/heads/snapshot", "refs/remotes/origin/main",
-    ]);
     expect(existsSync(join(cwd, ".git/FETCH_HEAD"))).toBe(false);
-    expect(gitCommand(cwd, "for-each-ref", "refs/remotes/pi-web-fetch-")).toBe("");
+    expect(gitCommand(cwd, "for-each-ref", "--format=%(refname)")).toBe([
+      "refs/heads/main", "refs/heads/victim", "refs/remotes/origin/main", "refs/remotes/origin/new",
+    ].join("\n"));
   });
 
   it.skipIf(process.platform === "win32").each(["timeout", "output"])("kills a real transport descendant on %s", async mode => {
