@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -330,6 +330,25 @@ describe("git footer real local refs", () => {
     await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", tracking)).toBe(advanced));
     expect(gitCommand(cwd, "rev-parse", "victim")).toBe(original);
     // Let fetch completion invalidate its cache before the next cache-only test.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
+  it("preserves core.sshCommand instead of overriding its trusted transport", async () => {
+    const cwd = temp();
+    gitCommand(cwd, "init", "-b", "main");
+    gitCommand(cwd, "config", "user.name", "Footer Test");
+    gitCommand(cwd, "config", "user.email", "footer@example.test");
+    writeFileSync(join(cwd, "base"), "base");
+    gitCommand(cwd, "add", "."); gitCommand(cwd, "commit", "-m", "base");
+    gitCommand(cwd, "remote", "add", "origin", "ssh://example.invalid/repository");
+    gitCommand(cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    gitCommand(cwd, "branch", "--set-upstream-to", "origin/main");
+    const marker = join(cwd, "ssh-invoked");
+    const wrapper = join(cwd, "ssh-wrapper.sh");
+    writeFileSync(wrapper, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+    gitCommand(cwd, "config", "core.sshCommand", `sh '${wrapper}'`);
+    mount(undefined, cwd);
+    await vi.waitFor(() => expect(existsSync(marker)).toBe(true));
     await new Promise((resolve) => setTimeout(resolve, 100));
   });
 
