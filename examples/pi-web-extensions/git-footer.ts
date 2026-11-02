@@ -132,6 +132,9 @@ export async function runFetchGit(args: string[], cwd: string): Promise<GitResul
     const [source, destination] = args.at(-1)!.split(":");
     const common = await runFetchGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
     if (!common.ok || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
+    const previous = await runFetchGit(["rev-parse", "--verify", "--quiet", destination], cwd);
+    const previousOid = previous.ok ? previous.output.trim() : undefined;
+    if (previousOid !== undefined && !/^[a-f0-9]{40,64}$/.test(previousOid)) return { ok: false, output: "" };
     const staging = `refs/remotes/pi-web-fetch-${randomUUID()}`;
     if (!await safeFetchDestination(common.output.trim(), staging, cwd)) return { ok: false, output: "" };
     try {
@@ -139,7 +142,9 @@ export async function runFetchGit(args: string[], cwd: string): Promise<GitResul
       if (!result.ok) return result;
       const oid = await runFetchGit(["rev-parse", "--verify", staging], cwd);
       if (!oid.ok || !/^[a-f0-9]{40,64}$/.test(oid.output.trim()) || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
-      return await runFetchGit(["update-ref", "--no-deref", destination, oid.output.trim()], cwd);
+      // A manual fetch may have advanced this ref during our transfer. Never
+      // replace its newer snapshot; an absent destination also uses CAS.
+      return await runFetchGit(["update-ref", "--no-deref", destination, oid.output.trim(), previousOid ?? "0".repeat(oid.output.trim().length)], cwd);
     } finally {
       await runFetchGit(["update-ref", "--no-deref", "-d", staging], cwd);
     }
