@@ -9,6 +9,20 @@ A canonical pi-web example for a Fusion 360 → STL → PrusaSlicer → G-code w
 - `fusion_execute_script` reads an artifact-relative `.py` file (maximum 256 KB) and requires `mutateDocument: true`.
 - `slice_stl` converts an artifact-relative STL to artifact-relative G-code. Printer, print, and material profiles are optional with the example's Prusa MINI/PLA defaults, and may be overridden explicitly. It accepts no arbitrary CLI arguments.
 
+## Local image → 3D (Hunyuan3D 2.1)
+
+`comfy_image_to_3d` accepts `image` (artifact-relative PNG/JPEG/WebP or artifact URL), optional `seed`, `steps` (1–50, default 30), and `resolution` (128 or 256, default 256). It writes a unique `image-to-3d/<run>/` artifact directory containing copied input, API workflow, logs, metadata, and downloadable **untextured GLB geometry**. This is the installed native Hunyuan3D blueprint with LoadImage and SaveGLB endpoints, not texture synthesis. Hidden surfaces are inferred; physical scale, watertightness and printability are not guaranteed. No Blender or downloads are involved. GLB is downloadable; this extension's interactive viewer currently supports STL, not GLB.
+
+Requires an existing ComfyUI checkout (default `/Users/ashwin/Documents/ComfyUI`), its `.venv/bin/python`, Pillow, native 3D nodes and `models/checkpoints/hunyuan_3d_v2.1.safetensors`. Override checkout with `PI_HUNYUAN_COMFY_ROOT` and launcher Python with `PI_HUNYUAN_PYTHON` (normally checkout `.venv/bin/python`). Uses macOS `memory_pressure` (at least 25% free) and refuses detected active ComfyUI processes. There is no global inference broker/lock; preflight can race unrelated image/video calls, so run these workloads sequentially. A per-runtime busy guard prevents overlapping calls to this tool.
+
+Only a newly spawned loopback child is stopped/reaped, including workflow failure, timeout and cancellation. Existing services are never interrupted. Startup is bounded to three minutes, generation to one hour; input is limited to 25 MB/16 megapixels and output to 250 MB. Inputs and output real paths must stay inside the artifact tree. No process starts during registration. Run `/reload` in existing sessions to expose the new tool.
+
+Backend unit tests (no model load):
+
+```sh
+python3 -m unittest discover -s examples/pi-web-extensions/3d-modeling/hunyuan -p 'test_*.py' -v
+```
+
 ## Configuration
 
 | Variable | Purpose |
