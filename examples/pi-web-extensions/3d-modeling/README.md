@@ -13,11 +13,11 @@ A canonical pi-web example for a Fusion 360 → STL → PrusaSlicer → G-code w
 
 `comfy_image_to_3d` accepts `image` (artifact-relative PNG/JPEG/WebP or artifact URL), optional `seed`, `steps` (1–50, default 30), and `resolution` (128 or 256, default 256). It writes a unique `image-to-3d/<run>/` artifact directory containing copied input, API workflow, logs, metadata, and downloadable **untextured GLB geometry**. This is the installed native Hunyuan3D blueprint with LoadImage and SaveGLB endpoints, not texture synthesis. Hidden surfaces are inferred; physical scale, watertightness and printability are not guaranteed. No Blender or downloads are involved. GLB is downloadable; this extension's interactive viewer currently supports STL, not GLB.
 
-The backend reuses process-identification helpers from the sibling `../image/runner.py` example (no image models/runtime required). Install from this repository using the directory symlink below, or preserve that sibling file when copying examples; do not copy the 3D directory alone.
+The backend reuses the owned-ComfyUI lifecycle and process-identification helpers from the sibling `../image/runner.py` example (no image models/runtime required). Install from this repository using the directory symlink below, or preserve that sibling file when copying examples; do not copy the 3D directory alone.
 
-Requires an existing ComfyUI checkout (default `/Users/ashwin/Documents/ComfyUI`), its `.venv/bin/python`, Pillow, native 3D nodes and `models/checkpoints/hunyuan_3d_v2.1.safetensors`. Override checkout with `PI_HUNYUAN_COMFY_ROOT` and launcher Python with `PI_HUNYUAN_PYTHON` (normally checkout `.venv/bin/python`). Uses macOS `memory_pressure` (at least 25% free) and refuses detected active ComfyUI processes. There is no global inference broker/lock; preflight can race unrelated image/video calls, so run these workloads sequentially. A per-runtime busy guard prevents overlapping calls to this tool.
+Disabled by default: set `PI_HUNYUAN_COMFY_ROOT` to the absolute path of your existing ComfyUI checkout to register the tool. There is no default checkout and registration starts no processes. Requires macOS, Pillow, native 3D nodes and `models/checkpoints/hunyuan_3d_v2.1.safetensors`. The checkout's `.venv/bin/python` launches both the runner and ComfyUI; `PI_HUNYUAN_PYTHON` overrides both with an absolute interpreter path containing those dependencies. Setting only the interpreter does not opt in. Uses macOS `memory_pressure` (at least 25% free) and refuses detected active ComfyUI processes. There is no global inference broker/lock; preflight can race unrelated image/video calls, so run these workloads sequentially. A per-runtime busy guard prevents overlapping calls to this tool.
 
-Only a newly spawned loopback child is stopped/reaped, including workflow failure, timeout and cancellation. Existing services are never interrupted. Startup is bounded to three minutes, generation to one hour; input is limited to 25 MB/16 megapixels and output to 250 MB. Inputs and output real paths must stay inside the artifact tree. No process starts during registration. Run `/reload` in existing sessions to expose the new tool.
+Only the newly spawned loopback process group is stopped/reaped (SIGTERM followed by SIGKILL escalation), including workflow failure, timeout and cancellation. Existing services are never interrupted. Startup is bounded to three minutes, generation to one hour; input is limited to 25 MB/16 megapixels and output to 250 MB. Inputs and output real paths must stay inside the artifact tree. No process starts during registration. Set the variables in the pi-web server environment, restart the server, then run `/reload` in existing sessions to expose the opted-in tool. Unset `PI_HUNYUAN_COMFY_ROOT` and restart/reload to disable it.
 
 Backend unit tests (no model load):
 
@@ -29,6 +29,8 @@ python3 -m unittest discover -s examples/pi-web-extensions/3d-modeling/hunyuan -
 
 | Variable | Purpose |
 | --- | --- |
+| `PI_HUNYUAN_COMFY_ROOT` | Opt-in absolute ComfyUI checkout path; unset disables `comfy_image_to_3d`; no default |
+| `PI_HUNYUAN_PYTHON` | Absolute Python interpreter for runner and ComfyUI; defaults to `<PI_HUNYUAN_COMFY_ROOT>/.venv/bin/python`; does not enable the tool alone |
 | `PI_WEB_FUSION_MCP_URL` | Fusion MCP URL; defaults to `http://127.0.0.1:27182/mcp` and must remain HTTP loopback |
 | `PRUSA_SLICER_PATH` | Explicit PrusaSlicer executable |
 | `PRUSA_SLICER_DATADIR` | Optional configuration directory used by the STL artifact action |

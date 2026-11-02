@@ -13,7 +13,9 @@ let busy = false;
 export function runOwned(request: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Hunyuan3D cancelled"));
-    const child = spawn(process.env.PI_HUNYUAN_PYTHON || join(process.env.PI_HUNYUAN_COMFY_ROOT || "/Users/ashwin/Documents/ComfyUI", ".venv/bin/python"), [runner, request], { stdio: ["ignore", "pipe", "pipe"] });
+    const root = process.env.PI_HUNYUAN_COMFY_ROOT?.trim();
+    if (!root) return reject(new Error("Set PI_HUNYUAN_COMFY_ROOT to your ComfyUI checkout"));
+    const child = spawn(process.env.PI_HUNYUAN_PYTHON || join(root, ".venv/bin/python"), [runner, request], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     // SIGTERM is handled by the runner, which waits for owned ComfyUI cleanup.
     const cancel = () => { child.kill("SIGTERM"); };
@@ -31,6 +33,7 @@ export function runOwned(request: string, signal?: AbortSignal): Promise<string>
 }
 
 export function registerHunyuanTools(pi: PiWebExtensionAPI) {
+  if (!process.env.PI_HUNYUAN_COMFY_ROOT?.trim()) return;
   pi.registerTool({
     name: "comfy_image_to_3d",
     label: "Generate local 3D geometry",
