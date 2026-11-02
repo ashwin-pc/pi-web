@@ -15,7 +15,11 @@ test("collapsed tool cards defer detail rendering and authenticated images until
       globalThis.toolFixture = { createToolCards, counts, requests };`, resolveDir: process.cwd() },
     bundle: true, write: false, format: "iife", platform: "browser",
   });
-  await page.setContent('<div id="messages"></div>');
+  await page.route("**/tool-cards-fixture", (route) => route.fulfill({
+    contentType: "text/html",
+    body: '<div id="messages"></div>',
+  }));
+  await page.goto("/tool-cards-fixture");
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   const result = await page.evaluate(async () => {
     const fixture = (window as typeof window & { toolFixture: {

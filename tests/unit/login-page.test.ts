@@ -44,12 +44,12 @@ describe("shared sign-in presentation", () => {
     expect(html).not.toContain('class="newChatLoadingAnimation avatarAnimation"');
   });
   it("prioritizes direct passkey authentication and discloses enabled alternatives", () => {
-    const html = renderLoginPage({ methods: ["password", "passkey", "legacy", "external"] });
+    const html = renderLoginPage({ methods: ["password", "passkey", "external"] });
     expect(html).toContain('id="go"');
     expect(html).toContain('aria-controls="password"');
     expect(html).toContain('id="password" data-method="password" hidden');
     expect(html).toContain("Other ways to sign in");
-    expect(html).toContain('data-method="legacy"');
+    expect(html).not.toContain('data-method="legacy"');
     expect(html).toContain('data-method="external"');
     expect(html).toContain("navigator.credentials.get");
     expect(html).toContain('role="status"');
@@ -80,7 +80,7 @@ describe("shared sign-in presentation", () => {
   });
   it("emits executable scripts for every page variant", () => {
     for (const options of [
-      { methods: [] }, { methods: ["legacy"] },
+      { methods: [] }, { methods: ["external"] },
       { methods: ["passkey", "password"] },
       { methods: ["passkey"], setupToken: "test", passkeyOnly: true },
     ]) {

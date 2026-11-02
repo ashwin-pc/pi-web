@@ -8,6 +8,7 @@ import { isCompactDensity } from "../app/appearance.js";
 import { activityCardVisibilityRestoredEvent, setActivityCardMetadata } from "../messages/activitySummary.js";
 import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
 import { scopeArtifactUrl } from "../artifacts/url.js";
+import { fetchSameOriginAttachmentImage } from "../messages/attachmentImageFetch.js";
 
 export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
 
@@ -383,8 +384,9 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
   for (const image of images) {
     const img = document.createElement("img");
     img.alt = image.alt;
-    if (image.needsAuth && apiHeaders) {
-      fetch(image.src, { headers: apiHeaders() })
+    const request = apiHeaders ? fetchSameOriginAttachmentImage(image.src, apiHeaders) : undefined;
+    if (request) {
+      void request
         .then((res) => res.ok ? res.blob() : Promise.reject(new Error(res.statusText)))
         .then((blob) => {
           const objectUrl = URL.createObjectURL(blob);
@@ -392,7 +394,8 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
           img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         })
         .catch(() => { img.alt = `${image.alt} (failed to load)`; });
-    } else img.src = image.src;
+    } else if (image.needsAuth && apiHeaders) img.alt = `${image.alt} (failed to load)`;
+    else img.src = image.src;
     wrap.append(img);
   }
   card.append(wrap);

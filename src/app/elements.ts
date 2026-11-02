@@ -17,14 +17,6 @@ export type AppElements = {
   slashCommandsEl: HTMLDivElement;
   primaryButton: HTMLButtonElement;
   stopButton: HTMLButtonElement;
-  tokenOverlay: HTMLDivElement;
-  tokenForm: HTMLFormElement;
-  tokenInput: HTMLInputElement;
-  tokenScanButton: HTMLButtonElement;
-  tokenScanPanel: HTMLDivElement;
-  tokenScanVideo: HTMLVideoElement;
-  tokenScanStatus: HTMLSpanElement;
-  tokenScanStopButton: HTMLButtonElement;
   sessionButton: HTMLButtonElement;
   expandButton: HTMLButtonElement;
   sessionDrawer: HTMLElement;
@@ -120,14 +112,6 @@ export function getAppElements(): AppElements {
     slashCommandsEl: requiredElement<HTMLDivElement>("#slashCommands"),
     primaryButton: requiredElement<HTMLButtonElement>("#primaryButton"),
     stopButton: requiredElement<HTMLButtonElement>("#stopButton"),
-    tokenOverlay: requiredElement<HTMLDivElement>("#tokenOverlay"),
-    tokenForm: requiredElement<HTMLFormElement>("#tokenForm"),
-    tokenInput: requiredElement<HTMLInputElement>("#tokenInput"),
-    tokenScanButton: requiredElement<HTMLButtonElement>("#tokenScanButton"),
-    tokenScanPanel: requiredElement<HTMLDivElement>("#tokenScanPanel"),
-    tokenScanVideo: requiredElement<HTMLVideoElement>("#tokenScanVideo"),
-    tokenScanStatus: requiredElement<HTMLSpanElement>("#tokenScanStatus"),
-    tokenScanStopButton: requiredElement<HTMLButtonElement>("#tokenScanStopButton"),
     sessionButton: requiredElement<HTMLButtonElement>("#sessionButton"),
     expandButton: requiredElement<HTMLButtonElement>("#expandButton"),
     sessionDrawer: requiredElement<HTMLElement>("#sessionDrawer"),

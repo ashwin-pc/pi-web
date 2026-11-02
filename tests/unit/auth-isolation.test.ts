@@ -10,11 +10,17 @@ it("isolates all inherited auth configuration, including RP ID and future option
   vi.stubEnv("PI_WEB_AUTH_STORE", "/production/auth.json");
   vi.stubEnv("PI_WEB_AUTH_FUTURE_OPTION", "production");
   vi.stubEnv("PI_WEB_TOKEN", "production-token");
+  vi.stubEnv("PI_WEB_TUNNEL_SOCKET", "/production/tunnel.sock");
+  vi.stubEnv("PI_WEB_SUPERVISOR_SECRET", "production-secret");
+  vi.stubEnv("PI_WEB_SUPERVISED", "1");
   const env = isolatedAuthEnv();
   try {
     expect(env.PI_WEB_AUTH_RP_ID).toBe("");
     expect(env.PI_WEB_AUTH_FUTURE_OPTION).toBe("");
     expect(env.PI_WEB_TOKEN).toBe("");
+    expect(env.PI_WEB_TUNNEL_SOCKET).toBe("");
+    expect(env.PI_WEB_SUPERVISOR_SECRET).toBe("");
+    expect(env.PI_WEB_SUPERVISED).toBe("");
     expect(env.PI_WEB_AUTH_MODE).toBe("none");
     expect(env.PI_WEB_AUTH_STORE).not.toBe("/production/auth.json");
     expect(env.PI_WEB_HOME).toBe(dirname(env.PI_WEB_AUTH_STORE!));
