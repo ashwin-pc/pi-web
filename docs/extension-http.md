@@ -93,6 +93,10 @@ inferred from UI focus. Both are checked server-side even for a copied credentia
 GET routes accept a single `sessionId`. The exact-reference route additionally
 accepts one `entryId`; `/api/messages/image` requires one bounded `imageId`;
 `/api/messages` permits the optional `images=inline` compatibility selector.
+Scoped clients also send `/api/state` with `includeSessionUiState=false`, preventing
+instance-wide lanes, notes, markers, unread state, origins, and folder preferences
+from crossing the client target boundary. Clients explicitly created with
+`sessionIds: "all"` retain the full state response and may select either value.
 Unknown or duplicate selectors are rejected. POST routes accept no query
 parameters. Browser viewer identity headers are rejected, and extension requests
 never acquire or move browser viewer leases (including body `clientId`).
