@@ -221,7 +221,7 @@ describe("shared Git helpers", () => {
     expect(() => gitConfigHardeningOverrides([
       { scope: "local", key: "remote.ipv6.url", value: "git@[::1]:repo.git" },
       { scope: "local", key: "remote.local.url", value: "../repos/with::separator.git" },
-      { scope: "local", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
+      { scope: "global", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
       { scope: "local", key: "remote.codecommit.vcs", value: "codecommit" },
       { scope: "local", key: "remote.persistent.vcs", value: "persistent-https" },
       { scope: "local", key: "remote.hg.vcs", value: "hg" },
@@ -252,12 +252,8 @@ describe("shared Git helpers", () => {
   it("neutralizes repository-selected Git helpers while preserving trusted config", () => {
     const overrides = gitConfigHardeningOverrides([
       { scope: "global", key: "core.editor", value: "trusted-editor" },
-      { scope: "global", key: "url.HTTPS://mirror.example/.insteadOf", value: "trusted:" },
-      { scope: "global", key: "url.HTTPS://mirror.example/.pushInsteadOf", value: "trusted-push:" },
       { scope: "local", key: "core.editor", value: "repository-editor" },
       { scope: "worktree", key: "sequence.editor", value: "repository-sequence-editor" },
-      { scope: "local", key: "url.HTTPS://mirror.example/.insteadOf", value: "repository:" },
-      { scope: "local", key: "url.https://mirror.example/.pushInsteadOf", value: "repository-push:" },
       { scope: "local", key: "remote.Origin.promisor", value: "true" },
       { scope: "worktree", key: "remote.Origin.partialCloneFilter", value: "blob:none" },
       { scope: "local", key: "extensions.partialClone", value: "Origin" },
@@ -269,9 +265,6 @@ describe("shared Git helpers", () => {
       { key: "core.editor", value: "true" },
       { key: "core.editor", value: "trusted-editor" },
       { key: "sequence.editor", value: "true" },
-      { key: "url.HTTPS://mirror.example/.insteadOf", value: "" },
-      { key: "url.HTTPS://mirror.example/.insteadOf", value: "trusted:" },
-      { key: "url.https://mirror.example/.pushInsteadOf", value: "" },
       { key: "remote.Origin.promisor", value: "false" },
       { key: "remote.Origin.partialCloneFilter", value: "" },
       { key: "extensions.partialClone", value: "" },
@@ -282,12 +275,42 @@ describe("shared Git helpers", () => {
     for (const repositoryValue of [
       "repository-editor",
       "repository-sequence-editor",
-      "repository:",
-      "repository-push:",
       "blob:none",
       "repository-archive",
     ]) expect(serialized).not.toContain(repositoryValue);
-    expect(serialized).not.toContain("trusted-push:");
+
+    expect(() => gitConfigHardeningOverrides([
+      { scope: "local", key: "url.https://local.example/.insteadOf", value: "local:" },
+    ])).toThrow("Repository Git URL rewrites are not supported");
+    expect(() => gitConfigHardeningOverrides([
+      { scope: "worktree", key: "url.https://local.example/.pushInsteadOf", value: "local:" },
+    ])).toThrow("Repository Git URL rewrites are not supported");
+  });
+
+  it("rejects repository URL rewrites while preserving trusted rewrites and ordinary Git behavior", async () => {
+    const cwd = await makeRepo();
+    const globalConfig = join(await tempDir("pi-web-shared-git-url-config-"), "global.gitconfig");
+    await writeFile(globalConfig, `[url "https://trusted.example/"]\n\tinsteadOf = trusted:\n`);
+    runGit(cwd, "config", "url.https://local.example/.insteadOf", "local:");
+
+    await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
+      withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
+        await expect(git(["ls-remote", "--get-url", "local:repo.git"], 15_000, cwd))
+          .rejects.toThrow("Repository Git URL rewrites are not supported");
+
+        runGit(cwd, "config", "--unset-all", "url.https://local.example/.insteadOf");
+        await expect(git(["ls-remote", "--get-url", "trusted:repo.git"], 15_000, cwd))
+          .resolves.toMatchObject({ stdout: "https://trusted.example/repo.git\n" });
+        await writeFile(join(cwd, "tracked.txt"), "second\n");
+        await expect(gitLog(cwd)).resolves.toMatchObject({
+          ok: true,
+          commits: [expect.objectContaining({ subject: "initial" })],
+        });
+        await expect(gitDiff({ cwd, path: "tracked.txt", staged: false })).resolves.toMatchObject({
+          ok: true,
+          diff: expect.stringContaining("+second"),
+        });
+      }));
   });
 
   it("re-encodes bootstrap command config before hardening and clears inherited namespaces", () => {

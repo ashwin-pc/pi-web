@@ -89,7 +89,10 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
   const trustedProtocolAllow = trusted.filter((entry) => entry.key.toLowerCase() === "protocol.allow").at(-1)?.value;
   const overrides: GitConfigOverride[] = [];
   const add = (key: string, value: string) => overrides.push({ key, value });
-  const resetToTrusted = (key: string, fallback: string) => {
+  const resetToTrusted = (key: string, fallback?: string) => {
+    if (fallback === undefined) {
+      throw new Error(`Repository Git URL rewrites are not supported: ${JSON.stringify(key)}`);
+    }
     add(key, fallback);
     for (const entry of trusted) if (configKeysEqual(entry.key, key)) add(entry.key, entry.value);
   };
@@ -120,7 +123,7 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
   const repositoryConfigKeys = new Set(repository.map((entry) => entry.key));
   for (const key of repositoryConfigKeys) {
     const normalized = key.toLowerCase();
-    if (normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized)) resetToTrusted(key, "");
+    if (normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized)) resetToTrusted(key);
     if ((normalized.startsWith("remote.") && /\.(?:promisor|partialclonefilter)$/.test(normalized)) || normalized === "extensions.partialclone") resetToTrusted(key, safeFallback(normalized));
     if (normalized.startsWith("tar.") && normalized.endsWith(".command")) resetToTrusted(key, "false");
   }
