@@ -13,7 +13,7 @@ let busy = false;
 export function runOwned(request: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Hunyuan3D cancelled"));
-    const child = spawn(process.env.PI_HUNYUAN_PYTHON || "/Users/ashwin/Documents/ComfyUI/.venv/bin/python", [runner, request], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.env.PI_HUNYUAN_PYTHON || join(process.env.PI_HUNYUAN_COMFY_ROOT || "/Users/ashwin/Documents/ComfyUI", ".venv/bin/python"), [runner, request], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     // SIGTERM is handled by the runner, which waits for owned ComfyUI cleanup.
     const cancel = () => { child.kill("SIGTERM"); };
@@ -49,9 +49,9 @@ export function registerHunyuanTools(pi: PiWebExtensionAPI) {
       const relative = params.image.startsWith("/api/") ? artifactRelativeFromUrl(params.image) : params.image;
       const extension = extname(relative).toLowerCase();
       if (![".png", ".jpg", ".jpeg", ".webp"].includes(extension)) throw new Error("Image must be PNG/JPEG/WebP");
-      const source = await resolveArtifactRead(ctx.cwd, relative, extension, 25_000_000, "Image");
       busy = true;
       try {
+        const source = await resolveArtifactRead(ctx.cwd, relative, extension, 25_000_000, "Image");
         const prefix = `image-to-3d/${randomUUID()}`;
         const request = await resolveArtifactWrite(ctx.cwd, `${prefix}/request.json`, ".json");
         const root = dirname(request.path);
