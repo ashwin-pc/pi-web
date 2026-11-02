@@ -15,9 +15,9 @@
 @import "./styles/customMessageReports.css";
 @import "./styles/activeWorkerDock.css";
 @import "./styles/responsive.css";
-@import "./styles/token.css";
 @import "./styles/actionLauncher.css";
 @import "./styles/webPanels.css";
 @import "./styles/shortcutHelp.css";
+@import "./styles/workspaceTrust.css";
 
 @import "./styles/identity.css";

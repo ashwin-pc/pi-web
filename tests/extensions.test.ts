@@ -38,8 +38,6 @@ describe("bundled extension path discovery", () => {
     await writeFile(join(bundledExtensionsDir, "nested", "index.ts"), "export default () => {};\n");
 
     const paths = resolveBundledExtensionPaths({
-      piCwd: join(root, "project"),
-      appDir,
       bundledExtensionsDir,
     });
 
@@ -143,14 +141,15 @@ describe("bundled extension path discovery", () => {
     warn.mockRestore();
   });
 
-  it("does not add bundled extensions while running from the pi-web app directory", async () => {
+  it("keeps product-bundled extensions explicit when the workspace is the app directory", async () => {
     const root = await makeTempDir();
     const appDir = join(root, "app");
     const bundledExtensionsDir = join(appDir, ".pi", "extensions");
     await mkdir(bundledExtensionsDir, { recursive: true });
     await writeFile(join(bundledExtensionsDir, "auto-session-name.ts"), "export default () => {};\n");
 
-    expect(resolveBundledExtensionPaths({ piCwd: appDir, appDir, bundledExtensionsDir })).toEqual([]);
+    expect(resolveBundledExtensionPaths({ bundledExtensionsDir }))
+      .toEqual([join(bundledExtensionsDir, "auto-session-name.ts")]);
   });
 
   it("registers the artifact reference example and safely formats untrusted context", async () => {

@@ -807,6 +807,14 @@ export function createRealtime(options: {
         settings.applyWebSettingsSchemas(data.webSettingsSchemas);
         return;
       }
+      if (data.type === "workspace_trust_changed") {
+        document.dispatchEvent(new CustomEvent("pi-web-workspace-trust-changed", { detail: data }));
+        return;
+      }
+      if (data.type === "extensions_reloaded") {
+        document.dispatchEvent(new CustomEvent("pi-web-extensions-reloaded", { detail: data }));
+        return;
+      }
       if (data.type === "settlement_dependencies_changed") {
         if (applySettlementDependencies?.(data.sessionId, Array.isArray(data.childIds) ? data.childIds : [])) {
           onSettlementDependenciesChanged?.();

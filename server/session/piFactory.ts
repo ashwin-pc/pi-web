@@ -4,9 +4,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentSession, getAgentDir, SessionManager, type ModelRuntime, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, getAgentDir, SessionManager, SettingsManager, type ModelRuntime, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
+import { WorkspaceExtensionTrust } from "../extensions/workspaceTrust.js";
 import { createShallowLister, shallowSessionCwd } from "./shallowList.js";
 import { createSessionsReadTools } from "./referenceTools.js";
 
@@ -46,7 +47,7 @@ const execFileAsync = promisify(execFile);
 type ProductionFactoryOptions = {
   noSession: boolean;
   modelRuntime: ModelRuntime;
-  additionalExtensionPaths(cwd: string): string[];
+  additionalExtensionPaths(cwd: string, projectTrusted?: boolean): string[];
   sessionCwd(manager: SessionManager): string;
   rememberCwd(cwd: string): void;
   readSession: Parameters<typeof createSessionsReadTools>[0];
@@ -76,6 +77,9 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     const resolvedCwd = this.options.sessionCwd(manager);
     this.options.rememberCwd(resolvedCwd);
     await this.ensureStorage(resolvedCwd);
+    const agentDir = getAgentDir();
+    const settingsManager = SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: false });
+    const projectTrust = new WorkspaceExtensionTrust(agentDir);
     const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
     const appDir = dirname(dirname(contextPath));
     const extensionAuthoringContext = [
@@ -90,10 +94,13 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     const loader = new ResilientResourceLoader({
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
+      resolveAdditionalExtensionPaths: (trusted) => this.options.additionalExtensionPaths(resolvedCwd, trusted),
+      resolveProjectTrust: () => projectTrust.isTrusted(resolvedCwd, settingsManager),
       loaderOptions: {
         cwd: resolvedCwd,
-        agentDir: getAgentDir(),
-        additionalExtensionPaths: this.options.additionalExtensionPaths(resolvedCwd),
+        agentDir,
+        settingsManager,
+        additionalExtensionPaths: [],
         appendSystemPromptOverride: (base) => [...base, webUiContext].filter(Boolean),
       },
     });
@@ -102,6 +109,7 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
       cwd: resolvedCwd,
       sessionManager: manager,
       modelRuntime: this.options.modelRuntime,
+      settingsManager,
       resourceLoader: loader,
       customTools: createSessionsReadTools(this.options.readSession),
       sessionStartEvent,

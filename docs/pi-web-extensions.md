@@ -65,6 +65,60 @@ Workspace entries must resolve within the workspace's whole `.pi/web/extensions`
 
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
+Project-local resources require workspace trust before pi-web loads them. This
+single decision covers `.pi/web/extensions`, regular `.pi/extensions`, project
+settings, and packages declared by `.pi/settings.json`. When protected
+resources are present, pi-web shows a nonblocking notice listing discovered
+extension entries and package declarations. Choose **Trust and load** only
+after reviewing both the displayed resolved workspace path and the listed
+resources; approval is bound to that exact session and canonical path. Choose
+**Not now** to continue without loading protected project resources.
+
+pi-web uses pi's native project-trust store under the configured agent
+directory (`trust.json`), so saved CLI decisions and pi-web decisions are
+shared. Paths are canonicalized, so symlink aliases share one decision. The CLI
+can save a decision for a parent directory; pi-web offers only the exact
+workspace approval action. A saved decision applies before pi's global
+`defaultProjectTrust` fallback, so a saved denial overrides global `"always"`
+and a saved grant overrides global `"never"`.
+
+The global `defaultProjectTrust` values are `"ask"` (the default), `"always"`,
+and `"never"`. Configure that global pi setting through pi; pi-web does not add
+a separate preference. `"always"` makes a protected current workspace appear
+in **Preferences → Extensions** so it can be explicitly revoked, but does not
+save a per-workspace grant unless the owner chooses **Trust and load**.
+
+Extension-provided `project_trust` handlers are a scoped follow-up. The current
+public SDK does not expose a safe hook that resolves those handlers before
+pi-web must select explicit `.pi/web/extensions` paths. pi-web therefore honors
+native saved decisions and the global fallback without claiming the complete
+handler chain.
+
+Trust and revocation require an authenticated browser owner session; API tokens,
+extension-scoped clients, and direct open/legacy/external requests cannot change
+workspace trust. Legacy and external browser sign-in establish the existing
+session cookie during normal UI startup before the trust action becomes
+available. An intentionally unauthenticated instance must configure and use a
+browser sign-in method before it can grant workspace extension trust.
+
+Workspace trust can be revoked from **Preferences → Extensions**. Revocation
+saves an explicit denial for that path so an inherited trusted-parent or global
+`"always"` decision cannot immediately re-enable it. Each live session keeps
+the trust state from its last completed resource load. Granting or revoking in
+one session does not interrupt or automatically reload other sessions; they
+show a pending notice with an explicit **Reload** action. A pending grant notice
+loads the newly trusted resources, while a pending revoke notice unloads them.
+Reload stays disabled with an explanation while that session is responding or
+compacting, then becomes available when it settles. A failed trust-policy reload
+leaves the desired and applied decisions mismatched, so the notice remains
+pending. A granted workspace also remains pending when loading falls back to
+the extension-free loader, because no project extensions were applied.
+Unrelated extension load failures remain visible in **Extension health** and
+do not keep a workspace trust notice open after the policy itself was applied.
+User-global extensions under
+`~/.pi/web/extensions`, user-global pi resources, and bundled pi-web extensions
+remain trusted.
+
 ## Contribution API
 
 `ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key. Keys are identities across slots, so prefix them with your extension name (for example, `acme-notes.panel`) to avoid collisions with other extensions and convenience wrappers.
@@ -427,7 +481,7 @@ Storage notes:
 
 `ctx.ui.web.createApiClient({ name, scopes, sessionIds? })` gives trusted server-side
 extensions scoped access to pi-web's existing HTTP API. Core supplies and renews
-short-lived credentials; do not copy browser cookies or read `PI_WEB_TOKEN`.
+short-lived credentials; do not copy browser cookies or environment credentials.
 The client is not exposed in browser contribution descriptors. Its default targets
 are the calling agent session and sessions created by the client; cross-session
 access must be explicit. See [Scoped extension HTTP](extension-http.md) for the
