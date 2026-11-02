@@ -199,6 +199,9 @@ async function handleRequest(
           error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
         });
       }
+      // Never silently turn an unsupported restart mode into a destructive
+      // child restart (including clients using the former scope=full request).
+      if (url.searchParams.has("scope")) return sendJson(res, 400, { ok: false, error: "Restart scope is not supported; nothing has been stopped." });
       if (shuttingDown || restartPending) return sendJson(res, 409, { ok: false, error: "A lifecycle operation is already in progress." });
       // Reserve before asynchronous filesystem checks so concurrent requests
       // cannot both pass admission and replace the child twice.

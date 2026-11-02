@@ -191,6 +191,14 @@ describe("pi-web supervisor", () => {
       await apiReady(publicPort, supervisor, token.secret);
       const initial = await status(publicPort, supervisor, token.secret);
       expect(initial).toMatchObject({ runtimeProtocol: 1 });
+      for (const scope of ["full", "unknown", ""]) {
+        const unsupported = await fetch(`http://127.0.0.1:${publicPort}/api/restart?scope=${scope}`, {
+          method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+        });
+        expect(unsupported.status).toBe(400);
+        expect(await unsupported.json()).toMatchObject({ error: expect.stringContaining("nothing has been stopped") });
+        expect(await status(publicPort, supervisor, token.secret)).toMatchObject({ childPid: initial.childPid, childGeneration: initial.childGeneration });
+      }
       for (const field of ["lifecycle", "lifecycleError", "automaticFullRestartAvailable"]) expect(initial).not.toHaveProperty(field);
       if (changedFile === "package.json") {
         await writeFile(join(root, changedFile), JSON.stringify({ type: "module", version: "999.0.0" }));
