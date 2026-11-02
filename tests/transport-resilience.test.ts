@@ -175,14 +175,20 @@ describe("server transport resilience", { timeout: 30_000 }, () => {
     }
   });
 
-  it("rejects oversized control JSON but preserves large workspace writes and attachments", async () => {
+  it("accepts ordinary JSON above 64 KiB, rejects it above 1 MiB, and preserves larger dedicated writes", async () => {
     const { baseUrl, cwd } = await startServer();
     const browserHeaders = { origin: baseUrl, "x-pi-web-client-id": "transport-test" };
-    const oversized = JSON.stringify({ sessionId: "mock-current", padding: "x".repeat(65_536) });
+    const ordinary = await fetch(`${baseUrl}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...browserHeaders },
+      body: JSON.stringify({ sessionId: "mock-current", command: "/help", padding: "x".repeat(65_536) }),
+    });
+    expect(ordinary.status).toBe(200);
+
     const rejected = await fetch(`${baseUrl}/api/abort`, {
       method: "POST",
       headers: { "content-type": "application/json", ...browserHeaders },
-      body: oversized,
+      body: JSON.stringify({ sessionId: "mock-current", padding: "x".repeat(1_048_576) }),
     });
     expect(rejected.status).toBe(413);
 

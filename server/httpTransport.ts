@@ -2,7 +2,6 @@ import { createReadStream, type ReadStream } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { HttpError } from "./shared/httpError.js";
 
-export const controlJsonBodyLimit = 65_536;
 export const ordinaryJsonBodyLimit = 1_048_576;
 export const promptJsonBodyLimit = 4_194_304;
 export const largeJsonBodyLimit = 40_000_000;
