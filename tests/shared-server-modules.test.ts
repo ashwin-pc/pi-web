@@ -668,7 +668,7 @@ signed fixture
     runGit(child, "commit", "-m", "child initial");
     const repos = await listGitRepos(cwd);
     expect(repos.repos.map((repo) => repo.path)).toEqual([".", "child"]);
-    expect(await gitCwdFromRepoParam("child", cwd)).toBe(child);
+    expect(await gitCwdFromRepoParam("child", cwd)).toBe(await realpath(child));
     await expect(gitCwdFromRepoParam("../outside", cwd)).rejects.toThrow("outside the workspace");
     await rm(child, { recursive: true });
 
