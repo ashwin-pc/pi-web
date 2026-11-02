@@ -7,7 +7,8 @@ export const manualRuntimeRestartMessage = "Full application restart required; n
 /** Conservative deployment identity, not a hot-path request check. Include the
  * supervisor's local dependency tree and launcher/dependency manifests. */
 export async function runtimeFingerprint(root: string): Promise<string> {
-  const files = ["supervisor.ts", "bin/pi-web.js", "package.json"];
+  // webHome is the supervisor's shared runtime dependency outside server/.
+  const files = ["supervisor.ts", "bin/pi-web.js", "package.json", "src/webHome.ts"];
   async function collect(relative: string): Promise<void> {
     for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
       const path = join(relative, entry.name);
