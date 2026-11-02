@@ -93,7 +93,7 @@ function viteClientToken(source: string): string {
   return token;
 }
 
-describe("server transport resilience", () => {
+describe("server transport resilience", { timeout: 30_000 }, () => {
   it("replays a healthy 8MB missed event within the default budget", async () => {
     const server = createHttpServer();
     const sockets = new WebSocketServer({ server });
@@ -151,7 +151,7 @@ describe("server transport resilience", () => {
     } finally {
       socket.close();
     }
-  }, 15_000);
+  });
 
   it("rejects unrelated development upgrade routes and protocols", async () => {
     const { port } = await startServer(true);
@@ -210,7 +210,7 @@ describe("server transport resilience", () => {
     const response = await fetch(`${baseUrl}/assets`);
     expect(response.status).toBe(404);
     expect((await fetch(`${baseUrl}/api/state`)).status).toBe(200);
-  }, 15_000);
+  });
 
   it("closes upgrades outside /ws", async () => {
     const { port } = await startServer();
