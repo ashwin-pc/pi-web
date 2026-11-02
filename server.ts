@@ -50,12 +50,12 @@ import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.j
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
 import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
-import { attachmentBodyLimit, controlJsonBodyLimit, createJsonBodyReader, largeJsonBodyLimit, ordinaryJsonBodyLimit, pipeReadStream, promptJsonBodyLimit, readBytes } from "./server/httpTransport.js";
+import { attachmentBodyLimit, createJsonBodyReader, largeJsonBodyLimit, ordinaryJsonBodyLimit, pipeReadStream, promptJsonBodyLimit, readBytes } from "./server/httpTransport.js";
 
 initializeSupervisorPeerContext(process.env);
 const jsonBodyReader = createJsonBodyReader((req, requestedLimit) =>
   hasExtensionCredential(req) ? Math.min(ordinaryJsonBodyLimit, requestedLimit) : requestedLimit);
-function readBody(req: IncomingMessage, maxBytes = controlJsonBodyLimit): Promise<unknown> {
+function readBody(req: IncomingMessage, maxBytes = ordinaryJsonBodyLimit): Promise<unknown> {
   return jsonBodyReader(req, maxBytes);
 }
 
@@ -79,7 +79,7 @@ const reportOriginRejection = createOriginRejectionReporter(process.env.PI_WEB_A
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({
   origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null),
-  readBody: (req) => readBody(req, ordinaryJsonBodyLimit),
+  readBody,
 });
 const authKernel = new AuthKernel(authMode, authStore, (req) => secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS, req?.headers.host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
@@ -702,7 +702,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/state") {
-        const body = await readBody(req, ordinaryJsonBodyLimit);
+        const body = await readBody(req);
         mockStateOverrides = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
         const state = currentState();
         broadcast({ type: "state_changed", ...state });
@@ -940,7 +940,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown } & Record<string, unknown>;
+        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
         const controller = new AbortController();
         const abort = () => controller.abort();
         req.once("aborted", abort);
@@ -977,7 +977,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-artifact-action/invoke") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown } & Record<string, unknown>;
+        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeArtifactAction(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -988,7 +988,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -999,7 +999,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-panel/invoke") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokePanel(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -1026,7 +1026,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
         const requestedSessionId = resolveSessionId(body.sessionId);
         await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
@@ -1097,7 +1097,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, ordinaryJsonBodyLimit));
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
@@ -1196,7 +1196,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const patch = await readBody(req, ordinaryJsonBodyLimit);
+        const patch = await readBody(req);
         const settings = await withAvatarMutation(async () => {
           const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
           // A stale settings form must not resurrect a reclaimed generation.
@@ -1255,7 +1255,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
         if (method === "PATCH" && !isReset) {
           if (!entry) return sendJson(res, 409, { ok: false, error: "extension not loaded" });
-          const body = await readBody(req, ordinaryJsonBodyLimit) as { values?: unknown; expectedRevision?: unknown };
+          const body = await readBody(req) as { values?: unknown; expectedRevision?: unknown };
           if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
             return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
           }
@@ -1328,14 +1328,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
         const command = String(body.command || "").trim();
         if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
         return sendJson(res, 200, { ok: true, ...await sessionService.executeShell(resolveSessionId(body.sessionId), command, Boolean(body.excludeFromContext)) });
       }
 
       if (method === "POST" && url.pathname === "/api/interactions/respond") {
-        const body = await readBody(req, ordinaryJsonBodyLimit) as { id?: unknown } & Record<string, unknown>;
+        const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
         const response = { ...body, id } as InteractionResponseDto;
