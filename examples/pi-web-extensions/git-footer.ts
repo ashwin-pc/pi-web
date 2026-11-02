@@ -1,7 +1,5 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const FOOTER_KEY = "local-git-footer";
@@ -104,46 +102,19 @@ const fetchStates: { default: FetchState; custom: WeakMap<GitRunner, FetchState>
   default: { cwd: new Map(), repositories: new Map() }, custom: new WeakMap(),
 };
 
-// Reject filesystem indirection as well as Git symrefs. Git's no-deref update
-// below is essential: a symref created after this check must never move its target.
-export async function safeFetchDestination(common: string, ref: string, cwd: string): Promise<boolean> {
-  if (!/^refs\/remotes\//.test(ref) || ref.split("/").some(part => !part || part === "." || part === "..")) return false;
-  try {
-    await execFileAsync("git", ["check-ref-format", ref], { cwd, timeout: GIT_TIMEOUT_MS });
-    let path = common;
-    for (const part of ref.split("/")) {
-      path = join(path, part);
-      try { if ((await lstat(path)).isSymbolicLink()) return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
-    try {
-      await execFileAsync("git", ["symbolic-ref", "-q", ref], { cwd, timeout: GIT_TIMEOUT_MS });
-      return false;
-    } catch (error) { return (error as { code?: number }).code === 1; }
-  } catch { return false; }
-}
-
+// Assume cooperating local repository writers. This initial guard rejects existing
+// symrefs; subsequent updates use standard Git fetch transaction semantics, not
+// a footer-owned pre-network snapshot or protection against concurrent symref swaps.
 export async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
-  // Download an advertised object without writing any ref or FETCH_HEAD. Publish
-  // with no-deref CAS, so a concurrent symref swap cannot move a local branch
-  // and a manual fetch wins. Process death leaves no private staging refs.
-  if (args.includes("fetch") && args.at(-1)?.includes(":")) {
-    const [source, destination] = args.at(-1)!.split(":");
-    const common = await runFetchGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
-    if (!common.ok || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
-    const previous = await runFetchGit(["rev-parse", "--verify", "--quiet", destination], cwd);
-    const previousOid = previous.ok ? previous.output.trim() : undefined;
-    if (previousOid !== undefined && !/^[a-f0-9]{40,64}$/.test(previousOid)) return { ok: false, output: "" };
-    const sourceRef = source.replace(/^\+/, "");
-    const prefix = args.slice(0, args.indexOf("fetch"));
-    const advertised = await runFetchProcess([...prefix, "ls-remote", "--refs", "--", args.at(-2)!, sourceRef], cwd);
-    const rows = advertised.output.trim().split(/\r?\n/).map(line => line.split(/\s+/));
-    if (!advertised.ok || rows.length !== 1 || rows[0][1] !== sourceRef || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(rows[0][0])) return { ok: false, output: "" };
-    const oid = rows[0][0];
-    // Empty refmap overrides configured refspecs even with an explicit OID.
-    const result = await runFetchProcess([...prefix, "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", args.at(-2)!, oid], cwd);
-    if (!result.ok || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
-    return runFetchGit(["update-ref", "--no-deref", destination, oid, previousOid ?? "0".repeat(oid.length)], cwd);
+  if (args.includes("fetch")) {
+    const destination = args.at(-1)?.split(":")[1];
+    if (!destination?.startsWith("refs/remotes/")) return { ok: false, output: "" };
+    try {
+      await execFileAsync("git", ["symbolic-ref", "-q", destination], { cwd, timeout: GIT_TIMEOUT_MS });
+      return { ok: false, output: "" };
+    } catch (error) {
+      if ((error as { code?: number }).code !== 1) return { ok: false, output: "" };
+    }
   }
   return runFetchProcess(args, cwd);
 }
@@ -151,7 +122,7 @@ export async function runFetchGit(args: string[], cwd: string): Promise<GitResul
 export async function runFetchProcess(args: string[], cwd: string, timeoutMs = FETCH_TIMEOUT_MS, maxBuffer = 1024 * 1024): Promise<GitResult> {
   try {
     let defaultSsh = false;
-    if ((args.includes("fetch") || args.includes("ls-remote")) && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+    if (args.includes("fetch") && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
       try {
         const configured = await execFileAsync("git", ["config", "--get", "core.sshCommand"], {
           cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 65536,
@@ -260,7 +231,7 @@ function scheduleFetch(cwd: string, branch: string, upstream: string, git: GitRu
       let success = false;
       try {
         // No pull, tags, submodules, pruning, maintenance, or configured refspecs
-        // targeting local branches. Only remote-tracking refs may be updated.
+        // targeting local branches. Reject existing destination symrefs before Git fetch.
         const result = await git(["-c", "credential.helper=", "-c", "credential.interactive=false", "-c", "core.askPass=",
           "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
           "--", name, `+${source}:${destination}`], cwd);
