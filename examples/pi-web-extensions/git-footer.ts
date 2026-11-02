@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
@@ -117,15 +117,27 @@ async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
         defaultSsh = true;
       }
     }
-    const { stdout } = await execFileAsync("git", args, {
-      cwd, encoding: "utf8", timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
-      env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
-        GIT_ASKPASS: "", SSH_ASKPASS: "",
+    return await new Promise<GitResult>((resolve) => {
+      const child = spawn("git", args, {
+        cwd, detached: true, stdio: ["ignore", "pipe", "ignore"],
+        timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL",
+        env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
+        GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never",
+        // No agent confirmations/pinentry or display-based authentication.
+        SSH_AUTH_SOCK: "", DISPLAY: "", WAYLAND_DISPLAY: "",
         // Respect trusted custom identities/proxies/wrappers. Default OpenSSH
         // is bounded and batch-only; custom transports retain the process timeout.
-        ...(defaultSsh ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" } : {}) },
+        ...(defaultSsh ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10 -oIdentityAgent=none -oSecurityKeyProvider=/dev/null -oIgnoreUnknown=UseKeychain -oUseKeychain=no" } : {}) },
+      });
+      let output = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        output += chunk;
+        if (output.length > 1024 * 1024) child.kill("SIGKILL");
+      });
+      child.on("error", () => resolve({ ok: false, output: "" }));
+      child.on("close", code => resolve({ ok: code === 0, output }));
     });
-    return { ok: true, output: stdout };
   } catch { return { ok: false, output: "" }; }
 }
 
@@ -175,7 +187,7 @@ function scheduleFetch(cwd: string, branch: string, upstream: string, git: GitRu
       try {
         // No pull, tags, submodules, pruning, maintenance, or configured refspecs
         // targeting local branches. Only remote-tracking refs may be updated.
-        const result = await git(["-c", "credential.interactive=false", "-c", "core.askPass=",
+        const result = await git(["-c", "credential.helper=", "-c", "credential.interactive=false", "-c", "core.askPass=",
           "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
           "--", name, `+${source}:${destination}`], cwd);
         success = result.ok;
@@ -280,7 +292,9 @@ async function renderFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
       : [snapshot.ahead ? `↑${snapshot.ahead}` : "", snapshot.behind ? `↓${snapshot.behind}` : ""].filter(Boolean).join(" ");
   const upstreamDetails = escapeHtml(`${snapshot.upstream}: ${comparisonKnown
     ? `${snapshot.ahead} ahead, ${snapshot.behind} behind`
-    : "comparison unavailable"}. Last fetched local ref; upstream remote checked automatically about every 60 seconds (failures back off). Never pulls or changes working files.`);
+    : "comparison unavailable"}. Last fetched local ref; counts may be stale. ${fetchGit
+      ? "Automatic fetch attempts about every 60 seconds; failures back off up to 16 minutes."
+      : "Automatic fetch disabled; no network fetching."} Never pulls or changes working files.`);
   const upstream = snapshot.upstream
     ? ` <span title="${upstreamDetails}" aria-label="${upstreamDetails}">${divergence}</span>`
     : "";
@@ -294,7 +308,9 @@ async function renderFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
 function cachedFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
   const cache = cacheFor(git);
   const now = Date.now();
-  const existing = cache.get(cwd);
+  // Rendering/scheduling policy must not leak between opt-in and opt-out instances.
+  const cacheKey = `${cwd}\0${fetchGit ? "fetch" : "local"}`;
+  const existing = cache.get(cacheKey);
   if (existing?.pending) return existing.pending;
   if (existing && existing.expires > now) return Promise.resolve(existing.html);
   // Bound retained cwd entries without evicting work still in flight.
@@ -302,10 +318,10 @@ function cachedFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
     if (!entry.pending && (entry.expires <= now || cache.size >= MAX_CACHE_ENTRIES)) cache.delete(key);
   }
   const entry: CacheEntry = { expires: 0 };
-  cache.set(cwd, entry);
+  cache.set(cacheKey, entry);
   entry.pending = renderFooter(cwd, git, fetchGit).catch(() => undefined).then((html) => {
     entry.pending = undefined;
-    if (html === undefined) cache.delete(cwd); // Failures retry on the next refresh.
+    if (html === undefined) cache.delete(cacheKey); // Failures retry on the next refresh.
     else { entry.html = html; entry.expires = Date.now() + CACHE_TTL_MS; }
     return html;
   });
@@ -316,9 +332,12 @@ export function createGitFooterExtension(options: {
   git?: GitRunner;
   refreshMs?: number;
   fetchGit?: GitRunner;
+  /** Network access is opt-in. False overrides even an injected fetch runner. */
+  autoFetch?: boolean;
 } = {}) {
   const git = options.git || runGit;
-  const fetchGit = options.fetchGit ?? (options.git ? undefined : runFetchGit);
+  const fetchGit = options.autoFetch === false ? undefined
+    : options.fetchGit ?? (options.autoFetch === true ? runFetchGit : undefined);
   const refreshMs = options.refreshMs ?? REFRESH_MS;
 
   function refresh(state: SessionState) {

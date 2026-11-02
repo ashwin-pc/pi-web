@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -60,7 +60,7 @@ describe("git footer porcelain v2 regression and command budget", () => {
     expect(visible).not.toContain("up to date");
     expect(html).toContain("upstream/main");
     expect(html).toMatch(/last fetched|locally fetched/i);
-    expect(html).toContain("checked automatically about every 60 seconds");
+    expect(html).toContain("Automatic fetch disabled; no network fetching");
     expect(html).toContain("Never pulls");
     expect(html).toContain("aria-label=");
   });
@@ -285,6 +285,35 @@ describe("git footer subprocess bounds", () => {
   });
 });
 
+describe("git footer fetch policy", () => {
+  it("explicit opt-out overrides fetch injection and does no discovery across refreshes", async () => {
+    vi.useFakeTimers();
+    const git = vi.fn(async () => ok(status(upstream())));
+    const fetchGit = vi.fn(async () => ok());
+    const footer = mount(git, "/opt-out", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: false }));
+    await flush();
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(fetchGit).not.toHaveBeenCalled();
+    expect(git.mock.calls.length).toBeGreaterThan(1);
+    expect(footer.html()).toContain("Automatic fetch disabled; no network fetching");
+  });
+
+  it("does not reuse opt-in cached HTML or schedule work for opt-out instances", async () => {
+    vi.useFakeTimers();
+    const git = async () => ok(status(upstream()));
+    const fetchGit = vi.fn(async () => ok());
+    const enabled = mount(git, "/policy", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: true }));
+    await flush();
+    expect(enabled.html()).toContain("counts may be stale");
+    expect(enabled.html()).toContain("Automatic fetch attempts");
+    fetchGit.mockClear();
+    const disabled = mount(git, "/policy", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: false }));
+    await flush();
+    expect(disabled.html()).toContain("Automatic fetch disabled");
+    expect(fetchGit).not.toHaveBeenCalled();
+  });
+});
+
 describe("git footer real local refs", () => {
   it("reads a real diverged upstream and edge-case filenames without fetching", async () => {
     const cwd = temp();
@@ -326,7 +355,7 @@ describe("git footer real local refs", () => {
     writeFileSync(join(remote, "base"), "advanced");
     gitCommand(remote, "commit", "-am", "advance");
     const advanced = gitCommand(remote, "rev-parse", "HEAD");
-    mount(undefined, cwd);
+    mount(undefined, cwd, options => createGitFooterExtension({ ...options, autoFetch: true }));
     await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", tracking)).toBe(advanced));
     expect(gitCommand(cwd, "rev-parse", "victim")).toBe(original);
     // Let fetch completion invalidate its cache before the next cache-only test.
@@ -345,10 +374,24 @@ describe("git footer real local refs", () => {
     gitCommand(cwd, "branch", "--set-upstream-to", "origin/main");
     const marker = join(cwd, "ssh-invoked");
     const wrapper = join(cwd, "ssh-wrapper.sh");
-    writeFileSync(wrapper, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+    writeFileSync(wrapper, `#!/bin/sh\n{
+  printf 'agent=%s\\naskpass=%s\\nrequire=%s\\ndisplay=%s\\n' "$SSH_AUTH_SOCK" "$SSH_ASKPASS" "$SSH_ASKPASS_REQUIRE" "$DISPLAY"
+  if test -t 0; then echo stdin=tty; else echo stdin=closed; fi
+  if (exec </dev/tty) 2>/dev/null; then echo controlling=tty; else echo controlling=none; fi
+  git config --get-all credential.helper
+} > '${marker}'\nexit 1\n`);
     gitCommand(cwd, "config", "core.sshCommand", `sh '${wrapper}'`);
-    mount(undefined, cwd);
+    const localOnly = mount(undefined, cwd);
+    await vi.waitFor(() => expect(localOnly.html()).toContain("Automatic fetch disabled"));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(existsSync(marker)).toBe(false);
+    localOnly.stop();
+    mount(undefined, cwd, options => createGitFooterExtension({ ...options, autoFetch: true }));
     await vi.waitFor(() => expect(existsSync(marker)).toBe(true));
+    await vi.waitFor(() => expect(readFileSync(marker, "utf8")).toContain("controlling=none"));
+    const environment = readFileSync(marker, "utf8");
+    expect(environment).toContain("agent=\naskpass=\nrequire=never\ndisplay=\n");
+    expect(environment).toContain("stdin=closed");
     await new Promise((resolve) => setTimeout(resolve, 100));
   });
 
@@ -398,7 +441,7 @@ describe("automatic upstream fetch", () => {
     await flush();
     const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
     expect(calls()).toHaveLength(1);
-    expect(calls()[0][0]).toEqual(["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
+    expect(calls()[0][0]).toEqual(["-c", "credential.helper=", "-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
       "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
       "+refs/heads/main:refs/remotes/origin/main"]);
     await vi.advanceTimersByTimeAsync(59_999);
