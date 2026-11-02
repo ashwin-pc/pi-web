@@ -119,17 +119,26 @@ function startChild(): void {
     console.log(`[supervisor] child #${generation} exited code=${code ?? ""} signal=${signal ?? ""}`);
     child = undefined;
     childStarting = false;
-    if (!wasIntentional && !shuttingDown && !restartPending) {
+    if (!wasIntentional && !shuttingDown) {
       console.warn(`[supervisor] child #${generation} stopped unexpectedly; restarting in 1s`);
-      crashTimer = setTimeout(() => {
+      const recover = () => {
         crashTimer = undefined;
+        if (shuttingDown) return;
+        if (restartPending) {
+          crashTimer = setTimeout(recover, 1000);
+          return;
+        }
         void runtimePreflight(process.cwd(), loadedRuntimeFingerprint).then(result => {
           if (!result.ok) {
             lifecycleError = result.error;
             console.error(`[supervisor] ${result.error}`);
-          } else if (!restartPending && !shuttingDown) startChild();
+          } else if (!shuttingDown) {
+            if (restartPending) crashTimer = setTimeout(recover, 1000);
+            else startChild();
+          }
         });
-      }, 1000);
+      };
+      crashTimer = setTimeout(recover, 1000);
     }
   });
 }

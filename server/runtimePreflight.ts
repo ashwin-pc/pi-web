@@ -7,7 +7,7 @@ export const manualRuntimeRestartMessage = "Full application restart required; n
 /** Conservative deployment identity, not a hot-path request check. Include the
  * supervisor's local dependency tree and launcher/dependency manifests. */
 export async function runtimeFingerprint(root: string): Promise<string> {
-  const files = ["supervisor.ts", "bin/pi-web.js", "package.json", "package-lock.json"];
+  const files = ["supervisor.ts", "bin/pi-web.js", "package.json"];
   async function collect(relative: string): Promise<void> {
     for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
       const path = join(relative, entry.name);
@@ -19,6 +19,14 @@ export async function runtimeFingerprint(root: string): Promise<string> {
   // modules deliberately errs on the side of a manual restart after an update.
   await collect("server");
   const hash = createHash("sha256");
+  // npm excludes package-lock.json from published packages. Its presence or
+  // absence is still part of the identity, but absence is a valid deployment.
+  try {
+    hash.update("package-lock.json\0").update(await readFile(join(root, "package-lock.json"))).update("\0");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    hash.update("package-lock.json:absent\0");
+  }
   for (const file of files.sort()) {
     hash.update(file).update("\0").update(await readFile(join(root, file))).update("\0");
   }

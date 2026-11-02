@@ -25,6 +25,14 @@ it.each(["supervisor.ts", "server/auth.ts", "package-lock.json", "bin/pi-web.js"
   await writeFile(join(root, file), "updated");
   expect(await runtimePreflight(root, loaded)).toMatchObject({ ok: false, code: "FULL_RUNTIME_RESTART_REQUIRED" });
 });
+it("admits unchanged npm-package layout without a lockfile", async () => {
+  const root = await fixture();
+  await rm(join(root, "package-lock.json"));
+  const loaded = await runtimeFingerprint(root);
+  expect(await runtimePreflight(root, loaded)).toEqual({ ok: true });
+  await writeFile(join(root, "package.json"), "new deployment");
+  expect((await runtimePreflight(root, loaded)).ok).toBe(false);
+});
 it("fails closed on incomplete installation or missing startup identity", async () => {
   const root = await fixture();
   expect((await runtimePreflight(root, undefined)).ok).toBe(false);
