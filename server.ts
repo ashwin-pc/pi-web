@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
-import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
+import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
@@ -33,33 +35,44 @@ import { LocalSessionService, SessionServiceError } from "./server/session/servi
 import { viewerPrincipal, type ViewerPrincipal } from "./server/session/viewerLeases.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
-import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import {
+  AuthKernel,
+  AuthStore,
+  AuthStoreBusyError,
+} from "./server/auth/kernel.js";
 import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
+import { secureSessionCookies } from "./server/auth/cookieSecurity.js";
+import { WebSocketRevocation } from "./server/auth/webSocketRevocation.js";
 import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
 import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
+import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
+import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
 
+initializeSupervisorPeerContext(process.env);
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();
 const distDir = join(appDir, "dist");
 const staticDir = distDir;
+const publicDir = join(appDir, "public");
 
-const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
+const isDev = process.env.PI_WEB_DEV === "1" ||
+  (process.env.PI_WEB_DEV === undefined && process.env.NODE_ENV === "development");
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
-const token = process.env.PI_WEB_TOKEN || "";
-const authConfig = resolveAuthConfig(process.env);
-const authMode = authConfig.legacyMode;
-const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
-const authOrigin = authUrl.origin;
 const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
+const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
+const authMode = authConfig.mode;
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || process.env.PI_WEB_AUTH_INTERNAL_ORIGIN || `http://localhost:${port}`);
+const authOrigin = authUrl.origin;
+const reportOriginRejection = createOriginRejectionReporter(process.env.PI_WEB_AUTH_ORIGIN);
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
+const authKernel = new AuthKernel(authMode, authStore, (req) => secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS, req?.headers.host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -68,6 +81,8 @@ let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
+const bundledExtensionPaths = resolveBundledExtensionPaths({ bundledExtensionsDir });
+const workspaceExtensionTrust = new WorkspaceExtensionTrust(agentDir, bundledExtensionPaths);
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const systemInfoSnapshot = createSystemInfoProvider({
   appDir,
@@ -399,10 +414,11 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
-function additionalExtensionPaths(cwd = piCwd) {
+function additionalExtensionPaths(cwd = piCwd, projectTrusted?: boolean) {
   return [
-    ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
-    ...resolvePiWebExtensionPaths(cwd),
+    ...bundledExtensionPaths,
+    ...resolveGlobalPiWebExtensionPaths(),
+    ...(workspaceExtensionTrust?.extensionPaths(cwd, projectTrusted) ?? []),
   ];
 }
 
@@ -551,7 +567,8 @@ function withAccessLog(
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const start = performance.now();
-    const startBytes = req.socket.bytesWritten; // counts everything, headers included
+    const socket = req.socket;
+    const startBytes = socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
     let pathname = "(malformed)";
     let logged = false;
@@ -563,7 +580,7 @@ function withAccessLog(
         pathname,
         res.statusCode,
         performance.now() - start,
-        Math.max(0, req.socket.bytesWritten - startBytes),
+        Math.max(0, socket.bytesWritten - startBytes),
         aborted,
         extensionHttp.caller(req),
       );
@@ -583,7 +600,8 @@ function withAccessLog(
   };
 }
 
-import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { browserMutationFailure, isAmbientBrowserAuth } from "./server/auth/admission.js";
+import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
@@ -629,33 +647,57 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       const extensionAuth = hasExtensionCredential(req) ? await authKernel.gate(req) : undefined;
       if (extensionAuth && !extensionAuth.ok) return sendJson(res, extensionAuth.status || 401, { ok: false, error: "Extension API authorization failed" });
       if (!extensionAuth) await authKernel.refreshConfig();
-      if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
+      const publicAuthMutation = method === "POST" && [
+        "/api/auth/device/redeem",
+        "/api/auth/password/login",
+        "/api/auth/password/bootstrap",
+        "/api/auth/external/login",
+        "/api/auth/passkey/options",
+        "/api/auth/passkey/verify",
+        "/api/auth/bootstrap/options",
+        "/api/auth/bootstrap/verify",
+      ].includes(url.pathname);
+      if (publicAuthMutation && !trustedOrigin(req, authOrigin)) {
+        reportOriginRejection(req);
+        return sendJson(res, 403, { error: originFailureHint });
+      }
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
-        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
+        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, { mode: "redirect", url: "/api/auth/login" });
         passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
       if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
-        if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
+        const failure = browserMutationFailure(req, "session", authOrigin, mockMode);
+        if (failure) {
+          if (failure === "origin") reportOriginRejection(req);
+          return sendJson(res, 403, { error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
+        }
         await authKernel.revokeSession(req);
-        authKernel.clearSession(res);
+        authKernel.clearSession(res, req);
         return sendJson(res, 200, { ok: true });
       }
       const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
       const requestViewerPrincipal = viewerPrincipal(auth);
-      if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+      if (auth.via === "external" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const validOrigin = trustedOrigin(req, authOrigin);
-        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
+      const failure = browserMutationFailure(req, auth.via, authOrigin, mockMode, url);
+      if (failure) {
+        if (failure === "origin") reportOriginRejection(req);
+        return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
       }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
-      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
+      if (await handleWorkspaceExtensionTrustRoute(req, res, url, auth, {
+        trust: workspaceExtensionTrust,
+        sessions: sessionService,
+        readBody,
+        broadcast,
+      })) return;
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
@@ -689,7 +731,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/event") {
-        const body = await readBody(req);
+        const maxMockEventBytes = 64 * 1024;
+        const declaredBytes = Number(req.headers["content-length"]);
+        if (Number.isFinite(declaredBytes) && declaredBytes > maxMockEventBytes) {
+          throw new HttpError("Request body is too large", 413);
+        }
+        const raw = await readBytes(req, maxMockEventBytes);
+        const text = raw.toString("utf-8");
+        const body = text ? JSON.parse(text) : {};
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
         }
@@ -886,7 +935,6 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           // Candidate validation only needs the session snapshot. Keep the full
           // response as the default for existing API consumers and bootstrap.
           ...(url.searchParams.get("includeSessionUiState") === "false" ? {} : await readOptionalSessionUiState()),
-          tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
 
@@ -1446,26 +1494,24 @@ const server = createServer(withAccessLog(async (req, res, url) => {
     }
 
     if (viteDevServer) {
-      viteDevServer.middlewares(req, res, () => {
-        if (!res.writableEnded) sendJson(res, 404, { ok: false, error: "Not found" });
-      });
+      await serveAuthenticatedViteRequest(viteDevServer, authKernel, publicDir, req, res, url.pathname);
       return;
     }
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError || error instanceof AuthStoreBusyError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
 
 const wss = new WebSocketServer({ noServer: true });
-const browserSockets = new Map<import("ws").WebSocket, string>();
-const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
-authStore.listeners.add(enforceBrowserSessions);
-const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
-authSessionSweep.unref();
-server.on("upgrade", (req, socket, head) => {
+const webSocketRevocation = new WebSocketRevocation(authStore, authKernel);
+// Vite owns this non-listening server and may replace its upgrade listener on
+// restart. The public server always keeps the stable authenticated listener.
+const viteHmrServer = createServer();
+const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, authOrigin, viteHmrServer);
+const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1475,19 +1521,28 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (url.pathname !== "/ws") return;
+  if (url.pathname !== "/ws") {
+    const protocol = req.headers["sec-websocket-protocol"];
+    if (isDev && url.pathname === "/" && (protocol === "vite-hmr" || protocol === "vite-ping")) {
+      viteUpgrades.handle(req, socket, head);
+    } else {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+    return;
+  }
 
   void (async () => {
-    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "none" }, sessionHash: undefined } : undefined);
-    const identity = ticket?.identity;
-    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "");
+    if (!ticket) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    const identity = ticket.identity;
+    if (!(await webSocketRevocation.validForUpgrade(ticket))) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { reportOriginRejection(req); socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    (req as IncomingMessage & { authIdentity?: typeof identity; viewerPrincipal?: ViewerPrincipal }).authIdentity = identity;
     (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal = viewerPrincipal({ identity });
-    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
+    wss.handleUpgrade(req, socket, head, (ws) => { webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
-});
+};
+server.on("upgrade", applicationUpgradeListener);
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
   const wsStart = performance.now();
@@ -1528,7 +1583,7 @@ if (isDev) {
     appType: "spa",
     server: {
       middlewareMode: true,
-      hmr: { server },
+      hmr: { server: viteHmrServer },
     },
   });
 }
@@ -1536,10 +1591,11 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
+server.headersTimeout = 30_000;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  console.log(`Auth policy: ${authKernel.policy}; methods: ${[...authKernel.methods].join(", ") || "none configured"}`);
   if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });

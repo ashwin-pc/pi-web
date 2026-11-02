@@ -81,7 +81,7 @@ export interface LocalSessionServiceDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
-  additionalExtensionPaths(cwd: string): string[];
+  additionalExtensionPaths(cwd: string, projectTrusted?: boolean): string[];
   sessionConfig: LocalSessionConfiguration;
   globalCwd(): string;
   clientCount(): number;
@@ -313,7 +313,7 @@ export class LocalSessionService implements SessionService {
     this.productionFactory = new PiSessionFactory({
       noSession: this.noSession,
       modelRuntime: deps.modelRuntime,
-      additionalExtensionPaths: (cwd) => deps.additionalExtensionPaths(cwd),
+      additionalExtensionPaths: (cwd, projectTrusted) => deps.additionalExtensionPaths(cwd, projectTrusted),
       sessionCwd: (manager) => this.sessionCwd({ sessionManager: manager }),
       rememberCwd: (cwd) => this.knownSessionCwds.add(resolve(cwd)),
       readSession: (reference, tail) => this.readSession(reference, tail),
@@ -788,6 +788,14 @@ export class LocalSessionService implements SessionService {
     const loader = this.productionFactory.loaderFor(value);
     if (!loader) throw new SessionServiceError("Extension status is not available for this session.", 404);
     return this.extensionStatusFor(value, loader);
+  }
+
+  workspaceTrustState(session: object) {
+    const value = session as PiWebSession;
+    return {
+      appliedTrusted: this.productionFactory.loaderFor(value)?.getAppliedProjectTrust(),
+      busy: Boolean(value.isStreaming || value.isCompacting),
+    };
   }
 
   async reloadExtensions(sessionId: string) {
