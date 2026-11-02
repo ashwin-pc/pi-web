@@ -51,14 +51,47 @@ class RunnerTests(unittest.TestCase):
             root = pathlib.Path(tmp); comfy = root/'comfy'
             for name in ['.venv/bin/python', 'main.py', 'models/checkpoints/hunyuan_3d_v2.1.safetensors']:
                 path = comfy/name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+            (comfy/'comfy').mkdir()
             (root/'input').mkdir(); (root/'input/source.png').touch()
             image = Mock(); image.width = image.height = 100
             opened = Mock(); opened.__enter__ = Mock(return_value=image); opened.__exit__ = Mock(return_value=False)
             pillow = Mock(); pillow.Image.open.return_value = opened
-            with patch.dict('sys.modules', {'PIL': pillow}), patch.dict('os.environ', {'PI_HUNYUAN_COMFY_ROOT': str(comfy)}), patch.object(runner.subprocess, 'check_output', return_value='python /ComfyUI/main.py --listen 127.0.0.1'), patch.object(runner.subprocess, 'Popen') as start, patch.object(runner, 'stop_owned') as stop:
+            with patch.dict('sys.modules', {'PIL': pillow}), patch.dict('os.environ', {'PI_HUNYUAN_COMFY_ROOT': str(comfy)}), patch.object(runner.subprocess, 'check_output', return_value='123 python main.py') as processes, patch.object(runner, 'process_cwd', return_value=comfy) as cwd, patch.object(runner, 'process_executable', return_value='/usr/bin/python3') as executable, patch.object(runner.subprocess, 'Popen') as start, patch.object(runner, 'stop_owned') as stop:
                 with self.assertRaisesRegex(RuntimeError, 'Another ComfyUI'):
                     runner.run({'root': str(root), 'image': 'source.png', 'seed': 1, 'steps': 30, 'resolution': 256})
+                processes.assert_called_once_with(['ps', '-axo', 'pid=,command='], text=True, timeout=15)
+                cwd.assert_called_once_with(123); executable.assert_called_once_with(123)
                 start.assert_not_called(); stop.assert_not_called()
+
+    def test_cancellation_during_startup_is_not_retried(self):
+        import signal
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp); comfy = root/'checkout'
+            for name in ['.venv/bin/python', 'main.py', 'models/checkpoints/hunyuan_3d_v2.1.safetensors']:
+                path = comfy/name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+            (root/'input').mkdir(); (root/'input/source.png').touch()
+            image = Mock(); image.width = image.height = 100
+            opened = Mock(); opened.__enter__ = Mock(return_value=image); opened.__exit__ = Mock(return_value=False)
+            pillow = Mock(); pillow.Image.open.return_value = opened
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                with self.subTest(signal=sig):
+                    previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+                    child = Mock(); child.poll.return_value = None
+                    def cancel_startup(port, path, data=None):
+                        self.assertEqual(path, '/system_stats')
+                        # Invoke the real handler installed by run(), not a synthetic
+                        # InterruptedError or an actual signal to the test process.
+                        signal.getsignal(sig)(sig, None)
+                    with patch.dict('sys.modules', {'PIL': pillow}), patch.dict('os.environ', {'PI_HUNYUAN_COMFY_ROOT': str(comfy)}), patch.object(runner.subprocess, 'check_output', side_effect=['', 'System-wide memory free percentage: 90%']), patch.object(runner.subprocess, 'Popen', return_value=child), patch.object(runner, 'api', side_effect=cancel_startup) as api, patch.object(runner.time, 'sleep') as sleep:
+                        with self.assertRaisesRegex(InterruptedError, 'Hunyuan3D cancelled'):
+                            runner.run({'root': str(root), 'image': 'source.png', 'seed': 1, 'steps': 30, 'resolution': 256})
+                        api.assert_called_once()
+                        sleep.assert_not_called()
+                        child.terminate.assert_called_once()
+                        child.wait.assert_called_once_with(timeout=10)
+                        child.kill.assert_not_called()
+                    for s, handler in previous.items():
+                        self.assertEqual(signal.getsignal(s), handler)
 
     def test_failure_cleans_owned_child(self):
         with tempfile.TemporaryDirectory() as tmp:
