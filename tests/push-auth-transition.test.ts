@@ -7,12 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import webPush from "web-push";
+import { AuthStore } from "../server/auth/kernel.js";
+import { mintStoredApiToken } from "./auth-fixture.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
 
-it("retains browser push registration across the owner's authentication-method change", async () => {
+it("retains browser push registration when authenticated access is enabled", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-web-push-auth-transition-"));
   const file = join(root, "push.json");
-  const token = "synthetic-current-owner-token";
+  const authEnv = isolatedAuthEnv();
+  const { secret: token } = await mintStoredApiToken(new AuthStore(authEnv.PI_WEB_AUTH_STORE!), "push transition");
   const subscription = {
     endpoint: "https://fcm.googleapis.com/fcm/send/synthetic-installation",
     keys: { p256dh: "synthetic-encryption-key", auth: "synthetic-auth-key" },
@@ -44,12 +47,11 @@ it("retains browser push registration across the owner's authentication-method c
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       cwd: process.cwd(),
       env: {
-        ...isolatedAuthEnv(),
+        ...authEnv,
         NODE_ENV: "test",
         PI_WEB_DEV: "0",
         PI_WEB_MOCK: "1",
-        PI_WEB_AUTH_MODE: "legacy",
-        PI_WEB_TOKEN: token,
+        PI_WEB_AUTH_POLICY: "authenticated",
         PI_WEB_PUSH_FILE: file,
         HOST: "127.0.0.1",
         PORT: String(port),
