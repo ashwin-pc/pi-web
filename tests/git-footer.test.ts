@@ -60,7 +60,8 @@ describe("git footer porcelain v2 regression and command budget", () => {
     expect(visible).not.toContain("up to date");
     expect(html).toContain("upstream/main");
     expect(html).toMatch(/last fetched|locally fetched/i);
-    expect(html).toMatch(/no network|never fetch/);
+    expect(html).toContain("checked automatically about every 60 seconds");
+    expect(html).toContain("Never pulls");
     expect(html).toContain("aria-label=");
   });
 
@@ -228,6 +229,7 @@ describe("git footer subprocess bounds", () => {
         : upstream(2, 1)),
       stderr: "",
     })).mockRejectedValueOnce(failure);
+    const statusCalls = () => execute.mock.calls.filter(([, args]) => args.includes("status"));
     const mockedExecFile = Object.assign(vi.fn(), { [promisify.custom]: execute });
     vi.resetModules();
     vi.doMock("node:child_process", () => ({ execFile: mockedExecFile }));
@@ -236,26 +238,26 @@ describe("git footer subprocess bounds", () => {
       const firstModule = await import("../examples/pi-web-extensions/git-footer.js");
       const first = mount(undefined, cwd, firstModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(1); // No immediate second subprocess.
+      expect(statusCalls()).toHaveLength(1); // No immediate second subprocess.
       expect(first.html()).toBeUndefined();
       vi.resetModules();
       const secondModule = await import("../examples/pi-web-extensions/git-footer.js");
       const second = mount(undefined, cwd, secondModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(2);
-      expect(execute.mock.calls[1][1]).toContain("--no-ahead-behind");
+      expect(statusCalls()).toHaveLength(2);
+      expect(statusCalls()[1][1]).toContain("--no-ahead-behind");
       expect(second.html()).toContain("main");
       expect(second.html()).toContain("⇅?");
       expect(second.html()).toContain("dirty (?1)");
       first.emit("turn_end"); await flush();
-      expect(execute).toHaveBeenCalledTimes(2); // Shared fallback result cache.
+      expect(statusCalls()).toHaveLength(2); // Shared fallback result cache.
       expect(first.html()).toContain("⇅?");
       first.stop(); second.stop();
       await vi.advanceTimersByTimeAsync(30_001);
       const recovered = mount(undefined, cwd, firstModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(3);
-      expect(execute.mock.calls[2][1]).not.toContain("--no-ahead-behind");
+      expect(statusCalls()).toHaveLength(3);
+      expect(statusCalls()[2][1]).not.toContain("--no-ahead-behind");
       expect(recovered.html()).toContain("↑2 ↓1");
     } finally {
       vi.doUnmock("node:child_process");
@@ -333,5 +335,84 @@ describe("git footer real local refs", () => {
   it("recognizes a real nonrepo directory", async () => {
     const footer = mount(undefined, temp());
     await vi.waitFor(() => expect(footer.html()).toContain("no git repo"));
+  });
+});
+
+
+describe("automatic upstream fetch", () => {
+  function setup(fetch: Runner, cwd = "/repo", upstreamText = upstream()) {
+    const runner = vi.fn(async () => ok(status(upstreamText)));
+    const factory = (options: Parameters<typeof createGitFooterExtension>[0]) => createGitFooterExtension({ ...options, fetchGit: fetch });
+    return { footer: mount(runner, cwd, factory), runner, factory };
+  }
+  function fetchRunner(result: Result = ok()) {
+    return vi.fn(async (args: string[]) => args[0] === "rev-parse" ? ok("/shared/.git")
+      : args[0] === "for-each-ref" ? ok("origin\n") : result);
+  }
+  it("fetches only the configured remote, deduplicates worktrees and polls every minute", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    setup(fetch, "/repo/one"); setup(fetch, "/repo/two");
+    await flush();
+    const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0][0]).toEqual(["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
+      "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
+      "+refs/heads/*:refs/remotes/origin/*"]);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_501);
+    expect(calls()).toHaveLength(2);
+  });
+  it("does no metadata or network work without an upstream", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    setup(fetch, "/repo", "");
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("backs failures off while status continues refreshing", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner({ ok: false, output: "" });
+    const { runner } = setup(fetch);
+    await flush();
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    expect(runner.mock.calls.length).toBeGreaterThan(30);
+    await vi.advanceTimersByTimeAsync(2_501);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(2);
+  });
+  it("caps discovery concurrency across many repositories without blocking initialization", async () => {
+    vi.useFakeTimers();
+    const release: Array<(result: Result) => void> = [];
+    const fetch = vi.fn(() => new Promise<Result>((resolve) => { release.push(resolve); }));
+    const mounted = Array.from({ length: 20 }, (_, index) => setup(fetch, `/repository-${index}`));
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const { footer } of mounted) expect(footer.html()).toContain("main");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // Release discovery with an empty remote; neither admitted job fetches.
+    release.splice(0).forEach((resolve) => resolve(ok("/shared/.git")));
+    await flush();
+    release.splice(0).forEach((resolve) => resolve(ok("")));
+    await flush();
+  });
+  it("never overlaps a slow fetch, keeps status responsive, and retains dedupe after shutdown", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: Result) => void;
+    const fetch = fetchRunner();
+    fetch.mockImplementation(async (args) => args[0] === "rev-parse" ? ok("/shared/.git")
+      : args[0] === "for-each-ref" ? ok("origin") : new Promise<Result>((resolve) => { finish = resolve; }));
+    const { footer, runner } = setup(fetch);
+    await flush();
+    expect(footer.html()).toContain("main");
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(runner.mock.calls.length).toBeGreaterThan(40);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    footer.stop();
+    setup(fetch, "/repo/other"); await flush();
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    finish(ok()); await flush();
   });
 });

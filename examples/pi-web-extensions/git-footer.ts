@@ -8,6 +8,8 @@ const GIT_TIMEOUT_MS = 1_000;
 const CACHE_TTL_MS = 1_000;
 const COMPARISON_COOLDOWN_MS = 30_000;
 const MAX_CACHE_ENTRIES = 128;
+const FETCH_INTERVAL_MS = 60_000;
+const FETCH_TIMEOUT_MS = 15_000;
 const execFileAsync = promisify(execFile);
 
 type GitResult = {
@@ -88,6 +90,80 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
   }
 }
 
+// Separate from status: network work must never block a footer refresh or enter
+// the status timeout/comparison fallback path. Symbol state survives /reload.
+type FetchEntry = { pending?: Promise<void>; next: number; failures: number };
+type FetchState = { cwd: Map<string, FetchEntry>; repositories: Map<string, FetchEntry>; active?: number };
+const fetchKey = Symbol.for("pi-web.git-footer.fetch.v1");
+const fetchGlobal = globalThis as typeof globalThis & {
+  [fetchKey]?: { default: FetchState; custom: WeakMap<GitRunner, FetchState> };
+};
+const fetchStates: { default: FetchState; custom: WeakMap<GitRunner, FetchState> } = fetchGlobal[fetchKey] ??= {
+  default: { cwd: new Map(), repositories: new Map() }, custom: new WeakMap(),
+};
+
+async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd, encoding: "utf8", timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+      env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
+        GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" },
+    });
+    return { ok: true, output: stdout };
+  } catch { return { ok: false, output: "" }; }
+}
+
+function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: GitRunner) {
+  let state = git === runFetchGit ? fetchStates.default : fetchStates.custom.get(git);
+  if (!state) fetchStates.custom.set(git, state = { cwd: new Map(), repositories: new Map() });
+  const reserve = (map: Map<string, FetchEntry>, key: string) => {
+    const existing = map.get(key);
+    if (existing?.pending || (existing && existing.next > Date.now())) return;
+    // Never evict an active request or a cooldown (including failure backoff).
+    for (const [id, entry] of map) if (!entry.pending && entry.next <= Date.now()) map.delete(id);
+    if (!existing && map.size >= MAX_CACHE_ENTRIES) return;
+    const entry = existing ?? { next: 0, failures: 0 };
+    map.set(key, entry);
+    return entry;
+  };
+  // At most two discovery/fetch jobs process-wide; skip rather than queue work
+  // from inactive sessions. A later ordinary refresh will retry admission.
+  if ((state.active ?? 0) >= 2) return;
+  const entry = reserve(state.cwd, cwd);
+  if (!entry) return;
+  const repositories = state.repositories;
+  state.active = (state.active ?? 0) + 1;
+  const fetchState = state;
+  entry.next = Date.now() + FETCH_INTERVAL_MS;
+  entry.pending = (async () => {
+    const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
+    const remote = await git(["for-each-ref", "--format=%(upstream:remotename)", `refs/heads/${branch}`], cwd);
+    const name = remote.output.trim();
+    if (!common.ok || !common.output.trim() || !remote.ok || !name || name === "." || /[\s\0]/.test(name)) return;
+    const repository = reserve(repositories, `${common.output.trim()}\0${name}`);
+    if (!repository) return;
+    repository.pending = (async () => {
+      let success = false;
+      try {
+        // No pull, tags, submodules, pruning, maintenance, or configured refspecs
+        // targeting local branches. Only remote-tracking refs may be updated.
+        const result = await git(["-c", "credential.interactive=false", "-c", "core.askPass=",
+          "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
+          "--", name, `+refs/heads/*:refs/remotes/${name}/*`], cwd);
+        success = result.ok;
+        if (success) cacheFor(statusGit).clear(); // Includes sibling cwd/worktree caches.
+      } finally {
+        repository.failures = success ? 0 : Math.min(repository.failures + 1, 4);
+        repository.next = Date.now() + FETCH_INTERVAL_MS * 2 ** repository.failures;
+      }
+    })().catch(() => undefined).finally(() => { repository.pending = undefined; });
+    await repository.pending;
+  })().catch(() => undefined).finally(() => {
+    entry.pending = undefined;
+    fetchState.active = Math.max(0, (fetchState.active ?? 1) - 1);
+  });
+}
+
 function sessionKey(ctx: PiWebExtensionContext) {
   return ctx.sessionManager.getSessionId?.() || ctx.sessionManager.getSessionFile?.() || ctx.cwd;
 }
@@ -153,7 +229,7 @@ function formatDetails(snapshot: GitSnapshot) {
   return parts.length ? ` (${parts.join(" ")})` : "";
 }
 
-async function renderFooter(cwd: string, git: GitRunner) {
+async function renderFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
   const snapshot = await readSnapshot(cwd, git);
   if (snapshot === undefined) return undefined;
   if (snapshot === null) {
@@ -161,6 +237,8 @@ async function renderFooter(cwd: string, git: GitRunner) {
       <span>🌿 <strong style="color:#e7edf5">no git repo</strong></span>
     </div>`;
   }
+
+  if (snapshot.upstream && fetchGit) scheduleFetch(cwd, snapshot.branch, fetchGit, git);
 
   const status = snapshot.dirty ? `dirty${formatDetails(snapshot)}` : "clean";
   const dirtyColor = snapshot.dirty ? "#facc15" : "#86efac";
@@ -172,7 +250,7 @@ async function renderFooter(cwd: string, git: GitRunner) {
       : [snapshot.ahead ? `↑${snapshot.ahead}` : "", snapshot.behind ? `↓${snapshot.behind}` : ""].filter(Boolean).join(" ");
   const upstreamDetails = escapeHtml(`${snapshot.upstream}: ${comparisonKnown
     ? `${snapshot.ahead} ahead, ${snapshot.behind} behind`
-    : "comparison unavailable"}. Last fetched local ref; no network fetching.`);
+    : "comparison unavailable"}. Last fetched local ref; upstream remote checked automatically about every 60 seconds (failures back off). Never pulls or changes working files.`);
   const upstream = snapshot.upstream
     ? ` <span title="${upstreamDetails}" aria-label="${upstreamDetails}">${divergence}</span>`
     : "";
@@ -183,7 +261,7 @@ async function renderFooter(cwd: string, git: GitRunner) {
   </div>`;
 }
 
-function cachedFooter(cwd: string, git: GitRunner) {
+function cachedFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
   const cache = cacheFor(git);
   const now = Date.now();
   const existing = cache.get(cwd);
@@ -195,7 +273,7 @@ function cachedFooter(cwd: string, git: GitRunner) {
   }
   const entry: CacheEntry = { expires: 0 };
   cache.set(cwd, entry);
-  entry.pending = renderFooter(cwd, git).catch(() => undefined).then((html) => {
+  entry.pending = renderFooter(cwd, git, fetchGit).catch(() => undefined).then((html) => {
     entry.pending = undefined;
     if (html === undefined) cache.delete(cwd); // Failures retry on the next refresh.
     else { entry.html = html; entry.expires = Date.now() + CACHE_TTL_MS; }
@@ -207,8 +285,10 @@ function cachedFooter(cwd: string, git: GitRunner) {
 export function createGitFooterExtension(options: {
   git?: GitRunner;
   refreshMs?: number;
+  fetchGit?: GitRunner;
 } = {}) {
   const git = options.git || runGit;
+  const fetchGit = options.fetchGit ?? (options.git ? undefined : runFetchGit);
   const refreshMs = options.refreshMs ?? REFRESH_MS;
 
   function refresh(state: SessionState) {
@@ -216,7 +296,7 @@ export function createGitFooterExtension(options: {
     const revision = state.revision;
     const ctx = state.ctx;
     const key = sessionKey(ctx);
-    state.refreshing = cachedFooter(sessionCwd(ctx), git)
+    state.refreshing = cachedFooter(sessionCwd(ctx), git, fetchGit)
       .catch(() => undefined)
       .then((html) => {
         if (html === undefined
