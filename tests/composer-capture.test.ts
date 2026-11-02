@@ -1,8 +1,25 @@
-import { access, stat } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { access, rm, stat } from "node:fs/promises";
+import { dirname } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CaptureUploadLimiter, EphemeralCaptureStore } from "../server/extensions/captureStore.js";
 import { HttpError } from "../server/shared/httpError.js";
 import { capturedTextInsertion } from "../src/composer/composerCapture.js";
+
+const fsMocks = vi.hoisted(() => ({
+  access: vi.fn(),
+  mkdtemp: vi.fn(),
+  actualAccess: undefined as typeof import("node:fs/promises").access | undefined,
+  actualMkdtemp: undefined as typeof import("node:fs/promises").mkdtemp | undefined,
+}));
+
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  fsMocks.actualAccess = actual.access;
+  fsMocks.actualMkdtemp = actual.mkdtemp;
+  fsMocks.access.mockImplementation(actual.access);
+  fsMocks.mkdtemp.mockImplementation(actual.mkdtemp);
+  return { ...actual, access: fsMocks.access, mkdtemp: fsMocks.mkdtemp };
+});
 
 const policy = { media: "audio" as const, maxSeconds: 120, maxBytes: 1024, mimeTypes: ["audio/webm"] };
 const owner = { sessionId: "session-a", contributionKey: "voice.input", registrationId: "registration-a" };
@@ -11,6 +28,83 @@ const storedInput = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("ephemeral composer captures", () => {
+  beforeEach(() => {
+    fsMocks.access.mockReset();
+    fsMocks.mkdtemp.mockReset();
+    fsMocks.access.mockImplementation(fsMocks.actualAccess!);
+    fsMocks.mkdtemp.mockImplementation(fsMocks.actualMkdtemp!);
+  });
+
+  it("propagates a capture-root creation failure and retries on the next call", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    fsMocks.mkdtemp.mockRejectedValueOnce(new Error("synthetic mkdtemp failure"));
+
+    await expect(store.store(storedInput())).rejects.toThrow("synthetic mkdtemp failure");
+    const { id } = await store.store(storedInput());
+    const capture = await store.consume(id, owner, policy);
+    await store.releasePath(capture.path);
+    await store.dispose();
+  });
+
+  it("reuses one replacement root during concurrent removed-root recovery", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    const first = await store.store(storedInput());
+    const firstCapture = await store.consume(first.id, owner, policy);
+    const staleRoot = dirname(dirname(firstCapture.path));
+    await rm(staleRoot, { recursive: true, force: true });
+
+    let staleChecks = 0;
+    let releaseStaleChecks!: () => void;
+    let markReplacementCreated!: () => void;
+    const bothStaleChecksStarted = new Promise<void>((resolve) => { releaseStaleChecks = resolve; });
+    const replacementCreated = new Promise<void>((resolve) => { markReplacementCreated = resolve; });
+    fsMocks.access.mockImplementation(async (path) => {
+      if (path !== staleRoot) return fsMocks.actualAccess!(path);
+      const check = ++staleChecks;
+      if (check === 2) releaseStaleChecks();
+      await bothStaleChecksStarted;
+      if (check === 2) await replacementCreated;
+      throw Object.assign(new Error("removed"), { code: "ENOENT" });
+    });
+    fsMocks.mkdtemp.mockImplementation(async (prefix, options) => {
+      const root = await fsMocks.actualMkdtemp!(prefix, options as never);
+      markReplacementCreated();
+      return root;
+    });
+    fsMocks.mkdtemp.mockClear();
+
+    const [second, third] = await Promise.all([
+      store.store(storedInput({ contributionKey: "voice.second" })),
+      store.store(storedInput({ contributionKey: "voice.third" })),
+    ]);
+    const [secondCapture, thirdCapture] = await Promise.all([
+      store.consume(second.id, { ...owner, contributionKey: "voice.second" }, policy),
+      store.consume(third.id, { ...owner, contributionKey: "voice.third" }, policy),
+    ]);
+    expect(dirname(dirname(secondCapture.path))).toBe(dirname(dirname(thirdCapture.path)));
+    expect(fsMocks.mkdtemp).toHaveBeenCalledTimes(1);
+    await Promise.all([store.releasePath(secondCapture.path), store.releasePath(thirdCapture.path)]);
+    await store.dispose();
+  });
+
+  it("propagates non-ENOENT capture-root access errors without retrying", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    const first = await store.store(storedInput());
+    const firstCapture = await store.consume(first.id, owner, policy);
+    const root = dirname(dirname(firstCapture.path));
+    await store.releasePath(firstCapture.path);
+
+    fsMocks.access.mockImplementation(async (path) => {
+      if (path === root) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      return fsMocks.actualAccess!(path);
+    });
+    fsMocks.mkdtemp.mockClear();
+
+    await expect(store.store(storedInput())).rejects.toMatchObject({ code: "EACCES" });
+    expect(fsMocks.mkdtemp).not.toHaveBeenCalled();
+    await store.dispose();
+  });
+
   it("binds a private temporary capture to one registration and invocation", async () => {
     const store = new EphemeralCaptureStore(10_000);
     const { id } = await store.store(storedInput());
@@ -41,11 +135,97 @@ describe("ephemeral composer captures", () => {
     await store.dispose();
   });
 
-  it("rejects oversized, over-duration, and non-audio uploads with client statuses", async () => {
+  it("keeps claimed captures in quota until their paths are released", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    const claimed = [];
+    for (let index = 0; index < 32; index += 1) {
+      const stored = await store.store(storedInput({ contributionKey: `voice.${index}`, bytes: new Uint8Array([index]) }));
+      claimed.push(await store.consume(stored.id, { ...owner, contributionKey: `voice.${index}` }, policy));
+    }
+
+    await expect(store.store(storedInput({ contributionKey: "voice.over-quota" }))).rejects.toMatchObject({ status: 429 });
+    await Promise.all(claimed.map((capture) => store.releasePath(capture.path)));
+    const replacement = await store.store(storedInput({ contributionKey: "voice.replacement" }));
+    const replacementCapture = await store.consume(replacement.id, { ...owner, contributionKey: "voice.replacement" }, policy);
+    await store.releasePath(replacementCapture.path);
+    await store.dispose();
+  });
+
+  it("expires claimed capture files and makes cleanup idempotent", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    vi.useFakeTimers();
+    try {
+      const { id } = await store.store(storedInput());
+      const capture = await store.consume(id, owner, policy);
+      await vi.advanceTimersByTimeAsync(10_000);
+      vi.useRealTimers();
+      await vi.waitFor(async () => {
+        await expect(access(capture.path)).rejects.toThrow();
+      }, { timeout: 1_000, interval: 10 });
+      await store.releasePath(capture.path);
+      await store.releasePath(capture.path);
+      await store.delete(id);
+      await store.dispose();
+    } finally {
+      vi.useRealTimers();
+      await store.dispose();
+    }
+  });
+
+  it("accepts canonical audio types and codec parameters allowed by policy", async () => {
+    const store = new EphemeralCaptureStore(10_000);
+    const mimeTypes = [
+      "audio/webm;codecs=opus",
+      "audio/ogg; codecs=opus",
+      "audio/mp4; codecs=\"mp4a.40.2\"",
+      "audio/wav",
+      "audio/mpeg",
+      "audio/flac",
+      "audio/aac",
+    ];
+
+    for (const [index, mimeType] of mimeTypes.entries()) {
+      const normalizedMimeType = mimeType.split(";", 1)[0]!;
+      const allowedPolicy = { ...policy, mimeTypes: [normalizedMimeType] };
+      const stored = await store.store(storedInput({
+        contributionKey: `voice.mime-${index}`,
+        mimeType,
+        policy: allowedPolicy,
+      }));
+      const capture = await store.consume(stored.id, {
+        ...owner,
+        contributionKey: `voice.mime-${index}`,
+      }, allowedPolicy);
+      expect(capture.mimeType).toBe(normalizedMimeType);
+      await store.releasePath(capture.path);
+    }
+    await store.dispose();
+  });
+
+  it("rejects oversized, over-duration, and non-audio uploads", async () => {
     const store = new EphemeralCaptureStore();
     await expect(store.store(storedInput({ bytes: new Uint8Array(1025) }))).rejects.toMatchObject({ status: 413 });
     await expect(store.store(storedInput({ durationMs: 120_001 }))).rejects.toMatchObject({ status: 400 });
     await expect(store.store(storedInput({ mimeType: "text/plain" }))).rejects.toMatchObject({ status: 400 });
+    await store.dispose();
+  });
+
+  it.each([
+    "audio/",
+    "audio/-flac",
+    "audio/fl ac",
+    "audio/fl@c",
+    "audio//flac",
+    `audio/${"a".repeat(128)}`,
+    "audio/webm;\r\nx-injected: yes",
+    "audio/webm\u0000",
+  ])("rejects malformed Content-Type %j", async (mimeType) => {
+    const store = new EphemeralCaptureStore();
+    await expect(store.store(storedInput({
+      mimeType,
+      policy: { ...policy, mimeTypes: undefined },
+    }))).rejects.toMatchObject({ status: 400 });
+    await store.dispose();
   });
 });
 

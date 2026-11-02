@@ -56,7 +56,7 @@ function startServer(port: number, cwd: string, settingsFile: string, agentDir: 
 async function jsonRequest(baseUrl: string, path: string, method: string, body: unknown) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: baseUrl, "x-pi-web-client-id": "settings-endpoints-test" },
     body: JSON.stringify(body),
   });
   return { status: response.status, body: await response.json() };
@@ -92,7 +92,7 @@ function chunkedJsonRequest(port: number, path: string, method: string, body: un
 
 function rawRequest(port: number, path: string): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "PATCH" }, (res) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "PATCH", headers: { origin: `http://127.0.0.1:${port}`, "x-pi-web-client-id": "settings-endpoints-test" } }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({

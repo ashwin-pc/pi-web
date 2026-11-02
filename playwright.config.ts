@@ -6,6 +6,7 @@ import { isolatedAuthEnv } from "./tests/auth-isolation.js";
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 9876);
 const authOnly = process.env.PI_WEB_E2E_AUTH === "1";
+const trustedUser = "owner@example.test";
 const runtimeDir = mkdtempSync(join(tmpdir(), "pi-web-playwright-"));
 const settingsFile = (serverPort: number) => join(runtimeDir, `settings-${serverPort}.json`);
 const sessionUiStateFile = (serverPort: number) => join(runtimeDir, `session-ui-state-${serverPort}.json`);
@@ -33,6 +34,8 @@ export default defineConfig({
   },
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    // APIRequestContext mutations need intent without changing browser GET identity.
+    extraHTTPHeaders: { "x-pi-web-test-client-intent": "playwright-test" },
     // Tracing this bundle can add several minutes to a retry while Playwright
     // collects and compresses source maps. Enable it only for focused debugging.
     trace: process.env.PI_WEB_E2E_TRACE === "1" ? "on-first-retry" : "off",
@@ -57,6 +60,6 @@ export default defineConfig({
     { name: "tablet", use: { viewport: { width: 768, height: 1024 } }, testIgnore: ["**/auth.spec.ts", "**/multi-auth.spec.ts"] },
     { name: "desktop", use: { viewport: { width: 1280, height: 800 } }, testIgnore: ["**/auth.spec.ts", "**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
     { name: "isolated", use: { viewport: { width: 1280, height: 800 } }, testMatch: ["**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
-    { name: "auth", use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { "x-test-user": "owner@example.test" } }, testMatch: "**/auth.spec.ts" },
+    { name: "auth", use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { "x-test-user": trustedUser } }, testMatch: ["**/auth.spec.ts"] },
   ],
 });
