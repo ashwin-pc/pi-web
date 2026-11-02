@@ -107,7 +107,11 @@ async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
     const { stdout } = await execFileAsync("git", args, {
       cwd, encoding: "utf8", timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
       env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
-        GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" },
+        GIT_ASKPASS: "", SSH_ASKPASS: "",
+        // Respect trusted custom identities/proxies/wrappers. Default OpenSSH
+        // is bounded and batch-only; custom transports retain the process timeout.
+        ...(!process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH
+          ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" } : {}) },
     });
     return { ok: true, output: stdout };
   } catch { return { ok: false, output: "" }; }
@@ -141,10 +145,12 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
   entry.next = Date.now() + FETCH_INTERVAL_MS;
   entry.pending = (async () => {
     const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
-    const remote = await git(["for-each-ref", "--format=%(upstream:remotename)", `refs/heads/${branch}`], cwd);
-    const name = remote.output.trim();
-    if (!common.ok || !common.output.trim() || !remote.ok || !name || name === "." || /[\s\0]/.test(name)) return;
-    const repository = reserve(repositories, `${common.output.trim()}\0${name}`);
+    const remote = await git(["for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)", `refs/heads/${branch}`], cwd);
+    const [name, source, destination] = remote.output.trim().split("\0");
+    if (!common.ok || !common.output.trim() || !remote.ok || !name || name === "." || /[\s\0]/.test(name)
+      || !source?.startsWith("refs/heads/") || !destination?.startsWith("refs/remotes/")
+      || /[\s:*?\[\\]/.test(source + destination)) return;
+    const repository = reserve(repositories, `${common.output.trim()}\0${name}\0${source}\0${destination}`);
     if (!repository) return;
     repository.pending = (async () => {
       let success = false;
@@ -153,7 +159,7 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
         // targeting local branches. Only remote-tracking refs may be updated.
         const result = await git(["-c", "credential.interactive=false", "-c", "core.askPass=",
           "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
-          "--", name, `+refs/heads/*:refs/remotes/${name}/*`], cwd);
+          "--", name, `+${source}:${destination}`], cwd);
         success = result.ok;
         if (success) cacheFor(statusGit).clear(); // Includes sibling cwd/worktree caches.
       } finally {

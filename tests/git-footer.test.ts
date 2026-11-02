@@ -310,7 +310,7 @@ describe("git footer real local refs", () => {
     expect(gitCommand(cwd, "rev-parse", "refs/remotes/upstream/main")).not.toBe(gitCommand(cwd, "rev-parse", "HEAD"));
   });
 
-  it("never applies configured fetch mappings to local branches", async () => {
+  it.each(["refs/remotes/origin/main", "refs/remotes/custom/main"])("refreshes %s without applying configured mappings to local branches", async tracking => {
     const remote = temp(), cwd = temp();
     gitCommand(remote, "init", "-b", "main");
     gitCommand(remote, "config", "user.name", "Footer Test");
@@ -320,12 +320,14 @@ describe("git footer real local refs", () => {
     gitCommand(cwd, "clone", remote, ".");
     gitCommand(cwd, "branch", "victim");
     const original = gitCommand(cwd, "rev-parse", "victim");
-    gitCommand(cwd, "config", "remote.origin.fetch", "+refs/heads/main:refs/heads/victim");
+    gitCommand(cwd, "update-ref", tracking, original);
+    gitCommand(cwd, "config", "remote.origin.fetch", `+refs/heads/main:${tracking}`);
+    gitCommand(cwd, "config", "--add", "remote.origin.fetch", "+refs/heads/main:refs/heads/victim");
     writeFileSync(join(remote, "base"), "advanced");
     gitCommand(remote, "commit", "-am", "advance");
     const advanced = gitCommand(remote, "rev-parse", "HEAD");
     mount(undefined, cwd);
-    await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/main")).toBe(advanced));
+    await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", tracking)).toBe(advanced));
     expect(gitCommand(cwd, "rev-parse", "victim")).toBe(original);
     // Let fetch completion invalidate its cache before the next cache-only test.
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -368,7 +370,7 @@ describe("automatic upstream fetch", () => {
   }
   function fetchRunner(result: Result = ok()) {
     return vi.fn(async (args: string[]) => args[0] === "rev-parse" ? ok("/shared/.git")
-      : args[0] === "for-each-ref" ? ok("origin\n") : result);
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main\n") : result);
   }
   it("fetches only the configured remote, deduplicates worktrees and polls every minute", async () => {
     vi.useFakeTimers();
@@ -379,7 +381,7 @@ describe("automatic upstream fetch", () => {
     expect(calls()).toHaveLength(1);
     expect(calls()[0][0]).toEqual(["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
       "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
-      "+refs/heads/*:refs/remotes/origin/*"]);
+      "+refs/heads/main:refs/remotes/origin/main"]);
     await vi.advanceTimersByTimeAsync(59_999);
     expect(calls()).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(2_501);
@@ -406,7 +408,7 @@ describe("automatic upstream fetch", () => {
   it("retains failure backoff when another repository reserves expired entries", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(async (args: string[], cwd: string) => args[0] === "rev-parse" ? ok(`${cwd}/.git`)
-      : args[0] === "for-each-ref" ? ok("origin") : { ok: false, output: "" });
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main") : { ok: false, output: "" });
     const first = setup(fetch, "/a"); await flush(); first.footer.stop();
     await vi.advanceTimersByTimeAsync(120_000);
     const second = setup(fetch, "/b"); await flush(); second.footer.stop();
@@ -440,7 +442,7 @@ describe("automatic upstream fetch", () => {
     let finish!: (value: Result) => void;
     const fetch = fetchRunner();
     fetch.mockImplementation(async (args) => args[0] === "rev-parse" ? ok("/shared/.git")
-      : args[0] === "for-each-ref" ? ok("origin") : new Promise<Result>((resolve) => { finish = resolve; }));
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main") : new Promise<Result>((resolve) => { finish = resolve; }));
     const { footer, runner } = setup(fetch);
     await flush();
     expect(footer.html()).toContain("main");
