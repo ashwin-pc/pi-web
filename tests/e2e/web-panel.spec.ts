@@ -9,7 +9,7 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     ok: true,
     messages: [
       { role: "assistant", isError: false, text: "[Missing panel](#panel:missing:note=ignored) · [Malformed panel](#panel::note=ignored)" },
-      { role: "user", text: "[Open scanner task](#panel:notes:note=oncall%2Fw34&task=old&task=t-3f2a)" },
+      { role: "assistant", isError: false, text: "[Open scanner task](#panel:notes:note=oncall%2Fw34&task=old&task=t-3f2a)" },
     ],
   } }));
   await page.request.post("/api/mock/state", { data: {
@@ -56,11 +56,15 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await page.locator("#prompt").blur();
 
   const panel = page.locator("#webExtensionPanel");
+  // Deep-link anchors authored by the agent require explicit owner
+  // confirmation before the panel handler is invoked; Playwright dismisses
+  // dialogs by default, which exercises the "owner declined" path.
   await page.getByRole("link", { name: "Missing panel" }).click();
   await page.getByRole("link", { name: "Malformed panel" }).click();
   await expect(panel).toBeHidden();
   expect(invocations).toEqual([]);
 
+  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("link", { name: "Open scanner task" }).click();
   await expect(panel).toBeVisible();
   await expect.poll(() => invocations.length).toBe(1);
