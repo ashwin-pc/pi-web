@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const FOOTER_KEY = "local-git-footer";
@@ -125,9 +124,9 @@ export async function safeFetchDestination(common: string, ref: string, cwd: str
 }
 
 export async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
-  // Never give fetch the user-controlled destination. Fetch into an unpredictable
-  // private ref, then publish with no-deref so even a concurrent symref replacement
-  // cannot redirect the update into refs/heads.
+  // Download an advertised object without writing any ref or FETCH_HEAD. Publish
+  // with no-deref CAS, so a concurrent symref swap cannot move a local branch
+  // and a manual fetch wins. Process death leaves no private staging refs.
   if (args.includes("fetch") && args.at(-1)?.includes(":")) {
     const [source, destination] = args.at(-1)!.split(":");
     const common = await runFetchGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
@@ -135,19 +134,16 @@ export async function runFetchGit(args: string[], cwd: string): Promise<GitResul
     const previous = await runFetchGit(["rev-parse", "--verify", "--quiet", destination], cwd);
     const previousOid = previous.ok ? previous.output.trim() : undefined;
     if (previousOid !== undefined && !/^[a-f0-9]{40,64}$/.test(previousOid)) return { ok: false, output: "" };
-    const staging = `refs/remotes/pi-web-fetch-${randomUUID()}`;
-    if (!await safeFetchDestination(common.output.trim(), staging, cwd)) return { ok: false, output: "" };
-    try {
-      const result = await runFetchProcess([...args.slice(0, -1), `${source}:${staging}`], cwd);
-      if (!result.ok) return result;
-      const oid = await runFetchGit(["rev-parse", "--verify", staging], cwd);
-      if (!oid.ok || !/^[a-f0-9]{40,64}$/.test(oid.output.trim()) || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
-      // A manual fetch may have advanced this ref during our transfer. Never
-      // replace its newer snapshot; an absent destination also uses CAS.
-      return await runFetchGit(["update-ref", "--no-deref", destination, oid.output.trim(), previousOid ?? "0".repeat(oid.output.trim().length)], cwd);
-    } finally {
-      await runFetchGit(["update-ref", "--no-deref", "-d", staging], cwd);
-    }
+    const sourceRef = source.replace(/^\+/, "");
+    const prefix = args.slice(0, args.indexOf("fetch"));
+    const advertised = await runFetchProcess([...prefix, "ls-remote", "--refs", "--", args.at(-2)!, sourceRef], cwd);
+    const rows = advertised.output.trim().split(/\r?\n/).map(line => line.split(/\s+/));
+    if (!advertised.ok || rows.length !== 1 || rows[0][1] !== sourceRef || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(rows[0][0])) return { ok: false, output: "" };
+    const oid = rows[0][0];
+    // Empty refmap overrides configured refspecs even with an explicit OID.
+    const result = await runFetchProcess([...prefix, "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", args.at(-2)!, oid], cwd);
+    if (!result.ok || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
+    return runFetchGit(["update-ref", "--no-deref", destination, oid, previousOid ?? "0".repeat(oid.length)], cwd);
   }
   return runFetchProcess(args, cwd);
 }
@@ -155,7 +151,7 @@ export async function runFetchGit(args: string[], cwd: string): Promise<GitResul
 export async function runFetchProcess(args: string[], cwd: string, timeoutMs = FETCH_TIMEOUT_MS, maxBuffer = 1024 * 1024): Promise<GitResult> {
   try {
     let defaultSsh = false;
-    if (args.includes("fetch") && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+    if ((args.includes("fetch") || args.includes("ls-remote")) && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
       try {
         const configured = await execFileAsync("git", ["config", "--get", "core.sshCommand"], {
           cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 65536,

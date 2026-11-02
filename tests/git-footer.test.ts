@@ -610,6 +610,7 @@ exec '${realGit}' "$@"
     const bin = join(cwd, "bin"); mkdirSync(bin);
     writeFileSync(join(bin, "git"), `#!/bin/sh
 if [ "$1" = update-ref ] && [ "$2" = --no-deref ] && [ "$3" = refs/remotes/origin/main ]; then
+  '${realGit}' for-each-ref --format='%(refname)' > '${join(cwd, "after-transfer-refs")}'
   '${realGit}' update-ref refs/remotes/origin/main '${newer}'
 fi
 exec '${realGit}' "$@"
@@ -620,6 +621,10 @@ exec '${realGit}' "$@"
       expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/snapshot:refs/remotes/origin/main"], cwd)).ok).toBe(false);
     } finally { process.env.PATH = oldPath; }
     expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/main")).toBe(newer);
+    expect(readFileSync(join(cwd, "after-transfer-refs"), "utf8").trim().split("\n")).toEqual([
+      "refs/heads/main", "refs/heads/snapshot", "refs/remotes/origin/main",
+    ]);
+    expect(existsSync(join(cwd, ".git/FETCH_HEAD"))).toBe(false);
     expect(gitCommand(cwd, "for-each-ref", "refs/remotes/pi-web-fetch-")).toBe("");
   });
 
