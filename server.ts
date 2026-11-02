@@ -1511,7 +1511,6 @@ const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:n
   if (url.pathname !== "/ws") {
     const protocol = req.headers["sec-websocket-protocol"];
     if (isDev && url.pathname === "/" && (protocol === "vite-hmr" || protocol === "vite-ping")) {
-      socket.off("error", destroyOnError);
       viteUpgrades.handle(req, socket, head);
     } else {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
