@@ -108,7 +108,13 @@ export function defaultSettingsValues(schema: SettingsSchema): JsonObject {
   return out;
 }
 
-function coerceScalar(field: FieldDescriptor, raw: unknown, path: string, errors: ValidationError[]): unknown {
+function coerceScalar(
+  field: FieldDescriptor,
+  raw: unknown,
+  path: string,
+  errors: ValidationError[],
+  skipPattern = false,
+): unknown {
   switch (field.type) {
     case "toggle":
       return typeof raw === "boolean" ? raw : Boolean(raw);
@@ -133,16 +139,18 @@ function coerceScalar(field: FieldDescriptor, raw: unknown, path: string, errors
     case "select": {
       const s = typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : String(raw);
       const trimmed = field.type === "select" ? s.trim() : s;
+      const declaredOverLimit = field.maxLength !== undefined && trimmed.length > field.maxLength;
       if (field.required && !trimmed.trim()) errors.push({ path, message: `${field.label} is required` });
       if (field.minLength !== undefined && trimmed.length < field.minLength) {
         errors.push({ path, message: `${field.label} must be ≥ ${field.minLength} chars` });
       }
-      if (field.maxLength !== undefined && trimmed.length > field.maxLength) {
+      if (declaredOverLimit) {
         errors.push({ path, message: `${field.label} must be ≤ ${field.maxLength} chars` });
       }
-      if (field.pattern && trimmed) {
+      const pattern = !skipPattern && !declaredOverLimit ? field.pattern : undefined;
+      if (pattern && trimmed) {
         try {
-          if (!new RegExp(field.pattern).test(trimmed)) errors.push({ path, message: `${field.label} is invalid` });
+          if (!new RegExp(pattern).test(trimmed)) errors.push({ path, message: `${field.label} is invalid` });
         } catch {
           /* invalid pattern in descriptor — ignore */
         }
@@ -230,11 +238,22 @@ export function validateSettingsValues(
   return { values, errors };
 }
 
-function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: ValidationError[]): JsonObject[] {
+function coerceList(
+  field: FieldDescriptor,
+  raw: unknown,
+  path: string,
+  errors: ValidationError[],
+  skipPatterns = false,
+): JsonObject[] {
   if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
     errors.push({ path, message: `${field.label} must be a list` });
   }
   const arr = Array.isArray(raw) ? raw : [];
+  const declaredOverLimit = field.maxItems !== undefined && arr.length > field.maxItems;
+  if (declaredOverLimit) {
+    errors.push({ path, message: `${field.label} allows at most ${field.maxItems}` });
+  }
+  const skipRowPatterns = skipPatterns || declaredOverLimit;
   const itemFields = field.itemFields ?? [];
   const rows: JsonObject[] = arr.map((rawRow, i) => {
     const row: JsonObject = {};
@@ -246,8 +265,8 @@ function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: 
     row.__id = typeof rowSrc.__id === "string" && rowSrc.__id ? rowSrc.__id : newRowId();
     for (const item of itemFields) {
       row[item.key] = item.type === "list"
-        ? coerceList(item, rowSrc[item.key], `${path}[${i}].${item.key}`, errors)
-        : coerceScalar(item, rowSrc[item.key], `${path}[${i}].${item.key}`, errors);
+        ? coerceList(item, rowSrc[item.key], `${path}[${i}].${item.key}`, errors, skipRowPatterns)
+        : coerceScalar(item, rowSrc[item.key], `${path}[${i}].${item.key}`, errors, skipRowPatterns);
     }
     return row;
   });
@@ -255,10 +274,6 @@ function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: 
   if (field.minItems !== undefined && rows.length < field.minItems) {
     errors.push({ path, message: `${field.label} needs at least ${field.minItems}` });
   }
-  if (field.maxItems !== undefined && rows.length > field.maxItems) {
-    errors.push({ path, message: `${field.label} allows at most ${field.maxItems}` });
-  }
-
   // per-column case-insensitive uniqueness
   for (const item of itemFields) {
     if (!item.uniqueCaseInsensitive) continue;

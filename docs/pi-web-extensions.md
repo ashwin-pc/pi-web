@@ -61,6 +61,8 @@ pi-web-only extensions are loaded from:
 | `~/.pi/web/extensions/*.ts` | User-global, pi-web only |
 | `~/.pi/web/extensions/*/index.ts` | User-global directory extension |
 
+Workspace entries must resolve within the workspace's whole `.pi/web/extensions` directory. Package manifests may reference sibling or absolute paths that remain within that root. Escaping entries are skipped with a warning. User-global installs are trusted sources and may remain symlinked to checkouts outside `~/.pi/web/extensions`.
+
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
 Project-local resources require workspace trust before pi-web loads them. This
@@ -219,7 +221,96 @@ ctx.ui.web.setFooter("git", {
 });
 ```
 
-HTML is rendered as trusted extension-provided markup. pi-web extensions run with the same local trust model as regular pi extensions, so only install extensions from sources you trust.
+HTML is sanitized before it enters pi-web's privileged app document. Form controls,
+`data-*` action/payload attributes, accessibility attributes, inline styles,
+global `<style>` blocks, and static SVG are preserved. Scripts, event-handler
+attributes, active scripting URLs, embedded frames, and form navigation outside
+the pi-web origin are removed. Global style blocks can affect the host UI, so
+extension authors should prefix selectors with an extension-specific class.
+Styles and media may load remote resources. Extensions still run server-side
+with the user's permissions, so only install extensions from sources you trust;
+browser contribution HTML is a separate, untrusted boundary.
+
+### Host-delegated HTML actions
+
+Sanitized footer, panel, Git-tab, and system-info HTML can request clipboard
+copy from pi-web. This is a host action: pi-web performs it after sanitization;
+it does not run extension-authored browser scripts.
+
+Use `data-web-copy="<text>"` to copy literal text. Put
+`data-web-copy-status` on a descendant whose text pi-web may temporarily
+replace with `Copied` or `Copy failed`. Native buttons already support keyboard
+activation:
+
+```html
+<button type="button" data-web-copy="git status --short">
+  Copy command <span data-web-copy-status aria-live="polite"></span>
+</button>
+```
+
+A non-button control must use accessible button semantics. Pi-web handles both
+Enter and Space:
+
+```html
+<span role="button" tabindex="0" data-web-copy="feature/my-branch">
+  feature/my-branch <span data-web-copy-status></span>
+</span>
+```
+
+Purely visual behavior should stay in extension CSS. For example, this
+scroll-driven mask shows a right-edge fade at the start, both edge fades in the
+middle, and a left-edge fade at the end in modern Chromium. Browsers without
+scroll-driven animations retain the useful initial right-edge fade:
+
+```html
+<style>
+  .my-extension-repo-strip {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-mask-image:
+      linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+    mask-image:
+      linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+  }
+
+  @supports (animation-timeline: scroll()) {
+    .my-extension-repo-strip {
+      animation: my-extension-repo-strip-fade 1ms linear both;
+      animation-timeline: scroll(self inline);
+    }
+
+    @keyframes my-extension-repo-strip-fade {
+      0% {
+        -webkit-mask-image:
+          linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+        mask-image:
+          linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent 100%);
+      }
+      1%, 99% {
+        -webkit-mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+        mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+      }
+      100% {
+        -webkit-mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 100%);
+        mask-image:
+          linear-gradient(to right, transparent 0, #000 14px, #000 100%);
+      }
+    }
+  }
+</style>
+
+<div class="my-extension-repo-strip" tabindex="0">
+  <!-- wide strip content -->
+</div>
+```
+
+`data-web-copy` and `data-web-copy-status` are explicitly preserved by the
+extension HTML sanitizer. They are independent of `data-web-action`, which
+continues to invoke the server-side extension.
 
 ## Header action API
 
@@ -244,8 +335,8 @@ The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../
 
 ## FAB and right-panel API
 
-`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**: trusted
-extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
+`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**:
+sanitized extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
 implicit entry point** — registering one contributes nothing to the FAB. Entry points
 are explicit and may be anything that references the panel:
 
@@ -286,9 +377,9 @@ Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
 The extension owns scrolling, highlighting, and fallback behavior; unknown or
 malformed panel links are a quiet no-op.
 
-Panel HTML is trusted and uses the same local extension trust model as custom
-footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
-use action attributes for interaction. Clear the contribution with:
+Panel HTML crosses an untrusted browser boundary and uses the same sanitizer as
+custom footer, Git-tab, and system-info HTML. Use action attributes for
+interaction. Clear the contribution with:
 
 ```ts
 ctx.ui.web.setPanel("notes", undefined);
@@ -385,7 +476,7 @@ ctx.ui.web.setArtifactAction("publish", undefined);
 
 ## Git panel tab API
 
-`ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
+`ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer and sanitizes returned HTML; extensions own provider detection and data fetching.
 
 Elements inside the HTML can call back into the extension by using `data-web-action` and optional JSON in `data-web-payload` (the legacy Git-tab names remain accepted). An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
 
@@ -593,11 +684,11 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch, live dirty/clean state, and compact tracked-upstream indicators (`↑N` ahead / `↓N` behind, or `✓` when synchronized). The upstream name and full explanation live in accessible tooltips; clean/dirty state uses a colored dot with change counts. Comparisons use the last fetched local refs only: the footer never fetches or contacts a remote. One bounded Git status command provides all the data, with a one-second per-working-directory cache and shared in-flight requests across sessions. If comparison times out, subsequent refreshes skip ahead/behind counting for 30 seconds (`⇅?`) so branch and dirty state can still update without repeatedly walking history. It refreshes periodically and around turns, bash commands, and compaction events.
 
-Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
+Install it for one project from a checkout of this repository:
 
 ```sh
 mkdir -p .pi/web/extensions
-ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" .pi/web/extensions/git-footer.ts
+cp examples/pi-web-extensions/git-footer.ts .pi/web/extensions/git-footer.ts
 ```
 
 Or install it for all pi-web projects:
@@ -607,7 +698,7 @@ mkdir -p ~/.pi/web/extensions
 ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" ~/.pi/web/extensions/git-footer.ts
 ```
 
-These commands assume your current directory is the pi-web repository root. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+These commands assume your current directory is the pi-web repository root. Workspace extension entries must resolve within that workspace's `.pi/web/extensions` directory; replace older workspace symlinks to outside checkouts with a copy (or keep the source itself beneath that directory). Global `~/.pi/web/extensions` installs continue to support symlinks to trusted checkouts. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
 
 ## Example: multi-agent session orchestration
 

@@ -124,6 +124,21 @@ describe("extension settings registry", () => {
     expect((await settingsStore.read()).extensions?.["demo.x"]?.values).toEqual({ tier: "new" });
   });
 
+  it("preserves a long value through schema migration and persistence", async () => {
+    const { bridge, settingsStore } = await makeBridge();
+    const longValue = "x".repeat(10_000);
+    await settingsStore.patchExtension("demo.x", { tier: "old" }, { schemaVersion: 1, expectedRevision: 0 });
+
+    const result = await register(bridge, makeSession("s1"), schemaFor("demo.x", {
+      schemaVersion: 2,
+      fields: [{ key: "tier", type: "text", label: "Tier", maxLength: 20_000 }],
+      migrate: async () => ({ tier: longValue }),
+    }));
+
+    expect(result).toMatchObject({ registered: true, migrated: true, usedBackup: false });
+    expect((await settingsStore.read()).extensions?.["demo.x"]?.values).toEqual({ tier: longValue });
+  });
+
   it("keeps the first schema when a divergent one claims the same id", async () => {
     const { bridge } = await makeBridge();
     await register(bridge, makeSession("s1"), schemaFor("demo.x"));

@@ -1,3 +1,6 @@
+import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
+import { extensionHostActions } from "./extensionHostActions.js";
+
 type PiWebFooterEntry = {
   key?: unknown;
   footer?: unknown;
@@ -21,6 +24,7 @@ function normalizeFooter(value: unknown): NormalizedFooter | undefined {
 }
 
 export function renderWebFooters(container: HTMLElement, value: unknown) {
+  extensionHostActions(container);
   const entries = Array.isArray(value) ? value as PiWebFooterEntry[] : [];
   container.textContent = "";
 
@@ -32,7 +36,7 @@ export function renderWebFooters(container: HTMLElement, value: unknown) {
     region.className = `webFooterEntry ${footer.kind}`;
     if (typeof entry.key === "string" && entry.key) region.dataset.footerKey = entry.key;
 
-    if (footer.kind === "html") region.innerHTML = footer.html;
+    if (footer.kind === "html") region.replaceChildren(sanitizeExtensionHtml(footer.html));
     else region.textContent = footer.lines.join("\n");
 
     container.append(region);

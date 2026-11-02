@@ -1,6 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { extensionHostActions } from "../extensions/extensionHostActions.js";
+import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { SystemInfoSnapshot } from "./types.js";
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -119,6 +121,7 @@ export function createSystemInfo(options: {
   const status = el("p", "systemInfoStatus");
   status.setAttribute("aria-live", "polite");
   const content = el("div", "systemInfoContent");
+  extensionHostActions(content);
   body.append(status, content);
   panel.append(header, body);
   if (inlineContainer) {
@@ -182,7 +185,7 @@ export function createSystemInfo(options: {
       if (!response.ok || !data.ok) throw new Error(data.error || response.statusText || "System-info contribution failed");
       if (typeof data.html !== "string") throw new Error("System-info contribution returned no content");
       if (data.title?.trim()) section.firstElementChild?.replaceWith(el("h3", undefined, data.title.trim()));
-      bodyEl.innerHTML = data.html;
+      bodyEl.replaceChildren(sanitizeExtensionHtml(data.html));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       bodyEl.replaceChildren(el("div", "systemInfoError", message));
