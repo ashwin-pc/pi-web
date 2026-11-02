@@ -335,7 +335,7 @@ test("inline HTML preview runs on mount and keeps its Source control outside the
 });
 
 test("linked and custom HTML artifact previews execute before their interaction shields are dismissed", async ({ page }) => {
-  await page.route("**/api/artifacts/preview.html", (route) => route.fulfill({
+  await page.route(/\/api\/(?:artifacts\/preview\.html|session-artifacts\/[^/]+\/preview\.html)$/, (route) => route.fulfill({
     contentType: "text/html",
     body: "<p id=\"linked\">linked ran</p><script>linked.dataset.ran='yes'</script>",
   }));

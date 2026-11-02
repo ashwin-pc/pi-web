@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   formatSkillsForPrompt,
@@ -38,7 +38,18 @@ import type {
 } from "./dto.js";
 import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type LocalSessionInfo } from "./piFactory.js";
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
-import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
+import { sessionsReadTail, type SessionReadResult } from "./referenceTools.js";
+import {
+  SessionAdmissionController,
+  sessionResourceLimits,
+} from "./resourceLimits.js";
+import { mapConcurrent } from "./shallowList.js";
+import { readSavedTranscript, SavedTranscriptReadError } from "./savedTranscript.js";
+import { boundSessionReferenceText, projectSessionReferenceRecord } from "./referenceProjection.js";
+import {
+  ViewerLeaseController,
+  type ViewerPrincipal,
+} from "./viewerLeases.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -47,8 +58,6 @@ import {
   isIncompleteToolResultMessage,
   projectCommittedMessage,
   sessionDisplayName,
-  textFromContent,
-  toolCallName,
   sessionStats,
   simplifyModel,
 } from "./projection.js";
@@ -100,15 +109,10 @@ type LiveSessionEntry = {
   handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
+  lastTouched: number;
+  admissionEvictable: boolean;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
-};
-
-type ViewerLease = {
-  sessionKey: string;
-  lastAcceptedSeq?: number;
-  sockets: Set<symbol>;
-  releaseTimer?: ReturnType<typeof setTimeout>;
 };
 
 type RetrySessionTarget =
@@ -157,81 +161,6 @@ function jsonSafe<T>(value: T): T {
 const MODEL_REFRESH_TIMEOUT_MS = 10_000;
 // Sessions share a runtime; opening several pickers must not multiply catalog requests.
 const modelRefreshes = new WeakMap<ModelRuntime, { pending?: Promise<boolean> }>();
-
-const MAX_SESSION_READ_ENTRY_TEXT = 6_000;
-const MAX_SESSION_READ_TEXT = 12_000;
-
-function shortValue(value: unknown, limit = 60): string {
-  if (typeof value === "string") return truncateSessionText(value, limit).text;
-  if (typeof value === "number" || typeof value === "boolean" || value === null) return String(value);
-  if (Array.isArray(value)) return `[${value.length} items]`;
-  if (!value || typeof value !== "object") return "";
-  const keys: string[] = [];
-  for (const key in value as Record<string, unknown>) {
-    if (Object.prototype.hasOwnProperty.call(value, key)) keys.push(truncateSessionText(key, 30).text);
-    if (keys.length === 3) break;
-  }
-  return `{${keys.join(", ")}${keys.length === 3 ? ", …" : ""}}`;
-}
-
-function shortToolArgs(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const parts: string[] = [];
-  for (const key in value as Record<string, unknown>) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-    const part = `${truncateSessionText(key, 30).text}: ${shortValue((value as Record<string, unknown>)[key])}`;
-    if (parts.length && `${parts.join(", ")}, ${part}`.length > 140) break;
-    parts.push(part);
-    if (parts.length === 4) break;
-  }
-  return truncateSessionText(parts.join(", "), 160).text;
-}
-
-function textForTail(value: string, limit: number, compact: boolean) {
-  return compact ? truncateSessionText(value, limit) : { text: value, truncated: false };
-}
-
-function textReference(entry: unknown, compact: boolean): SessionReadText | undefined {
-  const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : undefined;
-  if (!record || record.type !== "message" || !isSessionReferenceId(record.id) || !record.message || typeof record.message !== "object") return undefined;
-  const message = record.message as Record<string, unknown>;
-  const role = typeof message.role === "string" ? message.role : "unknown";
-  const text = textForTail(textFromContent(message.content), role === "assistant" ? 700 : role === "toolResult" ? 200 : 400, compact);
-  if (role === "assistant") {
-    const lines = text.text ? [`[assistant] ${text.text}`] : [];
-    for (const part of Array.isArray(message.content) ? message.content : []) {
-      if (!part || typeof part !== "object") continue;
-      const call = part as Record<string, unknown>;
-      if (call.type === "toolCall") lines.push(`  → ${toolCallName(call)}(${shortToolArgs(call.arguments)})`);
-    }
-    return { entryId: record.id, text: lines.join("\n") || "[assistant]", truncated: text.truncated };
-  }
-  if (role === "toolResult") {
-    const name = typeof message.toolName === "string" ? message.toolName : "tool";
-    return { entryId: record.id, text: `  ${message.isError ? "✗" : "✓"} ${name}${text.text ? `: ${text.text}` : ""}`, truncated: text.truncated };
-  }
-  if (role === "bashExecution") {
-    const command = typeof message.command === "string" ? textForTail(message.command, 160, compact) : { text: shortValue(message.command, 160), truncated: false };
-    const output = typeof message.output === "string" ? textForTail(message.output, 200, compact) : { text: shortValue(message.output, 200), truncated: false };
-    return { entryId: record.id, text: [`  $ ${command.text}`, ...(output.text ? [`    ${output.text}`] : [])].join("\n"), truncated: command.truncated || output.truncated };
-  }
-  return { entryId: record.id, text: `[${role}]${text.text ? ` ${text.text}` : ""}`, truncated: text.truncated };
-}
-
-function boundReferenceText(entries: SessionReadText[], tail: number) {
-  const tailEntries = entries.slice(-sessionsReadTail(tail));
-  let remaining = MAX_SESSION_READ_TEXT;
-  let truncated = entries.length > tailEntries.length;
-  const selected: SessionReadText[] = [];
-  for (const entry of tailEntries.reverse()) {
-    if (remaining <= 0) { truncated = true; break; }
-    const bounded = truncateSessionText(entry.text, Math.min(MAX_SESSION_READ_ENTRY_TEXT, remaining));
-    selected.push({ ...entry, text: bounded.text });
-    remaining -= bounded.text.length;
-    truncated ||= Boolean(entry.truncated) || bounded.truncated;
-  }
-  return { entries: selected.reverse(), truncated };
-}
 
 function interactionRequestFromWire(value: Record<string, unknown>): InteractionRequestDto | undefined {
   if (value.type !== "interaction_request" || typeof value.id !== "string" || typeof value.source !== "string" || typeof value.kind !== "string" || typeof value.sessionId !== "string" || typeof value.sessionFile !== "string") return undefined;
@@ -294,9 +223,9 @@ export class LocalSessionService implements SessionService {
   private readonly sessionNamesByPath = new Map<string, string | undefined>();
   private readonly sessionLocations = new Map<string, { path: string; cwd: string }>();
   private readonly openingById = new Map<string, Promise<PiWebSession | undefined>>();
+  private readonly admissions = new SessionAdmissionController();
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
-  private readonly viewerLeases = new Map<string, ViewerLease>();
-  private readonly viewerConnections = new Map<symbol, string>();
+  private readonly viewerLeases: ViewerLeaseController;
   private readonly productionFactory: PiSessionFactory;
   private readonly blockedModelIds = new Set<string>();
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
@@ -320,6 +249,27 @@ export class LocalSessionService implements SessionService {
       sessionCwd: (manager) => this.sessionCwd({ sessionManager: manager }),
       rememberCwd: (cwd) => this.knownSessionCwds.add(resolve(cwd)),
       readSession: (reference, tail) => this.readSession(reference, tail),
+    });
+    this.viewerLeases = new ViewerLeaseController(this.viewerGraceMs, {
+      sessionKey: (sessionId) => {
+        const value = this.liveById.get(sessionId);
+        if (!value) return undefined;
+        const key = sessionPathKey(value);
+        return this.liveSessions.has(key) ? key : undefined;
+      },
+      addViewer: (sessionKey, leaseKey) => {
+        const entry = this.liveSessions.get(sessionKey);
+        if (!entry) return;
+        entry.viewerClientIds.add(leaseKey);
+        entry.lastTouched = Date.now();
+        this.cancelLiveSessionCleanup(entry);
+      },
+      removeViewer: (sessionKey, leaseKey) => {
+        const entry = this.liveSessions.get(sessionKey);
+        if (!entry) return;
+        entry.viewerClientIds.delete(leaseKey);
+        this.scheduleLiveSessionCleanup(sessionKey);
+      },
     });
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
@@ -367,11 +317,16 @@ export class LocalSessionService implements SessionService {
   }
 
   async initialize(path?: string): Promise<PiWebSession> {
-    const created = await this.makeAgentSession(path);
-    if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
-    const value = this.registerLiveSession(created.session);
-    this.setCurrentSession(value);
-    return value;
+    const releaseAdmission = await this.reserveRuntimeAdmission();
+    try {
+      const created = await this.makeAgentSession(path);
+      if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
+      const value = this.registerLiveSession(created.session);
+      this.setCurrentSession(value);
+      return value;
+    } finally {
+      releaseAdmission();
+    }
   }
 
   setCurrentSession(value: PiWebSession) {
@@ -572,16 +527,36 @@ export class LocalSessionService implements SessionService {
       if (!reference.entryId) source = "active branch";
       records = reference.entryId ? [live.sessionManager.getEntry?.(reference.entryId)] : live.sessionManager.getBranch?.() || [];
     } else {
-      records = await this.savedSessionRecords(reference.sessionId);
-      if (reference.entryId) records = [records.find((item) => item && typeof item === "object" && "id" in item && item.id === reference.entryId)];
+      const location = await this.findSessionLocationById(reference.sessionId);
+      if (!location) throw new SessionServiceError("Session not found", 404);
+      try {
+        const saved = await readSavedTranscript({
+          path: location.path,
+          sessionId: reference.sessionId,
+          tail: sessionsReadTail(tail),
+          entryId: reference.entryId,
+          project: projectSessionReferenceRecord,
+        });
+        if (reference.entryId && !saved.matchedEntry) throw new SessionServiceError("Session entry not found", 404);
+        if (reference.entryId && !saved.entries.length) throw new SessionServiceError("Referenced entry has no readable text", 404);
+        return {
+          reference,
+          source,
+          ...boundSessionReferenceText(saved.entries, reference.entryId ? 1 : tail, saved.truncatedBeforeTail),
+        };
+      } catch (error) {
+        if (error instanceof SessionServiceError) throw error;
+        if (error instanceof SavedTranscriptReadError) throw new SessionServiceError(error.message, error.status);
+        throw error;
+      }
     }
     if (reference.entryId && !records[0]) throw new SessionServiceError("Session entry not found", 404);
     const entries = records.flatMap((record) => {
-      const entry = textReference(record, !reference.entryId);
+      const entry = projectSessionReferenceRecord(record, !reference.entryId);
       return entry ? [entry] : [];
     });
     if (reference.entryId && !entries.length) throw new SessionServiceError("Referenced entry has no readable text", 404);
-    return { reference, source, ...boundReferenceText(entries, reference.entryId ? 1 : tail) };
+    return { reference, source, ...boundSessionReferenceText(entries, reference.entryId ? 1 : tail) };
   }
 
   async commands(sessionId: string) {
@@ -796,19 +771,27 @@ export class LocalSessionService implements SessionService {
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
     if (this.noSession) return [];
     const cwds = this.knownCwds();
-    for (const cwd of extraCwds) if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
-    const orderedCwds = Array.from(cwds).sort();
-    const key = orderedCwds.join("\n");
+    for (const cwd of extraCwds) {
+      if (typeof cwd !== "string" || !cwd.trim()) continue;
+      cwds.add(resolve(cwd));
+    }
+    const byStorageDirectory = new Map<string, string>();
+    for (const cwd of Array.from(cwds).sort()) {
+      const directory = piSessionDirectory(cwd);
+      if (!byStorageDirectory.has(directory)) byStorageDirectory.set(directory, cwd);
+    }
+    const scanCwds = Array.from(byStorageDirectory.values());
+    const key = scanCwds.join("\n");
     const pending = this.sessionListRequests.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const groups = await Promise.all(orderedCwds.map(async (cwd) => {
+      const groups = await mapConcurrent(scanCwds, sessionResourceLimits.listConcurrency, async (cwd) => {
         try {
           const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
           const infos = await factory.list!(cwd);
           return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
         } catch { return []; }
-      }));
+      });
       return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
     })();
     this.sessionListRequests.set(key, request);
@@ -835,10 +818,15 @@ export class LocalSessionService implements SessionService {
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
     if (this.noSession) throw new Error("Sessions are disabled.");
-    const info = await this.findSessionLocationById(sessionId, cwd);
+    if (this.protectedSessionIds.has(sessionId)) throw new SessionServiceError("This session is the server's default session and cannot be deleted while pi-web is running.", 409);
+    const liveValue = this.liveById.get(sessionId);
+    const liveKey = liveValue ? sessionPathKey(liveValue) : undefined;
+    const info = liveValue && liveKey
+      ? { id: sessionId, path: liveKey, cwd: this.sessionCwd(liveValue) }
+      : await this.findSessionLocationById(sessionId, cwd);
     if (!info) throw new SessionServiceError("Session not found", 404);
     const live = this.liveSessions.get(info.path);
-    if (live?.session.isStreaming || live?.session.isCompacting) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
+    if (live && this.isLiveSessionBusy(live)) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
     if (live) await this.disposeLiveSession(info.path, "delete", true);
     const disposition = this.deps.sessionFactory?.remove
       ? await this.deps.sessionFactory.remove(sessionId, info.path)
@@ -855,71 +843,26 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string, seq?: number) {
-    const value = this.liveById.get(sessionId);
-    if (!clientId || !value) return;
-    const key = sessionPathKey(value);
-    const entry = this.liveSessions.get(key);
-    if (!entry) return;
-    let lease = this.viewerLeases.get(clientId);
-    // Check before touching timers or either session's lease membership.
-    const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
-    if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
-    this.clearTimer(lease?.releaseTimer);
-    if (!lease) {
-      lease = { sessionKey: key, sockets: new Set() };
-      this.viewerLeases.set(clientId, lease);
-    } else if (lease.sessionKey !== key) {
-      const previousKey = lease.sessionKey;
-      this.liveSessions.get(previousKey)?.viewerClientIds.delete(clientId);
-      this.scheduleLiveSessionCleanup(previousKey);
-      lease.sessionKey = key;
-    }
-    if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
-    entry.viewerClientIds.add(clientId);
-    this.cancelLiveSessionCleanup(entry);
-    if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);
+  acquireViewer(sessionId: string, clientId: string, principal: ViewerPrincipal, seq?: number) {
+    return this.viewerLeases.acquire(sessionId, clientId, principal, seq);
   }
 
-  connectViewer(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease) return undefined;
-    this.clearTimer(lease.releaseTimer);
-    lease.releaseTimer = undefined;
-    const connection = Symbol(clientId);
-    lease.sockets.add(connection);
-    this.viewerConnections.set(connection, clientId);
-    return connection;
+  connectViewer(clientId: string, principal: ViewerPrincipal) {
+    return this.viewerLeases.connect(clientId, principal);
   }
 
   disconnectViewer(connection: symbol) {
-    const clientId = this.viewerConnections.get(connection);
-    if (!clientId) return;
-    this.viewerConnections.delete(connection);
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease || !lease.sockets.delete(connection) || lease.sockets.size > 0) return;
-    this.releaseViewer(clientId);
+    this.viewerLeases.disconnect(connection);
   }
 
-  releaseViewer(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease) return;
-    this.clearTimer(lease.releaseTimer);
-    this.viewerLeases.delete(clientId);
-    for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-    lease.sockets.clear();
-    const entry = this.liveSessions.get(lease.sessionKey);
-    if (entry) {
-      entry.viewerClientIds.delete(clientId);
-      this.scheduleLiveSessionCleanup(lease.sessionKey);
-    }
+  releaseViewer(clientId: string, principal: ViewerPrincipal) {
+    this.viewerLeases.release(clientId, principal);
   }
 
-  lifecycleSnapshot() {
+  lifecycleSnapshot(principal?: ViewerPrincipal) {
     return {
       liveSessions: Array.from(this.liveSessions.values()).map((entry) => ({
         sessionId: entry.session.sessionId,
-        sessionFile: entry.session.sessionFile,
         viewerLeases: entry.viewerClientIds.size,
         workLeases: entry.workLeases.size,
         retryLeases: Array.from(entry.workLeases.values()).filter((lease) => lease.kind === "retry").length,
@@ -934,30 +877,12 @@ export class LocalSessionService implements SessionService {
         isStreaming: Boolean(entry.session.isStreaming),
         isCompacting: Boolean(entry.session.isCompacting),
       })),
-      viewerLeases: Array.from(this.viewerLeases.entries()).map(([clientId, lease]) => ({
-        clientId,
-        sessionKey: lease.sessionKey,
-        sockets: lease.sockets.size,
-        hasReleaseTimer: Boolean(lease.releaseTimer),
-      })),
+      viewerLeases: this.viewerLeases.snapshot(principal),
     };
   }
 
   private sessionCwd(value: PiWebSession | any) {
     return String(value?.sessionManager?.getCwd?.() || value?.cwd || this.deps.globalCwd());
-  }
-
-  private async savedSessionRecords(sessionId: string): Promise<unknown[]> {
-    const location = await this.findSessionLocationById(sessionId);
-    if (!location) throw new SessionServiceError("Session not found", 404);
-    try {
-      const records = (await readFile(location.path, "utf8")).split("\n").flatMap((line) => {
-        try { return line.trim() ? [JSON.parse(line)] : []; } catch { return []; }
-      });
-      const header = records[0] as Record<string, unknown> | undefined;
-      if (header?.type !== "session" || header.id !== sessionId) throw new Error();
-      return records.slice(1);
-    } catch { throw new SessionServiceError("Session not found", 404); }
   }
 
   private async makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = this.deps.globalCwd()) {
@@ -972,17 +897,23 @@ export class LocalSessionService implements SessionService {
     const targetCwd = cwd ? await assertDirectory(cwd, this.deps.globalCwd()) : resolve(this.deps.globalCwd());
     this.knownSessionCwds.add(targetCwd);
     await this.productionFactory.ensureStorage(targetCwd);
-    const created = await this.makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile }, targetCwd);
-    if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
-    const value = created.session;
-    if (this.deps.sessionFactory?.isMock) {
-      value.sessionManager.newSession();
-      value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+    const releaseAdmission = await this.reserveRuntimeAdmission();
+    try {
+      const created = await this.makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile }, targetCwd);
+      if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
+      const value = created.session;
+      if (this.deps.sessionFactory?.isMock) {
+        value.sessionManager.newSession();
+        value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+      }
+      await this.applyDefaults(value);
+      this.registerLiveSession(value, false);
+      releaseAdmission();
+      await this.deps.sessionConfig.finalizeCreatedSession(value.sessionId);
+      return value;
+    } finally {
+      releaseAdmission();
     }
-    await this.applyDefaults(value);
-    this.registerLiveSession(value);
-    await this.deps.sessionConfig.finalizeCreatedSession(value.sessionId);
-    return value;
   }
 
   private async applyDefaults(value: PiWebSession) {
@@ -994,12 +925,12 @@ export class LocalSessionService implements SessionService {
     if (defaults.thinkingLevel && value.getAvailableThinkingLevels().includes(defaults.thinkingLevel)) value.setThinkingLevel(defaults.thinkingLevel);
   }
 
-  private registerLiveSession(value: PiWebSession) {
+  private registerLiveSession(value: PiWebSession, admissionEvictable = true) {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), lastTouched: Date.now(), admissionEvictable });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -1013,6 +944,10 @@ export class LocalSessionService implements SessionService {
     const sessionFile = value.sessionFile;
     const mapped = mapPiEvent(e);
     const raw = event as any;
+    if (raw?.type === "message_end") {
+      const entry = this.liveSessions.get(sessionPathKey(value));
+      if (entry) entry.admissionEvictable = true;
+    }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
       return;
@@ -1121,6 +1056,7 @@ export class LocalSessionService implements SessionService {
       lease.watchdogTimer.unref?.();
     }
     entry.workLeases.set(token, lease);
+    entry.lastTouched = Date.now();
     this.cancelLiveSessionCleanup(entry);
     this.emitRuntime(value, "changed");
     return { sessionKey: key, key: token } satisfies WorkLeaseToken;
@@ -1164,6 +1100,17 @@ export class LocalSessionService implements SessionService {
   private isLiveSessionBusy(entry: LiveSessionEntry) { return Boolean(entry.session.isStreaming || entry.session.isCompacting || entry.workLeases.size > 0); }
   private shouldKeepLiveSession(entry: LiveSessionEntry) { return this.protectedSessionIds.has(entry.session.sessionId) || entry.viewerClientIds.size > 0 || this.isLiveSessionBusy(entry); }
 
+  private async reserveRuntimeAdmission() {
+    return this.admissions.reserve({
+      residentCount: () => this.liveSessions.size,
+      evictableKeys: () => Array.from(this.liveSessions.entries())
+        .filter(([, entry]) => entry.admissionEvictable && !entry.disposing && !this.shouldKeepLiveSession(entry))
+        .sort(([, a], [, b]) => a.lastTouched - b.lastTouched)
+        .map(([key]) => key),
+      evict: (key) => this.disposeLiveSession(key, "idle"),
+    });
+  }
+
   private scheduleLiveSessionCleanup(key: string) {
     const entry = this.liveSessions.get(key);
     if (!entry || entry.disposing) return;
@@ -1173,13 +1120,6 @@ export class LocalSessionService implements SessionService {
       entry.disposeTimer = undefined;
       void this.disposeLiveSession(key, "idle");
     }, this.idleGraceMs);
-  }
-
-  private scheduleViewerLeaseRelease(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease || lease.sockets.size > 0) return;
-    this.clearTimer(lease.releaseTimer);
-    lease.releaseTimer = setTimeout(() => this.releaseViewer(clientId), this.viewerGraceMs);
   }
 
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
@@ -1192,13 +1132,7 @@ export class LocalSessionService implements SessionService {
     const value = entry.session;
     const sessionId = value.sessionId;
     const sessionFile = value.sessionFile || key;
-    for (const [clientId, lease] of this.viewerLeases) {
-      if (lease.sessionKey !== key) continue;
-      this.clearTimer(lease.releaseTimer);
-      this.viewerLeases.delete(clientId);
-      for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-      lease.sockets.clear();
-    }
+    this.viewerLeases.dropSession(key);
     await entry.handle.dispose(reason);
     this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
@@ -1295,7 +1229,12 @@ export class LocalSessionService implements SessionService {
 
   private async getOrCreateLiveSession(path: string) {
     const existing = this.liveSessions.get(path)?.session;
-    if (existing) { this.scheduleLiveSessionCleanup(path); return existing; }
+    if (existing) {
+      const entry = this.liveSessions.get(path);
+      if (entry) entry.lastTouched = Date.now();
+      this.scheduleLiveSessionCleanup(path);
+      return existing;
+    }
     const created = await this.makeAgentSession(path);
     if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
     return this.registerLiveSession(created.session);
@@ -1303,20 +1242,31 @@ export class LocalSessionService implements SessionService {
 
   private async getOrCreateLiveSessionById(id: string, cwd?: string) {
     const existing = this.liveById.get(id);
-    if (existing) return existing;
+    if (existing) {
+      const entry = this.liveSessions.get(sessionPathKey(existing));
+      if (entry) entry.lastTouched = Date.now();
+      return existing;
+    }
     const pending = this.openingById.get(id);
     if (pending) return pending;
     const opening = (async () => {
-      const remembered = this.sessionLocations.get(id);
-      if (remembered) {
-        try { return await this.openSessionAtLocation(id, remembered); }
+      let location = this.sessionLocations.get(id);
+      if (location && !this.deps.sessionFactory) {
+        try { await stat(location.path); }
         catch (error) {
-          if (!(error instanceof SessionServiceError) || error.status !== 404) throw error;
+          if (!isMissingPath(error)) throw error;
           this.sessionLocations.delete(id);
+          location = undefined;
         }
       }
-      const location = await this.resolveSessionLocation(id, cwd);
-      return location ? this.openSessionAtLocation(id, location) : undefined;
+      location ||= await this.resolveSessionLocation(id, cwd);
+      if (!location) return undefined;
+      const releaseAdmission = await this.reserveRuntimeAdmission();
+      try {
+        return await this.openSessionAtLocation(id, location);
+      } finally {
+        releaseAdmission();
+      }
     })();
     this.openingById.set(id, opening);
     try { return await opening; }

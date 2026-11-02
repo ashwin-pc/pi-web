@@ -1,8 +1,13 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
+import {
+  discoverExtensionEntryPaths,
+  resolveBundledExtensionPaths,
+  resolveGlobalPiWebExtensionPaths,
+  resolveWorkspacePiWebExtensionPaths,
+} from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 import { SessionSettlementTracker } from "../server/session/settlement.js";
 import { createSettlementDependencyStore } from "../src/sessions/settlementDependencies.js";
@@ -19,6 +24,8 @@ async function makeTempDir() {
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("bundled extension path discovery", () => {
@@ -53,6 +60,106 @@ describe("bundled extension path discovery", () => {
     await writeFile(join(packageDir, "src", "main.ts"), "export default () => {};\n");
 
     expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "src", "main.ts")]);
+  });
+
+  it("preserves documented global symlink installs outside the discovery root", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "web-home", "extensions");
+    const checkoutExtension = join(root, "checkout", "example.ts");
+    await mkdir(extensionsDir, { recursive: true });
+    await mkdir(join(checkoutExtension, ".."), { recursive: true });
+    await writeFile(checkoutExtension, "export default () => {};\n");
+    await symlink(checkoutExtension, join(extensionsDir, "example.ts"));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+
+    expect(resolveGlobalPiWebExtensionPaths()).toEqual([join(extensionsDir, "example.ts")]);
+  });
+
+  it("allows sibling, absolute, and ..foo manifest entries inside the extension root", async () => {
+    const root = await makeTempDir();
+    const cwd = join(root, "project");
+    const extensionsDir = join(cwd, ".pi", "web", "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    const sharedDir = join(extensionsDir, "shared");
+    await mkdir(packageDir, { recursive: true });
+    await mkdir(sharedDir, { recursive: true });
+    await writeFile(join(sharedDir, "main.ts"), "export default () => {};\n");
+    await writeFile(join(sharedDir, "absolute.ts"), "export default () => {};\n");
+    await writeFile(join(extensionsDir, "..foo.ts"), "export default () => {};\n");
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      pi: { extensions: ["../shared/main.ts", join(sharedDir, "absolute.ts"), "../..foo.ts"] },
+    }));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+
+    const canonicalExtensionsDir = join(await realpath(cwd), ".pi", "web", "extensions");
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([
+      join(canonicalExtensionsDir, "shared", "main.ts"),
+      join(sharedDir, "absolute.ts"),
+      join(canonicalExtensionsDir, "..foo.ts"),
+    ]);
+  });
+
+  it("uses real directory identity to terminate manifest and symlink cycles (N33)", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({ pi: { extensions: ["./entry.ts", "./again"] } }));
+    await writeFile(join(packageDir, "entry.ts"), "export default () => {};\n");
+    await symlink(packageDir, join(packageDir, "again"));
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "entry.ts")]);
+  });
+
+  it("does not truncate discovery after 1024 filesystem objects", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    await mkdir(extensionsDir, { recursive: true });
+    await Promise.all(Array.from({ length: 1024 }, (_, i) =>
+      writeFile(join(extensionsDir, `a-${String(i).padStart(4, "0")}.txt`), "ignored\n")));
+    await writeFile(join(extensionsDir, "z-after-limit.ts"), "export default () => {};\n");
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(extensionsDir, "z-after-limit.ts")]);
+  });
+
+  it("logs and skips workspace extension entries that escape the workspace root", async () => {
+    const root = await makeTempDir();
+    const cwd = join(root, "project");
+    const extensionsDir = join(cwd, ".pi", "web", "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    const outsideExtension = join(root, "outside.ts");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(outsideExtension, "export default () => {};\n");
+    await symlink(outsideExtension, join(extensionsDir, "outside-link.ts"));
+    await symlink(outsideExtension, join(extensionsDir, "README.md"));
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      pi: { extensions: [outsideExtension] },
+    }));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("outside-link.ts"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(await realpath(cwd), ".pi", "web", "extensions")}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${outsideExtension}"`));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("README.md"));
+    warn.mockRestore();
+  });
+
+  it("rejects a workspace extension root symlinked outside the workspace", async () => {
+    const root = await makeTempDir();
+    const cwd = join(root, "project");
+    const outside = join(root, "outside-extensions");
+    await mkdir(join(cwd, ".pi", "web"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "index.ts"), "export default () => {};\n");
+    await symlink(outside, join(cwd, ".pi", "web", "extensions"));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(await realpath(cwd), ".pi", "web", "extensions")}"`));
+    warn.mockRestore();
   });
 
   it("keeps product-bundled extensions explicit when the workspace is the app directory", async () => {
@@ -195,6 +302,62 @@ describe("bundled extension path discovery", () => {
       slot: "artifact-preview", key: "gcode",
       event: { context: { name: "part.stl", path: "/api/artifacts/part.stl", kind: "file" } },
     })).rejects.toThrow("does not match this artifact");
+  });
+
+  it("rejects malformed artifact paths before invoking extension renderers", async () => {
+    let ui: any;
+    let actionInvocations = 0;
+    let previewInvocations = 0;
+    const bridge = createWebUiBridge({
+      emit: () => undefined, clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    ui.web.setArtifactAction("inspect", {
+      title: "Inspect",
+      invoke: () => { actionInvocations++; return { message: "inspected" }; },
+    });
+    ui.web.setArtifactPreview("inspect", {
+      title: "Inspect",
+      render: () => { previewInvocations++; return { html: "<p>previewed</p>" }; },
+    });
+
+    const invalid = [
+      { name: "part.gcode", path: "/api/artifacts/../part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%2e%2e/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested%2Fdir/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested%5Cdir/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%00/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested//part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%E0%A4%A/part.gcode" },
+      { name: "part.gcode?download=1", path: "/api/artifacts/part.gcode?download=1" },
+      { name: "part.gcode#preview", path: "/api/artifacts/part.gcode#preview" },
+      { name: "part.gcode", path: "/api/session-artifacts/other/prints/part.gcode" },
+    ];
+    for (const context of invalid) {
+      await expect(bridge.invokeContribution(session, {
+        slot: "artifact-action", key: "inspect", event: { context: { ...context, kind: "file" } },
+      })).rejects.toThrow("Invalid artifact context");
+      await expect(bridge.invokeContribution(session, {
+        slot: "artifact-preview", key: "inspect", event: { context: { ...context, kind: "file" } },
+      })).rejects.toThrow("Invalid artifact context");
+    }
+    expect(actionInvocations).toBe(0);
+    expect(previewInvocations).toBe(0);
+
+    const valid = { name: "设计 part.gcode", path: "/api/session-artifacts/session/prints/%E8%AE%BE%E8%AE%A1%20part.gcode", kind: "file" };
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-action", key: "inspect", event: { context: valid },
+    })).resolves.toMatchObject({ message: "inspected" });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "inspect", event: { context: valid },
+    })).resolves.toMatchObject({ html: "<p>previewed</p>" });
+    expect(actionInvocations).toBe(1);
+    expect(previewInvocations).toBe(1);
   });
 
   it("keeps legacy surfaces isolated over one contribution registry", async () => {

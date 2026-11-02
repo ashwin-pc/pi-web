@@ -94,13 +94,16 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     }
     const value = input.event?.fields?.content || "Initial global note";
     const status = input.event?.action === "save" ? "Saved globally" : `Shared with every conversation · revision ${revision}`;
+    const content = input.event?.action === "deep-link"
+      ? `<div id="deep-link-target" tabindex="-1" autofocus>Scanner task</div>`
+      : `<form class="webPanelForm" data-web-action="save"><textarea class="webPanelTextarea" name="content" autofocus>${value}</textarea><div class="webPanelFormActions"><span role="status">${status}</span><button class="webPanelButton" type="submit" data-web-action="save">Save</button></div></form>`;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
         title: "Global notepad",
-        html: `<form class="webPanelForm" data-web-action="save"><textarea class="webPanelTextarea" name="content" autofocus>${value}</textarea><div class="webPanelFormActions"><span role="status">${status}</span><button class="webPanelButton" type="submit" data-web-action="save">Save</button></div></form>`,
+        html: content,
       }),
     });
   });
@@ -167,6 +170,10 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     key: "quiet",
     event: { action: "deep-link", source: "message", payload: { note: "oncall/w34" } },
   });
+  const deepLinkTarget = panel.locator("#deep-link-target");
+  await expect(deepLinkTarget).toHaveAttribute("autofocus", "");
+  await expect(deepLinkTarget).toHaveAttribute("tabindex", "-1");
+  await expect(deepLinkTarget).toBeFocused();
   await panel.getByRole("button", { name: "Close panel" }).click();
 
   await page.locator(".actionLauncherToggle").click();
@@ -175,7 +182,10 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await page.locator(".actionLauncherItem", { hasText: "Notepad" }).click();
 
   await expect(panel).toBeVisible();  await expect(panel.locator("h2")).toHaveText("Global notepad");
-  await expect(panel.locator("textarea")).toHaveValue("Initial global note");
+  const panelInput = panel.locator("textarea");
+  await expect(panelInput).toHaveAttribute("autofocus", "");
+  await expect(panelInput).toBeFocused();
+  await expect(panelInput).toHaveValue("Initial global note");
   await expect(panel.getByRole("status")).toContainText("revision 1");
 
   const invokesBeforeUpdate = invocations.length;

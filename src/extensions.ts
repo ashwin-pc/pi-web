@@ -220,7 +220,7 @@ export type PiWebPanelDeepLinks = {
 
 export type PiWebPanelView = {
   title?: string;
-  /** Trusted extension-provided HTML rendered in the shared right panel. */
+  /** Extension-provided HTML sanitized before rendering in the shared right panel. */
   html: string;
 };
 
@@ -342,7 +342,7 @@ export type PiWebUi = {
    * Set or clear a pi-web footer region.
    *
    * - string/string[] and { kind: "text" } render as plain text.
-   * - { kind: "html" } renders as trusted extension-provided HTML.
+   * - { kind: "html" } renders as sanitized extension-provided HTML.
    *
    * pi-web extensions run with full local trust, like regular pi extensions.
    * Only install pi-web extensions from sources you trust.

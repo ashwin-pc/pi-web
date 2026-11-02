@@ -1,5 +1,5 @@
 import { crc32, inflateSync } from "node:zlib";
-import { maxAvatarAnimationBytes } from "./shared/appIdentity.js";
+import { maxAvatarAnimationBytes, maxAvatarAnimationDecodedBytes } from "./shared/appIdentity.js";
 
 /** Bounded, non-interlaced RGBA APNG; validate every frame, not just its poster. */
 export function validAvatarAnimation(bytes: Buffer): boolean {
@@ -7,18 +7,22 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
     if (bytes.length > maxAvatarAnimationBytes || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return false;
     let offset = 8, width = 0, height = 0, frames = 0, declared = 0, sequence = 0, duration = 0, ended = false;
     let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false, separatePoster = false, sawPalette = false;
+    let remainingInflateBytes = maxAvatarAnimationDecodedBytes;
     const finish = () => {
       if (!data.length) throw new Error("Missing frame data");
       const stride = frameWidth * 4 + 1;
-      const raw = inflateSync(Buffer.concat(data), { maxOutputLength: stride * frameHeight });
-      if (raw.length !== stride * frameHeight) throw new Error("Invalid frame size");
+      const expected = stride * frameHeight;
+      if (expected > remainingInflateBytes) throw new Error("Inflate budget exceeded");
+      const raw = inflateSync(Buffer.concat(data), { maxOutputLength: expected });
+      if (raw.length !== expected) throw new Error("Invalid frame size");
+      remainingInflateBytes -= raw.length;
       for (let y = 0; y < frameHeight; y++) if (raw[y * stride] > 4) throw new Error("Invalid filter");
       data = [];
     };
     while (offset + 12 <= bytes.length) {
       const length = bytes.readUInt32BE(offset);
       if (length > bytes.length - offset - 12) return false;
-      const type = bytes.toString("ascii", offset + 4, offset + 8);
+      const type = bytes.toString("latin1", offset + 4, offset + 8);
       const body = bytes.subarray(offset + 8, offset + 8 + length);
       if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== bytes.readUInt32BE(offset + 8 + length)) return false;
       if (offset === 8) {

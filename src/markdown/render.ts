@@ -4,6 +4,7 @@ import { Check, Copy, createElement, Download, MessageCircle, PanelRightOpen } f
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { artifactSessionId, scopeArtifactUrl } from "../artifacts/url.js";
 import { artifactPreviewBaseUrl, createHtmlPreviewGate } from "./htmlPreviewGate.js";
 import {
   classifyMarkdownImageSource,
@@ -455,13 +456,20 @@ function enhanceCodeBlocks(root: ParentNode) {
   }
 }
 
-function enhanceImages(root: ParentNode) {
+function enhanceImages(root: ParentNode, sessionId = artifactActionSessionId()) {
   const message = root instanceof Element ? root.closest(".message") : null;
   const role = message?.classList.contains("user") ? "user"
     : message?.classList.contains("system") ? "system"
       : message?.classList.contains("tool") ? "tool" : "assistant";
-  enhanceRemoteMarkdownImages(root, attachImageActions, { sessionId: artifactActionSessionId(), role });
-  for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) attachImageActions(img);
+  enhanceRemoteMarkdownImages(root, attachImageActions, { sessionId, role });
+  for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) {
+    const src = img.getAttribute("src");
+    if (src) {
+      const scoped = scopeArtifactUrl(src, sessionId);
+      if (scoped !== src) img.src = scoped;
+    }
+    attachImageActions(img);
+  }
 }
 
 function artifactName(pathname: string) {
@@ -671,13 +679,16 @@ function attachArtifactOverflowControl(card: HTMLElement, content: HTMLElement) 
   return refresh;
 }
 
-function enhanceArtifactLinks(root: ParentNode) {
+function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessionId()) {
   const links = root.querySelectorAll<HTMLAnchorElement>(
     'a[href^="/api/artifacts/"], a[href^="/api/session-artifacts/"]',
   );
   for (const link of Array.from(links)) {
     if (link.closest(".artifactPreview") || link.dataset.artifactPreviewEnhanced) continue;
+    link.href = scopeArtifactUrl(link.getAttribute("href") || "", sessionId);
     const url = new URL(link.href, window.location.origin);
+    const artifactUrl = `${url.pathname}${url.search}${url.hash}`;
+    const artifactPath = url.pathname;
     const builtInKind = artifactKind(url.pathname);
     const fileName = artifactName(url.pathname);
     const customPreview = builtInKind ? undefined : matchingArtifactPreview(fileName, "file");
@@ -699,7 +710,7 @@ function enhanceArtifactLinks(root: ParentNode) {
     open.title = "Open in Artifacts panel";
     open.setAttribute("aria-label", open.title);
     open.append(createElement(PanelRightOpen, { "aria-hidden": "true" }));
-    open.addEventListener("click", () => openArtifactInPanel(url.pathname, open));
+    open.addEventListener("click", () => openArtifactInPanel(artifactPath, open));
     const download = document.createElement("button");
     download.type = "button";
     download.className = "artifactPreviewAction artifactPreviewAction--icon";
@@ -709,7 +720,7 @@ function enhanceArtifactLinks(root: ParentNode) {
     download.addEventListener("click", async () => {
       download.disabled = true;
       try {
-        await downloadArtifact(url.pathname, fileName);
+        await downloadArtifact(artifactUrl, fileName);
         download.title = "Downloaded";
       } catch (error) {
         download.title = error instanceof Error ? error.message : String(error);
@@ -733,16 +744,16 @@ function enhanceArtifactLinks(root: ParentNode) {
     attachArtifactDisclosure(card, header, content);
     const refreshOverflow = attachArtifactOverflowControl(card, content);
     card.dataset.artifactName = fileName;
-    card.dataset.artifactPath = url.pathname;
+    card.dataset.artifactPath = artifactPath;
     card.dataset.artifactKind = kind;
-    renderArtifactActions(card, fileName, url.pathname, kind);
+    renderArtifactActions(card, fileName, artifactPath, kind);
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);
 
     if (customPreview) {
       card.classList.add("artifactPreview--html");
-      void mountArtifactPreview(content, { name: fileName, path: url.pathname, kind: "file" }, {
+      void mountArtifactPreview(content, { name: fileName, path: artifactPath, kind: "file" }, {
         title: `Interactive preview of ${title.textContent}`,
         className: "htmlPreviewFrame artifactPreviewFrame",
         isCurrent: () => card.isConnected,
@@ -766,7 +777,7 @@ function enhanceArtifactLinks(root: ParentNode) {
       loadingFrame.setAttribute("aria-label", "Loading HTML preview");
       content.replaceChildren(loadingFrame);
       refreshOverflow();
-      void fetch(url.pathname, { headers: artifactActionHeaders(), credentials: "same-origin" })
+      void fetch(artifactUrl, { headers: artifactActionHeaders(), credentials: "same-origin" })
         .then(async (response) => {
           if (!response.ok) throw new Error(`Preview failed (${response.status})`);
           const source = await response.text();
@@ -775,7 +786,7 @@ function enhanceArtifactLinks(root: ParentNode) {
             source,
             frameClassName: "htmlPreviewFrame artifactPreviewFrame",
             frameTitle: `Preview of ${title.textContent}`,
-            from: { sessionId: artifactActionSessionId(), role: "assistant" },
+            from: { sessionId: artifactSessionId(artifactUrl) || sessionId, role: "assistant" },
             artifactBaseUrl: artifactPreviewBaseUrl(url.pathname),
           });
           content.replaceChildren(gate);
@@ -799,7 +810,7 @@ function enhanceArtifactLinks(root: ParentNode) {
       if (media instanceof HTMLVideoElement) media.playsInline = true;
       media.preload = "metadata";
       const source = document.createElement("source");
-      source.src = url.pathname;
+      source.src = artifactUrl;
       source.type = mediaMimeType(url.pathname);
       media.append(source);
       content.append(media);
@@ -807,7 +818,7 @@ function enhanceArtifactLinks(root: ParentNode) {
       continue;
     }
 
-    fetch(url.pathname)
+    fetch(artifactUrl)
       .then(async (res) => {
         if (!res.ok) throw new Error(`Preview failed (${res.status})`);
         return res.text();
@@ -819,7 +830,7 @@ function enhanceArtifactLinks(root: ParentNode) {
         enhanceMermaid(content);
         enhanceInlineHtmlPreviews(content);
         enhanceCodeBlocks(content);
-        enhanceImages(content);
+        enhanceImages(content, artifactSessionId(artifactUrl) || sessionId);
         refreshOverflow();
       })
       .catch((error) => {
@@ -833,7 +844,7 @@ function enhanceArtifactLinks(root: ParentNode) {
 export function renderStandaloneMarkdown(
   body: HTMLElement,
   text: string,
-  options: { artifactLinks?: boolean } = {},
+  options: { artifactLinks?: boolean; sessionId?: string } = {},
 ) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
@@ -842,8 +853,8 @@ export function renderStandaloneMarkdown(
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
-  enhanceImages(body);
-  if (options.artifactLinks) enhanceArtifactLinks(body);
+  enhanceImages(body, options.sessionId);
+  if (options.artifactLinks) enhanceArtifactLinks(body, options.sessionId);
 }
 
 function renderAssistantMarkdown(body: HTMLElement, text: string) {

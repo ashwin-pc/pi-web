@@ -850,20 +850,29 @@ async function bindWebExtensions(value: any) {
     };
   }
 
-  function cleanArtifactContext(input: { name?: unknown; path?: unknown; kind?: unknown }) {
+  function cleanArtifactContext(input: { name?: unknown; path?: unknown; kind?: unknown }, sessionId: string) {
     const name = cleanHeaderActionText(input.name, 500);
-    const path = cleanHeaderActionText(input.path, 2_000);
+    const path = typeof input.path === "string" && input.path.length <= 2_000 ? input.path : undefined;
     const kind = artifactKinds.includes(input.kind as typeof artifactKinds[number])
       ? input.kind as typeof artifactKinds[number]
       : undefined;
     let pathName: string | undefined;
     try {
-      const artifactPath = path?.startsWith("/api/artifacts/")
-        ? path.slice("/api/artifacts/".length)
-        : path?.startsWith("/api/session-artifacts/")
-          ? path.split("/").slice(4).join("/")
-          : undefined;
-      if (artifactPath) pathName = decodeURIComponent(artifactPath).split("/").at(-1);
+      if (!path || path !== path.trim() || path.includes("?") || path.includes("#")) throw new Error("invalid path");
+      let encodedPath: string | undefined;
+      if (path.startsWith("/api/artifacts/")) {
+        encodedPath = path.slice("/api/artifacts/".length);
+      } else if (path.startsWith("/api/session-artifacts/")) {
+        const scopedPath = path.slice("/api/session-artifacts/".length);
+        const separator = scopedPath.indexOf("/");
+        if (separator < 1 || decodeURIComponent(scopedPath.slice(0, separator)) !== sessionId) throw new Error("invalid session");
+        encodedPath = scopedPath.slice(separator + 1);
+      }
+      const segments = encodedPath?.split("/").map(decodeURIComponent);
+      if (!segments?.length || segments.some(segment =>
+        !segment || segment === "." || segment === ".." || /[\/\\\u0000-\u001F\u007F]/.test(segment)
+      )) throw new Error("invalid segments");
+      pathName = segments.at(-1);
     } catch { /* invalid encoded artifact path */ }
     if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
     return { name, path, kind };
@@ -879,7 +888,7 @@ async function bindWebExtensions(value: any) {
     const { key, contribution } = renderedContribution(value, "artifact-action", input.key);
     if (!contribution) throw new Error("Artifact action not found");
     const action = contribution.source;
-    const artifact = cleanArtifactContext(input);
+    const artifact = cleanArtifactContext(input, String(value.sessionId || ""));
     if (!artifactMatches(action, artifact)) throw new Error("Artifact action does not match this artifact");
     const result = await action.invoke(artifact);
     const markdown = cleanFooterText(result?.markdown, contributionPolicies["artifact-action"].viewBudget);
@@ -898,7 +907,7 @@ async function bindWebExtensions(value: any) {
     const { key, contribution } = renderedContribution(value, "artifact-preview", input.key);
     if (!contribution) throw new Error("Artifact preview not found");
     const preview = contribution.source;
-    const artifact = cleanArtifactContext(input);
+    const artifact = cleanArtifactContext(input, String(value.sessionId || ""));
     if (!artifactMatches(preview, artifact)) throw new Error("Artifact preview does not match this artifact");
     const result = await preview.render(artifact);
     const html = cleanFooterText(result?.html, contributionPolicies["artifact-preview"].viewBudget);

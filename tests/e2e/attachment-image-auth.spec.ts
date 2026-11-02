@@ -110,9 +110,10 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
   // Minimal density defers images behind the summary and tool details controls.
   // Card attachment alone does not mean the summary has been reconciled yet.
   const summary = page.getByRole("button", { name: "Show 1 tool", exact: true });
-  await expect(summary).toBeVisible();
-  await summary.click();
-  await expect(card).toBeVisible();
+  await expect(async () => {
+    if (await summary.isVisible()) await summary.click();
+    await expect(card).toBeVisible();
+  }).toPass();
   const details = card.locator(".toolCardExpandToggle");
   await expect(details).toHaveAttribute("aria-expanded", "false");
   await details.click();

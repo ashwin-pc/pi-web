@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { BoundedFileError, readUtf8FileBounded } from "./shared/boundedFile.js";
 
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
 
@@ -80,6 +81,11 @@ export class SessionUiStateConflictError extends Error {
 export class SessionUiStateUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = "SessionUiStateUnavailableError"; }
 }
+export class SessionUiStateBoundsError extends Error {
+  constructor(message: string, readonly status = 413) { super(message); this.name = "SessionUiStateBoundsError"; }
+}
+
+export const sessionUiStateMaxBytes = 8 * 1024 * 1024;
 
 const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 const markerColors = new Set<SessionMarkerColorId>(defaultBucketOrder);
@@ -395,7 +401,12 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     return result;
   }
   async function readValidated(path: string) {
-    return validPersistedState(JSON.parse(await readFile(path, "utf-8")));
+    try {
+      return validPersistedState(JSON.parse(await readUtf8FileBounded(path, sessionUiStateMaxBytes)));
+    } catch (error) {
+      if (error instanceof BoundedFileError) throw new SessionUiStateBoundsError("Stored session UI state is too large");
+      throw error;
+    }
   }
   async function loadCommitted() {
     if (cached) return cloneState(cached);
@@ -425,7 +436,7 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     // Never use backups to downgrade an unsupported future-format primary.
     if (!primaryMissing) {
       try {
-        const raw = JSON.parse(await readFile(file, "utf-8"));
+        const raw = JSON.parse(await readUtf8FileBounded(file, sessionUiStateMaxBytes));
         if (isRecord(raw) && typeof raw.version === "number" && raw.version > 3) throw new SessionUiStateUnavailableError(`Unsupported session UI state version ${raw.version}`);
       } catch (error) { if (error instanceof SessionUiStateUnavailableError) throw error; }
     }
@@ -474,10 +485,14 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     // Validate before touching history, backups, temp files, or the cache.
     try { validPersistedState(next); }
     catch { throw new SessionUiStatePreconditionError(400, "Invalid session UI state payload"); }
+    const serialized = `${JSON.stringify(next, null, 2)}\n`;
+    if (Buffer.byteLength(serialized) > sessionUiStateMaxBytes) {
+      throw new SessionUiStateBoundsError("Session UI state is too large");
+    }
     await mkdir(dirname(file), { recursive: true });
     const temp = tempPath(file);
     try {
-      await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { flag: "wx" });
+      await writeFile(temp, serialized, { flag: "wx" });
       if (current.initialized) await rotateBackups(current);
       await reserveRevision(next.revision);
       await hooks.beforePrimaryCommit?.();

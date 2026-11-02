@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
+import { readUtf8FileBounded } from "./shared/boundedFile.js";
+import { HttpError } from "./shared/httpError.js";
 import { normalizeRemoteContentHosts } from "./shared/remoteContentHosts.js";
 export { normalizeRemoteContentHost, remoteContentHostLimit } from "./shared/remoteContentHosts.js";
 
@@ -30,6 +32,11 @@ export const extensionSettingsLimits = {
   maxKeysPerOwner: 128,
   /** Serialized bytes for one owner record (values + backup counted together). */
   maxBytesPerOwner: 64 * 1024,
+} as const;
+
+export const settingsFieldLimits = {
+  maxPatchBytes: 256 * 1024,
+  maxFileBytes: 4 * 1024 * 1024,
 } as const;
 
 /** Namespaced owner id: `<extensionName>.<schemaId>` (at least one dot). */
@@ -137,7 +144,7 @@ export const defaultPiWebSettings: PiWebSettings = {
 };
 
 function cloneSettings(value: PiWebSettings): PiWebSettings {
-  return JSON.parse(JSON.stringify(value)) as PiWebSettings;
+  return structuredClone(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -440,7 +447,7 @@ export function createSettingsStore(file: string) {
   async function readUnlocked() {
     if (cached) return cloneSettings(cached);
     try {
-      cached = normalizeSettings(JSON.parse(await readFile(file, "utf-8")));
+      cached = normalizeSettings(JSON.parse(await readUtf8FileBounded(file, settingsFieldLimits.maxFileBytes)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         console.warn(`Could not read pi-web settings at ${file}:`, error);
@@ -452,9 +459,13 @@ export function createSettingsStore(file: string) {
 
   async function writeUnlocked(settings: PiWebSettings) {
     const normalized = normalizeSettings(settings);
+    const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
+    if (Buffer.byteLength(serialized) > settingsFieldLimits.maxFileBytes) {
+      throw new HttpError("Settings file is too large", 413);
+    }
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+    await writeFile(tmp, serialized, "utf-8");
     await rename(tmp, file);
     cached = normalized;
     return cloneSettings(cached);

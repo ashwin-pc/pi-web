@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,12 @@ import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
+import { savedTranscriptLimits } from "../server/session/savedTranscript.js";
+import { createSessionDraftStore } from "../src/drafts/sessionDraftStore.js";
+import { createSessionUiStateStore } from "../server/sessionUiState.js";
+import { internalViewerPrincipal } from "../server/session/viewerLeases.js";
+
+const MIB = 1024 * 1024;
 
 describe("owned Pi runtime handle", () => {
   it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
@@ -119,11 +125,12 @@ let fixtureSessionSequence = 0;
 afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jsonl`)) {
-  const entries: any[] = [
+function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jsonl`), initialEntries?: any[]) {
+  const entries: any[] = initialEntries || [
     { id: "call", parentId: null, type: "message", timestamp: "2026-01-01T00:00:00Z", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "secret" } }], timestamp: "2026-01-01T00:00:00Z" } },
     { id: "result", parentId: "call", type: "message", timestamp: "2026-01-01T00:00:01Z", message: { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "ok" }], isError: false, timestamp: "2026-01-01T00:00:01Z" } },
   ];
@@ -190,6 +197,8 @@ type FixtureServiceOptions = {
   defaultsFor?: LocalSessionServiceDependencies["sessionConfig"]["defaultsFor"];
   openError?: Error;
   clientCount?: number | (() => number);
+  beforeCreate?: (input: Parameters<LocalSessionFactory["create"]>[0]) => Promise<void>;
+  loadEntriesFromPath?: boolean;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -201,9 +210,21 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
     isMock: options.isMock,
     async create(input) {
       if (input.path && options.openError) throw options.openError;
+      await options.beforeCreate?.(input);
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
-      const value = fixtureSession(input.cwd, id, input.path);
+      let loadedEntries: unknown[] | undefined;
+      if (input.path && options.loadEntriesFromPath) {
+        const source = await readFile(input.path, "utf8").catch(() => "");
+        loadedEntries = source.split("\n").flatMap((line) => {
+          if (!line.trim()) return [];
+          try {
+            const record = JSON.parse(line);
+            return record?.type === "message" ? [record] : [];
+          } catch { return []; }
+        });
+      }
+      const value = fixtureSession(input.cwd, id, input.path, loadedEntries);
       if (options.modelRuntime) value.session.modelRuntime = options.modelRuntime;
       sessions.set(id, value);
       return { session: value.session };
@@ -354,6 +375,44 @@ describe("LocalSessionService contract", () => {
     expect(remove).toHaveBeenCalledWith("saved", join(cwd, "saved.jsonl"));
     unsubscribe();
     await service.disposeAll();
+  });
+
+  it("refuses protected and busy deletes while preserving saved idle deletion", async () => {
+    const remove = vi.fn(async () => "trashed" as const);
+    const { service, initial } = await fixtureService({ remove });
+
+    await expect(service.delete(initial.sessionId)).rejects.toMatchObject({
+      status: 409,
+      message: "This session is the server's default session and cannot be deleted while pi-web is running.",
+    });
+
+    const streaming = await service.create(undefined);
+    service.sessionForId(streaming.sessionId)!.isStreaming = true;
+    await expect(service.delete(streaming.sessionId)).rejects.toMatchObject({ status: 409 });
+    service.sessionForId(streaming.sessionId)!.isStreaming = false;
+
+    const compacting = await service.create(undefined);
+    service.sessionForId(compacting.sessionId)!.isCompacting = true;
+    await expect(service.delete(compacting.sessionId)).rejects.toMatchObject({ status: 409 });
+    service.sessionForId(compacting.sessionId)!.isCompacting = false;
+
+    const working = await service.create(undefined);
+    const workingSession = service.sessionForId(working.sessionId)!;
+    let finishNavigate!: () => void;
+    let enteredNavigate!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredNavigate = resolve; });
+    workingSession.navigateTree = () => {
+      enteredNavigate();
+      return new Promise((resolve) => { finishNavigate = () => resolve({ cancelled: false }); });
+    };
+    const navigation = service.navigate(working.sessionId, "result", {});
+    await entered;
+    await expect(service.delete(working.sessionId)).rejects.toMatchObject({ status: 409 });
+    finishNavigate();
+    await navigation;
+
+    await expect(service.delete(working.sessionId)).resolves.toEqual({ id: working.sessionId, disposition: "trashed" });
+    expect(remove).toHaveBeenCalledWith(working.sessionId, working.sessionFile);
   });
 
   it.each([
@@ -563,6 +622,39 @@ describe("LocalSessionService contract", () => {
     });
     const extraCwd = await mkdtemp(join(cwd, "extra-cwd-"));
     expect((await service.list([extraCwd])).map((info) => info.id)).toEqual(["duplicate", "duplicate"]);
+  });
+
+  it("lists every remembered root, including deleted roots, with storage deduplication and bounded concurrency", async () => {
+    const listed: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { service, cwd } = await fixtureService({
+      list: async (listedCwd) => {
+        listed.push(listedCwd);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        active -= 1;
+        return [];
+      },
+    });
+    const extras = [
+      join(cwd, "same-path"),
+      join(cwd, "same:path"),
+      ...Array.from({ length: 10 }, (_, index) => join(cwd, `extra-${index}`)),
+    ];
+    await Promise.all(extras.slice(0, 2).map((path) => mkdir(path)));
+    const request = service.list(extras);
+    await vi.waitFor(() => expect(maxActive).toBe(4));
+    release();
+    await request;
+    expect(maxActive).toBe(4);
+    expect(listed).toHaveLength(12); // global cwd + one aliased store + all ten remembered roots
+    expect(listed.filter((path) => path === extras[0] || path === extras[1])).toHaveLength(1);
+    expect(listed).toContain(extras.at(-1));
+    await service.disposeAll();
   });
 
   it("keeps authoritative renamed and cleared names after live-session disposal", async () => {
@@ -807,6 +899,223 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("reuses one runtime and admits queued distinct openings in FIFO order", async () => {
+    const ids = Array.from({ length: 6 }, (_, index) => `cold-${index}`);
+    const unblock: Array<() => void> = [];
+    const opened: string[] = [];
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => ids.map((id) => ({
+        id, path: join(cwd, `${id}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+      })),
+      beforeCreate: async (input) => {
+        if (!input.path) return;
+        opened.push(input.path);
+        await new Promise<void>((resolve) => unblock.push(resolve));
+      },
+    });
+    const firstRequests = [
+      service.open(ids[0]),
+      service.open(ids[0]),
+      service.open(ids[1]),
+      service.open(ids[2]),
+      service.open(ids[3]),
+    ];
+    await vi.waitFor(() => expect(opened).toHaveLength(4));
+    const queued = [service.open(ids[4]), service.open(ids[5])];
+    expect(opened).toHaveLength(4);
+    unblock.shift()?.();
+    await vi.waitFor(() => expect(opened.at(-1)).toBe(join(cwd, `${ids[4]}.jsonl`)));
+    unblock.shift()?.();
+    await vi.waitFor(() => expect(opened.at(-1)).toBe(join(cwd, `${ids[5]}.jsonl`)));
+    unblock.splice(0).forEach((resolve) => resolve());
+    await Promise.all([...firstRequests, ...queued]);
+    expect(creates.filter((entry) => entry.path?.endsWith(`${ids[0]}.jsonl`))).toHaveLength(1);
+    await service.open(ids[0]);
+    expect(creates).toHaveLength(7); // initial runtime plus six distinct cold runtimes
+    await service.disposeAll();
+  });
+
+  it("queues five-plus parallel creates until allocation slots are available", async () => {
+    let initialized = false;
+    let active = 0;
+    let maxActive = 0;
+    const unblock: Array<() => void> = [];
+    const { service, creates } = await fixtureService({
+      beforeCreate: async () => {
+        if (!initialized) {
+          initialized = true;
+          return;
+        }
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => unblock.push(() => {
+          active -= 1;
+          resolve();
+        }));
+      },
+    });
+    const requests = Array.from({ length: 6 }, () => service.create(undefined));
+    await vi.waitFor(() => expect(unblock).toHaveLength(4));
+    expect(maxActive).toBe(4);
+    unblock.splice(0).forEach((resolve) => resolve());
+    await vi.waitFor(() => expect(unblock).toHaveLength(2));
+    unblock.splice(0).forEach((resolve) => resolve());
+    const states = await Promise.all(requests);
+    expect(new Set(states.map((state) => state.sessionId))).toHaveLength(6);
+    expect(creates).toHaveLength(7); // initial runtime plus every queued create
+    await service.disposeAll();
+  });
+
+  it("allows protected, viewed, and busy worker fan-outs above the idle residency target", async () => {
+    const coldId = "over-cap";
+    const { service, initial, cwd } = await fixtureService({
+      list: async () => [{
+        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+      }],
+    });
+    const admitted = [];
+    for (let index = 0; index < 15; index += 1) {
+      const state = await service.create(undefined);
+      admitted.push(state);
+      if (index < 7) service.acquireViewer(state.sessionId, `viewer-${index}`, internalViewerPrincipal);
+      else service.sessionForPath(state.sessionFile)!.isStreaming = true;
+    }
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(17);
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await service.disposeAll();
+  });
+
+  it("does not evict an idle runtime when an unknown session ID cannot be resolved", async () => {
+    const { service, initial } = await fixtureService({ list: async () => [] });
+    const admitted = [];
+    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
+    const idle = admitted[0];
+    for (const [index, state] of admitted.slice(1).entries()) service.acquireViewer(state.sessionId, `kept-${index}`, internalViewerPrincipal);
+
+    await expect(service.open("unknown")).rejects.toMatchObject({ status: 404 });
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(idle.sessionId)).toBeDefined();
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await service.disposeAll();
+  });
+
+  it("evicts only a durable idle runtime before admitting a replacement at the resident cap", async () => {
+    const idleId = "idle-durable";
+    const coldId = "replacement";
+    const { service, initial, cwd } = await fixtureService({
+      list: async () => [idleId, coldId].map((id) => ({
+        id, path: join(cwd, `${id}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      })),
+    });
+    await service.open(idleId);
+    const admitted = [];
+    for (let index = 0; index < 14; index += 1) admitted.push(await service.create(undefined));
+    for (const [index, state] of admitted.entries()) service.acquireViewer(state.sessionId, `kept-${index}`, internalViewerPrincipal);
+
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(idleId)).toBeUndefined();
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    for (const state of admitted) expect(service.sessionForId(state.sessionId)).toBeDefined();
+    await service.disposeAll();
+  });
+
+  it("keeps newly created sessions resident until their first prompt", async () => {
+    const coldId = "replacement";
+    const { service, cwd } = await fixtureService({
+      list: async () => [{
+        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }],
+    });
+    const created = [];
+    for (let index = 0; index < 15; index += 1) created.push(await service.create(undefined));
+
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.sessionForId(created[0].sessionId)).toBeDefined();
+    await service.prompt(created[0].sessionId, { message: "first prompt", mode: "steer", images: [] });
+    expect(service.sessionForId(created[0].sessionId)).toBeDefined();
+    await service.disposeAll();
+  });
+
+  it("evicts only runtime state while durable transcript, browser draft, unread, and session UI state survive reopening", async () => {
+    const listed: Array<{ id: string; path: string; cwd: string; created: Date; modified: Date; messageCount: number }> = [];
+    const { service, initial, cwd, creates } = await fixtureService({ list: async () => listed, loadEntriesFromPath: true });
+    const evictedId = "eviction-target";
+    const evictedPath = join(cwd, `${evictedId}.jsonl`);
+    const mediumRecords = Array.from({ length: 256 }, (_, index) => ({
+      type: "message", id: `message-${index}`, parentId: index ? `message-${index - 1}` : null,
+      message: { role: "assistant", content: `durable transcript message ${index} ${"x".repeat(256)}` },
+    }));
+    const transcript = [
+      JSON.stringify({ type: "session", id: evictedId, cwd }),
+      ...mediumRecords.map((record) => JSON.stringify(record)),
+      "",
+    ].join("\n");
+    await writeFile(evictedPath, transcript);
+    listed.push({
+      id: evictedId, path: evictedPath, cwd, created: new Date(), modified: new Date(), messageCount: mediumRecords.length,
+    });
+    const replacementId = "eviction-replacement";
+    listed.push({
+      id: replacementId, path: join(cwd, `${replacementId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+    });
+    await service.open(evictedId);
+    const residentMessages = await service.messages(evictedId);
+    expect(residentMessages.at(-1)).toMatchObject({ entryId: "message-255", text: expect.stringContaining("durable transcript message 255") });
+    const admitted = [];
+    for (let index = 0; index < 14; index += 1) admitted.push(await service.create(undefined));
+    for (const [index, state] of admitted.entries()) service.acquireViewer(state.sessionId, `kept-${index}`, internalViewerPrincipal);
+
+    class MemoryStorage {
+      private readonly values = new Map<string, string>();
+      getItem(key: string) { return this.values.get(key) ?? null; }
+      setItem(key: string, value: string) { this.values.set(key, value); }
+      removeItem(key: string) { this.values.delete(key); }
+    }
+    vi.stubGlobal("window", {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      addEventListener: () => undefined,
+    });
+    const browserStorage = new MemoryStorage();
+    createSessionDraftStore(browserStorage).update(evictedId, { text: "draft survives runtime eviction" }, true);
+    const uiStateFile = join(cwd, "session-ui-state.json");
+    await createSessionUiStateStore(uiStateFile).patch({
+      expectedRevision: 0,
+      initialize: true,
+      lanes: [{ sessionId: evictedId, lane: "parked", cwd, since: "2026-01-01T00:00:00.000Z" }],
+      sessionNotes: [{ sessionId: evictedId, note: "durable UI state", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      sessionUnreadStates: [{ sessionId: evictedId, unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await service.open(replacementId);
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(evictedId)).toBeUndefined();
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    expect(await readFile(evictedPath, "utf8")).toBe(transcript);
+    await expect(service.readSession({ sessionId: evictedId }, 20)).resolves.toMatchObject({
+      entries: expect.arrayContaining([
+        expect.objectContaining({ entryId: "message-255", text: expect.stringContaining("durable transcript message 255") }),
+      ]),
+    });
+    expect(createSessionDraftStore(browserStorage).get(evictedId).text).toBe("draft survives runtime eviction");
+    const reloadedUiState = await createSessionUiStateStore(uiStateFile).read();
+    expect(reloadedUiState.lanes).toContainEqual(expect.objectContaining({ sessionId: evictedId, lane: "parked" }));
+    expect(reloadedUiState.sessionNotes).toContainEqual(expect.objectContaining({ sessionId: evictedId, note: "durable UI state" }));
+    expect(reloadedUiState.sessionUnreadStates).toContainEqual(expect.objectContaining({ sessionId: evictedId }));
+
+    const createsBeforeReopen = creates.length;
+    await expect(service.open(evictedId)).resolves.toMatchObject({ sessionId: evictedId });
+    expect(creates).toHaveLength(createsBeforeReopen + 1);
+    expect(service.sessionForId(evictedId)).toBeDefined();
+    expect(await service.messages(evictedId)).toEqual(residentMessages);
+    expect(await readFile(evictedPath, "utf8")).toBe(transcript);
+    await service.disposeAll();
+  });
+
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(
@@ -857,7 +1166,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     vi.useFakeTimers();
 
     const viewed = await service.create(undefined);
-    service.acquireViewer(viewed.sessionId, "viewer");
+    service.acquireViewer(viewed.sessionId, "viewer", internalViewerPrincipal);
     await vi.advanceTimersByTimeAsync(19);
     expect(service.lifecycleSnapshot().viewerLeases).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -925,51 +1234,109 @@ describe("LocalSessionService standalone lifecycle", () => {
   it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {
     const { service, initial } = await fixtureService();
     const second = await service.create(undefined);
-    service.acquireViewer(initial.sessionId, "client", 20);
-    const connection = service.connectViewer("client")!;
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 20);
+    const connection = service.connectViewer("client", internalViewerPrincipal)!;
     const snapshot = () => service.lifecycleSnapshot().liveSessions;
-    service.acquireViewer(second.sessionId, "client", 19);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 19);
     expect(snapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
       expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 0 }),
     ]));
-    service.acquireViewer(second.sessionId, "client", 21);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 21);
     expect(snapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 0 }),
       expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 1 }),
     ]));
-    service.acquireViewer(initial.sessionId, "other-client", 0);
+    service.acquireViewer(initial.sessionId, "other-client", internalViewerPrincipal, 0);
     expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(1);
-    service.acquireViewer(initial.sessionId, "client");
-    service.acquireViewer(second.sessionId, "client", 20);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 20);
     expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(2);
     service.disconnectViewer(connection);
-    service.releaseViewer("other-client");
+    service.releaseViewer("other-client", internalViewerPrincipal);
+  });
+
+  it("isolates equal client ids by credential principal and scopes lifecycle diagnostics", async () => {
+    const { service, initial, cwd } = await fixtureService();
+    const second = await service.create(undefined);
+    const browser = "identity:external:alice";
+    const automation = "identity:token:automation";
+
+    service.acquireViewer(initial.sessionId, "same-client", browser, 10);
+    service.acquireViewer(second.sessionId, "same-client", automation, 999);
+    service.acquireViewer(second.sessionId, "same-client", browser, 9);
+
+    expect(service.lifecycleSnapshot(browser).viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "same-client", sessionId: initial.sessionId }),
+    ]);
+    expect(service.lifecycleSnapshot(automation).viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "same-client", sessionId: second.sessionId }),
+    ]);
+    expect(JSON.stringify(service.lifecycleSnapshot(browser))).not.toContain(cwd);
+
+    service.acquireViewer(second.sessionId, "same-client", browser, 11);
+    expect(service.lifecycleSnapshot(browser).viewerLeases[0]?.sessionId).toBe(second.sessionId);
+    service.releaseViewer("same-client", automation);
+    expect(service.lifecycleSnapshot(browser).viewerLeases).toHaveLength(1);
+  });
+
+  it("drops sequence ceilings with expired leases", async () => {
+    vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "20");
+    const { service, initial } = await fixtureService();
+    vi.useFakeTimers();
+
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 100);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases).toEqual([]);
+
+    expect(service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 1)).toBe(true);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases).toHaveLength(1);
   });
 
   it("does not let an obsolete acquisition extend the viewer release timer", async () => {
     vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "100");
     const { service, initial } = await fixtureService();
     vi.useFakeTimers();
-    service.acquireViewer(initial.sessionId, "client", 2);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 2);
     await vi.advanceTimersByTimeAsync(75);
-    service.acquireViewer(initial.sessionId, "client", 1);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 1);
     await vi.advanceTimersByTimeAsync(25);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
     await service.disposeAll("reset");
   });
 
+  it("attaches an obsolete WebSocket to the existing lease without repointing or resetting its sequence", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 2);
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    const connection = service.connectViewer("client", internalViewerPrincipal)!;
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: initial.sessionId,
+      sockets: 1,
+    });
+
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]?.sessionId).toBe(initial.sessionId);
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 3)).toBe(true);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: second.sessionId,
+      sockets: 1,
+    });
+    service.disconnectViewer(connection);
+  });
+
   it("does not let a stale socket release a replacement viewer lease", async () => {
     const { service, cwd } = await fixtureService();
     const first = await service.create(undefined);
-    service.acquireViewer(first.sessionId, "client");
-    const staleConnection = service.connectViewer("client")!;
+    service.acquireViewer(first.sessionId, "client", internalViewerPrincipal);
+    const staleConnection = service.connectViewer("client", internalViewerPrincipal)!;
 
     await service.disposeAll("reset");
     const replacement = fixtureSession(cwd, "replacement").session;
     service.setCurrentSession(replacement);
-    service.acquireViewer(replacement.sessionId, "client");
-    const activeConnection = service.connectViewer("client")!;
+    service.acquireViewer(replacement.sessionId, "client", internalViewerPrincipal);
+    const activeConnection = service.connectViewer("client", internalViewerPrincipal)!;
 
     service.disconnectViewer(staleConnection);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([
@@ -979,6 +1346,34 @@ describe("LocalSessionService standalone lifecycle", () => {
       expect.objectContaining({ sessionId: "replacement", viewerLeases: 1 }),
     ]);
     service.disconnectViewer(activeConnection);
+  });
+
+  it("does not acquire a lease when a socket closes during delayed resolution", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    const principal = "identity:external:alice";
+    const socket = {
+      OPEN: 1,
+      readyState: 1,
+      once: vi.fn(),
+    };
+    let finishResolution!: () => void;
+    const resolution = new Promise<PiWebSession | undefined>((resolve) => {
+      finishResolution = () => resolve(service.sessionForId(second.sessionId));
+    });
+
+    const pending = (async () => {
+      const target = await resolution;
+      if (socket.readyState !== socket.OPEN) return;
+      service.acquireViewer((target || initial).sessionId, "client", principal, 1);
+      const connection = service.connectViewer("client", principal);
+      if (connection) socket.once("close", () => service.disconnectViewer(connection));
+    })();
+    socket.readyState = 3;
+    finishResolution();
+    await pending;
+    expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([]);
+    expect(socket.once).not.toHaveBeenCalled();
   });
 
   it("isolates concurrent disposal and disposes each runtime once", async () => {
@@ -999,8 +1394,8 @@ describe("LocalSessionService standalone lifecycle", () => {
 
   it("resets mock lifecycle state, leases, and registrations standalone", async () => {
     const { service, initial, fixture, cwd } = await fixtureService({ isMock: true });
-    service.acquireViewer(initial.sessionId, "mock-client");
-    service.connectViewer("mock-client");
+    service.acquireViewer(initial.sessionId, "mock-client", internalViewerPrincipal);
+    service.connectViewer("mock-client", internalViewerPrincipal);
     const replacementFixture = fixtureSession(cwd, "mock-reset");
 
     await service.resetWith(replacementFixture.session);
@@ -1048,6 +1443,143 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(tail.entries.map((entry) => entry.entryId)).toEqual(["root", "old", "active", ...Array.from({ length: 197 }, (_, index) => `tail-${index}`)]);
     expect(creates).toHaveLength(1);
     expect(await readFile(coldPath, "utf8")).toBe(original);
+  });
+
+  it("projects a roughly 4.6 MiB cold tool result with a sized inline-image omission", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "image-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "image-cold.jsonl");
+    const imageBytes = 4_606_572;
+    const toolResult = JSON.stringify({
+      type: "message", id: "large-tool-result", parentId: null,
+      message: {
+        role: "toolResult", toolCallId: "tool-1", toolName: "inspect_image", isError: false,
+        content: [
+          { type: "text", text: "ordinary tool output survived" },
+          { type: "image", mimeType: "image/png", data: "a".repeat(imageBytes) },
+        ],
+      },
+    });
+    expect(Buffer.byteLength(toolResult)).toBeGreaterThan(imageBytes);
+    expect(Buffer.byteLength(toolResult)).toBeLessThan(savedTranscriptLimits.maxRecordBytes);
+    await writeFile(coldPath, [
+      JSON.stringify({ type: "session", id: "image-cold", cwd }),
+      toolResult,
+      "",
+    ].join("\n"));
+
+    const tail = await service.readSession({ sessionId: "image-cold" }, 20);
+    expect(tail.entries).toEqual([expect.objectContaining({
+      entryId: "large-tool-result",
+      text: "  ✓ inspect_image: ordinary tool output survived\n[omitted saved transcript image/png base64 image data: 4606572 bytes]",
+    })]);
+    const exact = await service.readSession({ sessionId: "image-cold", entryId: "large-tool-result" }, 20);
+    expect(exact.entries).toEqual([expect.objectContaining({
+      entryId: "large-tool-result",
+      text: "  ✓ inspect_image: ordinary tool output survived\n[omitted saved transcript image/png base64 image data: 4606572 bytes]",
+    })]);
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
+  });
+
+  it("streams and skips a 64 MiB garbage record with bounded buffering, then returns later cold records", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "bounded-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "bounded-cold.jsonl");
+    const handle = await open(coldPath, "w");
+    try {
+      await handle.write(`${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n`);
+      const garbageChunk = Buffer.alloc(MIB, 0x78);
+      for (let index = 0; index < 64; index += 1) await handle.write(garbageChunk);
+      await handle.write(`\n${JSON.stringify({
+        type: "message", id: "after-garbage", parentId: null,
+        message: { role: "assistant", content: "small record after pathological line" },
+      })}\n`);
+    } finally {
+      await handle.close();
+    }
+    await expect(service.readSession({ sessionId: "bounded-cold", entryId: "after-garbage" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "after-garbage", text: expect.stringContaining("small record after pathological line") })],
+      truncated: true,
+    });
+    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "after-garbage" })],
+      truncated: true,
+    });
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
+  });
+
+  it("streams a sparse transcript beyond the former total-file ceiling", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "large-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "large-cold.jsonl");
+    const handle = await open(coldPath, "w");
+    try {
+      await handle.write(`${JSON.stringify({ type: "session", id: "large-cold", cwd })}\n`);
+      await handle.truncate(128 * 1024 * 1024 + 1);
+      await handle.write(`\n${JSON.stringify({
+        type: "message", id: "target", parentId: null,
+        message: { role: "assistant", content: "found after sparse oversized record" },
+      })}\n`, 128 * 1024 * 1024 + 1);
+    } finally {
+      await handle.close();
+    }
+    await expect(service.readSession({ sessionId: "large-cold", entryId: "target" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "target", text: expect.stringContaining("found after sparse oversized record") })],
+      truncated: true,
+    });
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
+  });
+
+  it("omits excluded shell commands and output from live and cold session reads", async () => {
+    let coldPath = "";
+    const { service, initial, cwd } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "hidden-shell", path: coldPath, cwd, name: "", firstMessage: "", allMessagesText: "",
+        created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"), messageCount: 2,
+      }] : [],
+    });
+    const hidden = {
+      type: "message", id: "hidden", parentId: null,
+      message: { role: "bashExecution", command: "printf TOP-SECRET-COMMAND", output: "TOP-SECRET-OUTPUT", excludeFromContext: true },
+    };
+    const visible = {
+      type: "message", id: "visible", parentId: "hidden",
+      message: { role: "bashExecution", command: "printf normal", output: "normal-output", excludeFromContext: false },
+    };
+    initial.sessionManager.getBranch = () => [hidden, visible] as any;
+    initial.sessionManager.getEntry = (id: string) => [hidden, visible].find((entry) => entry.id === id) as any;
+
+    const live = await service.readSession({ sessionId: initial.sessionId }, 20);
+    expect(JSON.stringify(live)).not.toContain("TOP-SECRET");
+    expect(live.entries).toEqual([expect.objectContaining({ entryId: "visible", text: expect.stringContaining("normal-output") })]);
+    await expect(service.readSession({ sessionId: initial.sessionId, entryId: "hidden" }, 1)).rejects.toMatchObject({ status: 404 });
+
+    coldPath = join(cwd, "hidden-shell.jsonl");
+    await writeFile(coldPath, [
+      JSON.stringify({ type: "session", version: 3, id: "hidden-shell", cwd }),
+      JSON.stringify(hidden),
+      JSON.stringify(visible),
+      "",
+    ].join("\n"));
+    const cold = await service.readSession({ sessionId: "hidden-shell" }, 20);
+    expect(JSON.stringify(cold)).not.toContain("TOP-SECRET");
+    expect(cold.entries).toEqual([expect.objectContaining({ entryId: "visible", text: expect.stringContaining("normal-output") })]);
+    await expect(service.readSession({ sessionId: "hidden-shell", entryId: "hidden" }, 1)).rejects.toMatchObject({ status: 404 });
   });
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {
@@ -1099,7 +1631,21 @@ describe("session route boundary", () => {
     expect(route).toContain("sessionService.navigate");
     expect(route).not.toContain("finish");
     expect(source).toContain('url.pathname === "/api/session/lifecycle"');
-    expect(source).toContain("sessionService.lifecycleSnapshot()");
+    expect(source).toContain("sessionService.lifecycleSnapshot(requestViewerPrincipal)");
     expect(route).not.toContain("setTimeout");
+  });
+
+  it("binds viewer sockets only after resolution and an open-state check", async () => {
+    const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
+    const resolved = source.indexOf("targetSession = await resolveWebSocketHelloSession");
+    const openCheck = source.indexOf("realtimeWs.readyState !== realtimeWs.OPEN", resolved);
+    const acquire = source.indexOf("sessionService.acquireViewer", openCheck);
+    const connect = source.indexOf("sessionService.connectViewer", acquire);
+    const registerClose = source.indexOf('realtimeWs.once("close"', connect);
+    expect([resolved, openCheck, acquire, connect, registerClose].every((index) => index >= 0)).toBe(true);
+    expect(resolved).toBeLessThan(openCheck);
+    expect(openCheck).toBeLessThan(acquire);
+    expect(acquire).toBeLessThan(connect);
+    expect(connect).toBeLessThan(registerClose);
   });
 });
