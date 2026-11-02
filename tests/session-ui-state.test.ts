@@ -96,6 +96,19 @@ describe("session UI state store", () => {
       pinnedFolders: ["/tmp/project"],
       sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
     });
+    await expect(store.patch({
+      expectedRevision: 10,
+      sessionNotes: [
+        { sessionId: "legacy", note, updatedAt: since },
+        { sessionId: "other", note: "new note", updatedAt: since },
+      ],
+    })).resolves.toMatchObject({
+      revision: 11,
+      sessionNotes: [
+        { sessionId: "legacy", note, updatedAt: since },
+        { sessionId: "other", note: "new note", updatedAt: since },
+      ],
+    });
   });
 
   it("refuses an oversized legacy primary through a bounded read and leaves it untouched", async () => {

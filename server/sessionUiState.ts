@@ -151,28 +151,36 @@ function assertCollection(value: Record<string, unknown>, key: string, bounded =
   return Array.isArray(collection) ? collection : [];
 }
 
-function assertEntryStrings(entries: unknown[], fields: Array<[string, number]>, collection: string) {
+function assertEntryStrings(entries: unknown[], fields: Array<[string, number]>, collection: string, currentEntries: unknown[] = []) {
+  const identity = collection === "pinnedSessions" ? "id" : "sessionId";
+  const currentById = new Map(currentEntries.filter(isRecord).map((entry) => [entry[identity], entry]));
   for (const entry of entries) {
     if (!isRecord(entry)) continue;
+    const current = currentById.get(entry[identity]);
+    if (current && fields.every(([field]) => entry[field] === current[field])) continue;
     for (const [field, maxLength] of fields) assertBoundedString(entry[field], maxLength, `${collection}.${field}`);
   }
 }
 
-function assertSessionUiStateBounds(value: unknown) {
+function assertSessionUiStateBounds(value: unknown, current?: SessionUiState) {
   if (!isRecord(value)) return;
+  const currentEntries = (key: string) => {
+    const entries = current ? (current as unknown as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(entries) ? entries : [];
+  };
   const ids: Array<[string, number]> = [["sessionId", sessionUiStateLimits.maxSessionIdLength]];
   const timestamps: Array<[string, number]> = [["updatedAt", sessionUiStateLimits.maxTimestampLength]];
-  assertEntryStrings(assertCollection(value, "lanes"), [...ids, ["cwd", sessionUiStateLimits.maxPathLength], ["since", sessionUiStateLimits.maxTimestampLength]], "lanes");
-  assertEntryStrings(assertCollection(value, "pinnedSessions"), [["id", sessionUiStateLimits.maxSessionIdLength], ["cwd", sessionUiStateLimits.maxPathLength]], "pinnedSessions");
-  assertEntryStrings(assertCollection(value, "sessionNotes"), [...ids, ["note", sessionUiStateLimits.maxNoteLength], ...timestamps], "sessionNotes");
-  assertEntryStrings(assertCollection(value, "sessionMarkers"), [...ids, ...timestamps], "sessionMarkers");
-  assertEntryStrings(assertCollection(value, "sessionUnreadStates"), [...ids, ["unreadAt", sessionUiStateLimits.maxTimestampLength], ...timestamps], "sessionUnreadStates");
+  assertEntryStrings(assertCollection(value, "lanes"), [...ids, ["cwd", sessionUiStateLimits.maxPathLength], ["since", sessionUiStateLimits.maxTimestampLength]], "lanes", currentEntries("lanes"));
+  assertEntryStrings(assertCollection(value, "pinnedSessions"), [["id", sessionUiStateLimits.maxSessionIdLength], ["cwd", sessionUiStateLimits.maxPathLength]], "pinnedSessions", currentEntries("pinnedSessions"));
+  assertEntryStrings(assertCollection(value, "sessionNotes"), [...ids, ["note", sessionUiStateLimits.maxNoteLength], ...timestamps], "sessionNotes", currentEntries("sessionNotes"));
+  assertEntryStrings(assertCollection(value, "sessionMarkers"), [...ids, ...timestamps], "sessionMarkers", currentEntries("sessionMarkers"));
+  assertEntryStrings(assertCollection(value, "sessionUnreadStates"), [...ids, ["unreadAt", sessionUiStateLimits.maxTimestampLength], ...timestamps], "sessionUnreadStates", currentEntries("sessionUnreadStates"));
   assertEntryStrings(assertCollection(value, "sessionOrigins", false), [
     ...ids,
     ["originSessionId", sessionUiStateLimits.maxSessionIdLength],
     ["kind", sessionUiStateLimits.maxKindLength],
     ...timestamps,
-  ], "sessionOrigins");
+  ], "sessionOrigins", currentEntries("sessionOrigins"));
   for (const key of ["pinnedFolders", "favoriteFolders"]) {
     for (const path of assertCollection(value, key)) assertBoundedString(path, sessionUiStateLimits.maxPathLength, key);
   }
@@ -357,7 +365,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
 export function applySessionUiStatePatch(current: SessionUiState, patch: unknown): SessionUiState {
   if (!isRecord(patch)) return cloneState(current);
-  assertSessionUiStateBounds(patch);
+  assertSessionUiStateBounds(patch, current);
   const next = cloneState(current);
 
   if ("lanes" in patch && Array.isArray(patch.lanes)) next.lanes = uniqueBy(patch.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
