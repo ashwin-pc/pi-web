@@ -75,6 +75,16 @@ describe("tool card image previews", () => {
     ]);
   });
 
+  it("keeps scheme-less image URLs on the authenticated fetch path", () => {
+    expect(collectToolImages({ content: [
+      { type: "image", imageUrl: "\\other.invalid/x.png" },
+      { type: "image_url", image_url: { url: "\\other.invalid/y.png" } },
+    ] })).toEqual([
+      { src: "\\other.invalid/x.png", alt: "tool result image", needsAuth: true },
+      { src: "\\other.invalid/y.png", alt: "tool result image", needsAuth: true },
+    ]);
+  });
+
   it("extracts Bedrock-style image source data", () => {
     const images = collectToolImages({
       content: [{ type: "image", source: { media_type: "image/jpeg", data: "jpegdata" } }],
