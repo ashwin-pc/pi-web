@@ -4,12 +4,11 @@ A child restart is not a full application restart. The supervisor owns the publi
 
 ## Safe fallback (not automatic full-runtime restart)
 
-The supervisor records a conservative startup fingerprint of its source, server modules, launcher and dependency manifests. Before accepting a child restart it checks these files again (five-second preflight deadline). An unreadable, incomplete, or changed installation returns HTTP 409, `FULL_RUNTIME_RESTART_REQUIRED`, and **“Full application restart required; nothing has been stopped.”** Crash recovery uses the same guard. No filesystem checks are added to normal proxy requests or status polling.
+The supervisor fingerprints only its loaded local dependencies (the explicit list in `server/runtimePreflight.ts`) and installed versions of `@earendil-works/pi-coding-agent` and `tsx`. Child-only server changes, application version bumps, launcher edits, and unrelated dependency metadata do not block child restart. Before accepting a requested child restart it checks this identity again (five-second deadline). Unreadable, missing, or changed supervisor dependencies return HTTP 409, `FULL_RUNTIME_RESTART_REQUIRED`, and **“Full application restart required; nothing has been stopped.”** No filesystem checks are added to normal proxy requests or status polling.
 
-- `POST /api/restart/preflight`: same authentication, origin and CSRF requirements as restart; checks child-restart compatibility without stopping anything.
-- `POST /api/restart?scope=full` (or preflight with `scope=full`): always reports the manual full-restart requirement. It never kills the supervisor or child.
-- `POST /api/restart`: retains explicitly confirmed, potentially interrupting child-only restart semantics when preflight succeeds. Concurrent lifecycle operations receive 409. It is not a session-draining maintenance operation.
-- Authenticated `/__supervisor/status` advertises `runtimeProtocol: 1`, `automaticFullRestartAvailable: false`, lifecycle state and crash recovery errors. The UI disables restart for older/unrecognized supervisor protocols. Existing browser replacement-readiness polling remains bounded to 30 seconds.
+- `POST /api/restart`: retains authentication, origin/CSRF admission and explicitly confirmed, potentially interrupting child-only restart semantics when the identity check succeeds. Concurrent lifecycle operations receive 409. It is not a session-draining maintenance operation.
+- Unexpected child exits still trigger recovery after one second, even after supervisor files change: availability takes priority once the child is already gone. This is not a full restart or a guarantee of compatibility after an update; operators must still restart the full application after supervisor/dependency changes.
+- Authenticated `/__supervisor/status` advertises `runtimeProtocol: 1`. The UI disables restart for older/unrecognized supervisor protocols. Existing browser replacement-readiness polling remains bounded to 30 seconds.
 
 ## Operator activation
 

@@ -1,34 +1,44 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 
 export const manualRuntimeRestartMessage = "Full application restart required; nothing has been stopped. Wait for all active turns to finish, then stop and start pi-web using its original terminal or service manager. A child restart cannot load updated supervisor code.";
 
-/** Conservative deployment identity, not a hot-path request check. Include the
- * supervisor's local dependency tree and launcher/dependency manifests. */
+/** Loaded supervisor dependencies only; child-only updates remain restartable.
+ * Keep this list aligned with supervisor.ts and its transitive runtime imports. */
+export const supervisorDependencyFiles = [
+  "supervisor.ts", "server/runtimePreflight.ts", "src/webHome.ts",
+  "server/shared/httpProxy.ts", "server/shared/upgradeProxy.ts", "server/shared/webHome.ts",
+  "server/tunnelSocket.ts",
+  ...["kernel", "config", "admission", "origin", "proxy", "supervisorPeer", "ip", "passwordWork", "storeLock"]
+    .map(name => `server/auth/${name}.ts`),
+];
+
 export async function runtimeFingerprint(root: string): Promise<string> {
-  // webHome is the supervisor's shared runtime dependency outside server/.
-  const files = ["supervisor.ts", "bin/pi-web.js", "package.json", "src/webHome.ts"];
-  async function collect(relative: string): Promise<void> {
-    for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
-      const path = join(relative, entry.name);
-      if (entry.isDirectory()) await collect(path);
-      else if (entry.isFile() && /\.(ts|js|json)$/.test(entry.name)) files.push(path);
-    }
-  }
-  // Auth and shared proxy code are supervisor dependencies. Including all server
-  // modules deliberately errs on the side of a manual restart after an update.
-  await collect("server");
+  const files = supervisorDependencyFiles;
   const hash = createHash("sha256");
-  // npm excludes package-lock.json from published packages. Its presence or
-  // absence is still part of the identity, but absence is a valid deployment.
-  try {
-    hash.update("package-lock.json\0").update(await readFile(join(root, "package-lock.json"))).update("\0");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    hash.update("package-lock.json:absent\0");
+  const require = createRequire(join(root, "package.json"));
+  // Installed versions, not the application version, dev dependencies, or an
+  // optional lockfile (which npm does not ship).
+  for (const name of ["@earendil-works/pi-coding-agent", "tsx"]) {
+    let version: string | undefined;
+    // Read the installed manifest via Node's search paths: ESM-only packages
+    // need not export either a require entry point or their package.json.
+    for (const directory of require.resolve.paths(name) || []) {
+      try {
+        const manifest = JSON.parse(await readFile(join(directory, name, "package.json"), "utf8")) as { version: string };
+        if (typeof manifest.version !== "string") throw new Error(`Invalid dependency identity: ${name}`);
+        version = manifest.version;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (!version) throw new Error(`Missing dependency identity: ${name}`);
+    hash.update(name).update("\0").update(version).update("\0");
   }
-  for (const file of files.sort()) {
+  for (const file of [...files].sort()) {
     hash.update(file).update("\0").update(await readFile(join(root, file))).update("\0");
   }
   return hash.digest("hex");

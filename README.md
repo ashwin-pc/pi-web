@@ -116,8 +116,7 @@ This starts a stable TypeScript supervisor on `8787` and a restartable child ser
 
 The supervisor also exposes:
 
-- `POST /api/restart` - restart the child server after update-compatibility preflight (may interrupt active work; not a full application restart)
-- `POST /api/restart/preflight` - check restart compatibility without stopping anything; see [runtime restart after updates](docs/runtime-restart.md)
+- `POST /api/restart` - restart the child server after checking supervisor-dependency identity (may interrupt active work; not a full application restart); supervisor updates require [manual stop/start](docs/runtime-restart.md)
 - `GET /__supervisor/status` - inspect child PID/generation
 
 Open:

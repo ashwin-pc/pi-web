@@ -44,7 +44,6 @@ const loadedRuntimeFingerprint = await runtimeFingerprint(process.cwd()).catch((
 let shuttingDown = false;
 let restartPending = false;
 let crashTimer: ReturnType<typeof setTimeout> | undefined;
-let lifecycleError: string | undefined;
 let child: ChildProcess | undefined;
 let childStarting = false;
 let childGeneration = 0;
@@ -109,8 +108,7 @@ function startChild(): void {
   });
   nextChild.on("error", (error) => {
     childStarting = false;
-    lifecycleError = `Child spawn failed: ${error.message}`;
-    console.error(`[supervisor] ${lifecycleError}`);
+    console.error(`[supervisor] Child spawn failed: ${error.message}`);
   });
 
   nextChild.on("exit", (code, signal) => {
@@ -128,15 +126,9 @@ function startChild(): void {
           crashTimer = setTimeout(recover, 1000);
           return;
         }
-        void runtimePreflight(process.cwd(), loadedRuntimeFingerprint).then(result => {
-          if (!result.ok) {
-            lifecycleError = result.error;
-            console.error(`[supervisor] ${result.error}`);
-          } else if (!shuttingDown) {
-            if (restartPending) crashTimer = setTimeout(recover, 1000);
-            else startChild();
-          }
-        });
+        // Availability takes priority after an unexpected exit. The identity
+        // guard applies only to an operator-requested stop of a working child.
+        startChild();
       };
       crashTimer = setTimeout(recover, 1000);
     }
@@ -175,8 +167,7 @@ async function restartChild(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, restartGraceMs));
     startChild();
   } catch (error) {
-    lifecycleError = error instanceof Error ? error.message : String(error);
-    console.error(`[supervisor] ${lifecycleError}`);
+    console.error(`[supervisor] ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     restartPending = false;
   }
@@ -198,7 +189,7 @@ async function handleRequest(
 
     sanitizeProxyHeaders(req, tunnel);
 
-    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart" || url.pathname === "/api/restart/preflight") {
+    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
       const auth = await authorization(req, true);
       if (auth !== "allowed") {
@@ -219,13 +210,9 @@ async function handleRequest(
         restartPending = false;
         return sendJson(res, 503, { ok: false, error: "Runtime preflight failed; nothing has been stopped." });
       }
-      if (!preflight.ok || url.searchParams.get("scope") === "full") {
+      if (!preflight.ok) {
         restartPending = false;
-        return sendJson(res, 409, { ok: false, code: "FULL_RUNTIME_RESTART_REQUIRED", error: manualRuntimeRestartMessage, automaticFullRestartAvailable: false });
-      }
-      if (url.pathname === "/api/restart/preflight") {
-        restartPending = false;
-        return sendJson(res, 200, { ok: true, scope: "child", automaticFullRestartAvailable: false });
+        return sendJson(res, 409, { ok: false, code: "FULL_RUNTIME_RESTART_REQUIRED", error: manualRuntimeRestartMessage });
       }
       if (shuttingDown) {
         restartPending = false;
@@ -241,9 +228,6 @@ async function handleRequest(
       return sendJson(res, 200, {
         ok: true,
         runtimeProtocol: 1,
-        lifecycleError,
-        automaticFullRestartAvailable: false,
-        lifecycle: shuttingDown ? "stopping" : restartPending ? "restarting" : "running",
         childPid: child?.pid,
         childGeneration,
         childHost,

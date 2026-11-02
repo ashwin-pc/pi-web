@@ -1,43 +1,53 @@
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { runtimeFingerprint, runtimePreflight } from "../server/runtimePreflight.js";
+import { runtimeFingerprint, runtimePreflight, supervisorDependencyFiles } from "../server/runtimePreflight.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "runtime-preflight-"));
   roots.push(root);
-  await mkdir(join(root, "bin"));
-  await mkdir(join(root, "server"));
-  await mkdir(join(root, "src"));
-  for (const file of ["supervisor.ts", "bin/pi-web.js", "package.json", "package-lock.json", "server/auth.ts", "src/webHome.ts"])
-    await writeFile(join(root, file), "original");
+  for (const file of [...supervisorDependencyFiles, "server/session/x.ts", "bin/pi-web.js", "package.json", "package-lock.json"]) {
+    await mkdir(dirname(join(root, file)), { recursive: true });
+    await writeFile(join(root, file), file === "package.json" ? "{}" : "original");
+  }
+  for (const name of ["@earendil-works/pi-coding-agent", "tsx"]) {
+    const directory = join(root, "node_modules", name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "package.json"), JSON.stringify({ name, version: "1.0.0", main: "index.js" }));
+    await writeFile(join(directory, "index.js"), "");
+  }
   return root;
 }
-it("admits unchanged runtime without stopping anything", async () => {
+it("admits unchanged runtime", async () => {
   const root = await fixture();
   expect(await runtimePreflight(root, await runtimeFingerprint(root))).toEqual({ ok: true });
 });
-it.each(["supervisor.ts", "server/auth.ts", "src/webHome.ts", "package-lock.json", "bin/pi-web.js"])("requires full manual restart after %s changes", async file => {
+it.each(supervisorDependencyFiles)("requires manual restart after %s changes", async file => {
   const root = await fixture();
   const loaded = await runtimeFingerprint(root);
   await writeFile(join(root, file), "updated");
   expect(await runtimePreflight(root, loaded)).toMatchObject({ ok: false, code: "FULL_RUNTIME_RESTART_REQUIRED" });
 });
-it("admits unchanged npm-package layout without a lockfile", async () => {
+it.each(["server/session/x.ts", "bin/pi-web.js", "package.json", "package-lock.json"])("allows child-only or unloaded metadata change: %s", async file => {
+  const root = await fixture();
+  const loaded = await runtimeFingerprint(root);
+  await writeFile(join(root, file), file === "package.json" ? '{"version":"2.0.0"}' : "updated");
+  expect(await runtimePreflight(root, loaded)).toEqual({ ok: true });
+});
+it("supports published layouts without a lockfile but detects installed dependency version changes", async () => {
   const root = await fixture();
   await rm(join(root, "package-lock.json"));
   const loaded = await runtimeFingerprint(root);
-  expect(await runtimePreflight(root, loaded)).toEqual({ ok: true });
-  await writeFile(join(root, "package.json"), "new deployment");
+  await writeFile(join(root, "node_modules/tsx/package.json"), JSON.stringify({ name: "tsx", version: "2.0.0", main: "index.js" }));
   expect((await runtimePreflight(root, loaded)).ok).toBe(false);
 });
 it("fails closed on incomplete installation or missing startup identity", async () => {
   const root = await fixture();
   expect((await runtimePreflight(root, undefined)).ok).toBe(false);
   const loaded = await runtimeFingerprint(root);
-  await rm(join(root, "package-lock.json"));
+  await rm(join(root, "server/auth/kernel.ts"));
   expect((await runtimePreflight(root, loaded)).ok).toBe(false);
 });
