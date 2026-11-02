@@ -200,11 +200,22 @@ def main(req):
     procs = subprocess.run(['ps','-axo','pid=,command='], capture_output=True, text=True, check=True).stdout
     if active_comfy_processes(procs, process_cwd, process_executable):
         raise RuntimeError('Memory preflight: another ComfyUI process appears active; retry when idle')
+    result = run_owned_comfy(HOME/'venv/bin/python', COMFY, root, flow)
+    images = [image for output in result['history'].get('outputs', {}).values() for image in output.get('images', [])]
+    if not images: raise RuntimeError('Inference produced no images')
+    paths = [(root/'output'/image.get('subfolder', '')/image['filename']).resolve() for image in images]
+    if any(not p.is_relative_to((root/'output').resolve()) or not p.is_file() for p in paths): raise RuntimeError('Invalid/missing output paths')
+    print(json.dumps({'outputs': [str(p) for p in paths], 'prompt_id': result['prompt_id'], 'port': result['port']}), flush=True)
+
+def run_owned_comfy(python, comfy, root, flow, extra_args=()):
+    """Run one owned loopback process; always stop its entire process group."""
     sock = socket.socket(); sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]; sock.close()
+    def cancelled(*_): raise KeyboardInterrupt('ComfyUI cancelled')
     log = open(root/'comfy.log', 'wb')
+    previous = {sig: signal.signal(sig, cancelled) for sig in (signal.SIGTERM, signal.SIGINT)}
     proc = None
     try:
-        proc = subprocess.Popen([str(HOME/'venv/bin/python'), str(COMFY/'main.py'), '--listen','127.0.0.1','--port',str(port),'--input-directory',str(root/'input'),'--output-directory',str(root/'output'),'--user-directory',str(root/'user')], cwd=COMFY, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen([str(python), str(comfy/'main.py'), '--listen','127.0.0.1','--port',str(port),'--input-directory',str(root/'input'),'--output-directory',str(root/'output'),'--user-directory',str(root/'user'), *extra_args], cwd=comfy, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic()+180
         while time.monotonic()<deadline:
             if proc.poll() is not None: raise RuntimeError(f'ComfyUI exited {proc.returncode}; inspect {root}/comfy.log')
@@ -221,20 +232,17 @@ def main(req):
             if history:
                 status = history.get('status',{})
                 if status.get('status_str') == 'error' or status.get('completed') is False: raise RuntimeError(f'Inference failed: {status}')
-                images = [image for output in history.get('outputs',{}).values() for image in output.get('images',[])]
-                if images:
-                    paths = [(root/'output'/image.get('subfolder','')/image['filename']).resolve() for image in images]
-                    if any(not str(p).startswith(str((root/'output').resolve())+'/') or not p.is_file() for p in paths): raise RuntimeError('Invalid/missing output paths')
-                    print(json.dumps({'outputs':[str(p) for p in paths], 'prompt_id':pid, 'port':port}), flush=True)
-                    return
+                return {'history': history, 'prompt_id': pid, 'port': port}
             time.sleep(2)
         raise TimeoutError('Inference timed out')
     finally:
         try:
+            for sig in previous: signal.signal(sig, signal.SIG_IGN)
             if proc is not None:
                 stop_process_group(proc)
         finally:
             log.close()
+            for sig, handler in previous.items(): signal.signal(sig, handler)
 
 if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt('Cancelled')))
