@@ -364,6 +364,40 @@ describe("internal content policy", () => {
     }
   });
 
+  it("warns only for allowlisted remote HTTP images through the registered transport policy", async () => {
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { origin: "https://pi.example.test" } },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { dispatchEvent: () => undefined },
+    });
+    try {
+      applyContentPolicySettings({ security: { remoteContentHosts: ["transport-warning.example.test"] } });
+      await expect(decideContent({
+        kind: "image",
+        url: "http://transport-warning.example.test/image.png",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({
+        action: "warn",
+        reason: "Allowed host uses unencrypted HTTP",
+        by: "transport-policy",
+      });
+      await expect(decideContent({
+        kind: "image",
+        url: "http://unknown-http.example.test/image.png",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({ action: "ask", by: "default" });
+    } finally {
+      applyContentPolicySettings({ security: { remoteContentHosts: [] } });
+      Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+      Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+    }
+  });
+
   it("treats throwing and timed-out internal policies as ask", async () => {
     const previousWindow = globalThis.window;
     Object.defineProperty(globalThis, "window", {

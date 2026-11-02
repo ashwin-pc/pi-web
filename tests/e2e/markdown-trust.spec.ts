@@ -73,6 +73,37 @@ test("remote images make no request before verdict, auto-load allowed hosts, and
   }
 });
 
+test("allowlisted HTTP image renders with a transport warning and can be blocked without opening its link", async ({ page }) => {
+  let imageRequests = 0;
+  let popups = 0;
+  page.on("popup", () => { popups += 1; });
+  await page.route("http://warn-image.example.test/image.png", (route) => {
+    imageRequests += 1;
+    return route.fulfill({ body: png, contentType: "image/png" });
+  });
+  await page.request.patch("/api/settings", {
+    data: { security: { remoteContentHosts: ["warn-image.example.test"] } },
+  });
+  await page.route("**/api/messages**", (route) => route.fulfill({ json: {
+    ok: true,
+    messages: [{
+      role: "assistant",
+      isError: false,
+      text: "[![warned transport](http://warn-image.example.test/image.png)](https://destination.example.test/)",
+    }],
+  } }));
+
+  await page.goto("/");
+  await expect(page.getByAltText("warned transport")).toBeVisible();
+  await expect.poll(() => imageRequests).toBe(1);
+  const warning = page.locator(".remoteMarkdownImageWarningMarker");
+  await expect(warning).toContainText("transport-policy: Allowed host uses unencrypted HTTP");
+  await warning.getByRole("button", { name: "Block images from warn-image.example.test for this app session" }).click();
+  await expect(page.getByAltText("warned transport")).toHaveCount(0);
+  await expect(page.getByText("Remote image from warn-image.example.test was blocked.")).toBeVisible();
+  expect(popups).toBe(0);
+});
+
 test("contained preview runs without a click, reports blocked fetch, then succeeds after reload", async ({ page }) => {
   await page.setViewportSize({ width: 412, height: 960 });
   const requests: Array<Record<string, string>> = [];

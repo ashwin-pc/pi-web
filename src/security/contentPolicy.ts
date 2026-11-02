@@ -17,7 +17,7 @@ export type ContentPolicy = (
   resource: ContentResource,
 ) => ContentPolicyVerdict | undefined | Promise<ContentPolicyVerdict | undefined>;
 
-const registeredPolicies: ContentPolicy[] = [];
+const policies: ContentPolicy[] = [];
 const blockedHosts = new Set<string>();
 const configuredAllowedHosts = new Set<string>();
 let allowedHosts = new Set<string>();
@@ -42,6 +42,18 @@ function userHostPolicy(resource: ContentResource): ContentPolicyVerdict | undef
   const host = url.host.toLowerCase();
   if (blockedHosts.has(host)) return { action: "block", reason: "Host blocked for this app session", by: "user-session-blocklist" };
   if (allowedHosts.has(url.host.toLowerCase())) return { action: "allow", by: "user-host-allowlist" };
+}
+
+function insecureTransportPolicy(resource: ContentResource): ContentPolicyVerdict | undefined {
+  if (resource.kind !== "image") return;
+  const url = parsedUrl(resource.url);
+  if (!url || url.protocol !== "http:" || url.origin === window.location.origin) return;
+  if (!allowedHosts.has(url.host.toLowerCase())) return;
+  return {
+    action: "warn",
+    reason: "Allowed host uses unencrypted HTTP",
+    by: "transport-policy",
+  };
 }
 
 async function policyResult(policy: ContentPolicy, resource: ContentResource): Promise<ContentPolicyVerdict | undefined> {
@@ -71,7 +83,7 @@ async function policyResult(policy: ContentPolicy, resource: ContentResource): P
 
 export async function decideContent(resource: ContentResource): Promise<ContentPolicyVerdict> {
   let verdict: ContentPolicyVerdict | undefined;
-  for (const policy of [corePolicy, userHostPolicy, ...registeredPolicies]) {
+  for (const policy of [...policies]) {
     const result = await policyResult(policy, resource);
     if (result && (!verdict || strictness[result.action] > strictness[verdict.action])) verdict = result;
   }
@@ -80,12 +92,16 @@ export async function decideContent(resource: ContentResource): Promise<ContentP
 
 /** Internal composition point; deliberately not wired into extension contributions. */
 export function registerContentPolicy(policy: ContentPolicy) {
-  registeredPolicies.push(policy);
+  policies.push(policy);
   return () => {
-    const index = registeredPolicies.indexOf(policy);
-    if (index >= 0) registeredPolicies.splice(index, 1);
+    const index = policies.indexOf(policy);
+    if (index >= 0) policies.splice(index, 1);
   };
 }
+
+registerContentPolicy(corePolicy);
+registerContentPolicy(userHostPolicy);
+registerContentPolicy(insecureTransportPolicy);
 
 export function configureContentPolicy(options: { headers: () => HeadersInit }) {
   apiHeaders = options.headers;
