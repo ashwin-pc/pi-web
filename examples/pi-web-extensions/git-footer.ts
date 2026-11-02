@@ -129,7 +129,7 @@ async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
   } catch { return { ok: false, output: "" }; }
 }
 
-function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: GitRunner) {
+function scheduleFetch(cwd: string, branch: string, upstream: string, git: GitRunner, statusGit: GitRunner) {
   let state = git === runFetchGit ? fetchStates.default : fetchStates.custom.get(git);
   if (!state) fetchStates.custom.set(git, state = { cwd: new Map(), repositories: new Map() });
   const reserve = (map: Map<string, FetchEntry>, key: string) => {
@@ -149,7 +149,7 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
   // At most two discovery/fetch jobs process-wide; skip rather than queue work
   // from inactive sessions. A later ordinary refresh will retry admission.
   if ((state.active ?? 0) >= 2) return;
-  const entry = reserve(state.cwd, cwd);
+  const entry = reserve(state.cwd, `${cwd}\0${branch}\0${upstream}`);
   if (!entry) return;
   const repositories = state.repositories;
   state.active = (state.active ?? 0) + 1;
@@ -268,7 +268,7 @@ async function renderFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
     </div>`;
   }
 
-  if (snapshot.upstream && fetchGit) scheduleFetch(cwd, snapshot.branch, fetchGit, git);
+  if (snapshot.upstream && fetchGit) scheduleFetch(cwd, snapshot.branch, snapshot.upstream, fetchGit, git);
 
   const status = snapshot.dirty ? `dirty${formatDetails(snapshot)}` : "clean";
   const dirtyColor = snapshot.dirty ? "#facc15" : "#86efac";

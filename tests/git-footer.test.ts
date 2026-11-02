@@ -440,6 +440,24 @@ describe("automatic upstream fetch", () => {
     await vi.advanceTimersByTimeAsync(2_501);
     expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(2);
   });
+  it("discovers a new branch upstream without inheriting the old branch backoff", async () => {
+    vi.useFakeTimers();
+    let branch = "first";
+    const git = vi.fn(async () => ok(status(upstream(0, 0, `origin/${branch}`), branch)));
+    const fetch = vi.fn(async (args: string[]) => {
+      if (args[0] === "rev-parse") return ok("/shared/.git");
+      if (args[0] === "for-each-ref") return ok(`origin\0refs/heads/${branch}\0refs/remotes/origin/${branch}`);
+      return args.at(-1)?.includes("first") ? { ok: false, output: "" } : ok();
+    });
+    const footer = mount(git, "/repo", options => createGitFooterExtension({ ...options, fetchGit: fetch }));
+    await flush();
+    await vi.advanceTimersByTimeAsync(850_000);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(4);
+    branch = "second";
+    footer.emit("input");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetch.mock.calls.some(([args]) => args.at(-1) === "+refs/heads/second:refs/remotes/origin/second")).toBe(true);
+  });
   it("retains failure backoff when another repository reserves expired entries", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(async (args: string[], cwd: string) => args[0] === "rev-parse" ? ok(`${cwd}/.git`)
