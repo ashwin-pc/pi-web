@@ -333,6 +333,10 @@ export function textFromToolResult(result: unknown): string {
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
 
+function isExplicitAbsoluteUrl(url: string) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(url);
+}
+
 export function collectToolImages(result: unknown, sessionId = ""): ToolImage[] {
   result = parseJsonLikeResult(result);
   const images: ToolImage[] = [];
@@ -352,7 +356,7 @@ export function collectToolImages(result: unknown, sessionId = ""): ToolImage[] 
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
       else if (url) {
         const src = scopeArtifactUrl(url, sessionId);
-        images.push({ src, alt, needsAuth: src.startsWith("/") });
+        images.push({ src, alt, needsAuth: !isExplicitAbsoluteUrl(src) });
       }
       else if (typeof obj.path === "string") {
         const marker = "/.pi/web/artifacts/";
@@ -365,7 +369,7 @@ export function collectToolImages(result: unknown, sessionId = ""): ToolImage[] 
       const imageUrl = obj.image_url as Record<string, unknown>;
       if (typeof imageUrl.url === "string") {
         const src = scopeArtifactUrl(imageUrl.url, sessionId);
-        images.push({ src, alt: "tool result image", needsAuth: src.startsWith("/") });
+        images.push({ src, alt: "tool result image", needsAuth: !isExplicitAbsoluteUrl(src) });
       }
     }
     visit(obj.content);
