@@ -52,6 +52,29 @@ describe("tool card image previews", () => {
       .toEqual([{ src: "/api/artifacts/image-edits/run-1/output.png", alt: "tool result image", needsAuth: true }]);
   });
 
+  it("scopes artifact image results to the producing session", () => {
+    expect(collectToolImages({
+      content: [{ type: "image", path: "/project/.pi/web/artifacts/image edits/run 1/output final.png" }],
+    }, "producer-session")).toEqual([{
+      src: "/api/session-artifacts/producer-session/image%20edits/run%201/output%20final.png",
+      alt: "tool result image",
+      needsAuth: true,
+    }]);
+  });
+
+  it("preserves external and explicitly scoped image URLs", () => {
+    const content = [
+      { type: "image", imageUrl: "https://cdn.example/api/artifacts/external.png" },
+      { type: "image", imageUrl: "/api/artifacts/queried.png?sessionId=producer" },
+      { type: "image", imageUrl: "/api/session-artifacts/producer/scoped.png" },
+    ];
+    expect(collectToolImages({ content }, "current")).toEqual([
+      { src: "https://cdn.example/api/artifacts/external.png", alt: "tool result image", needsAuth: false },
+      { src: "/api/artifacts/queried.png?sessionId=producer", alt: "tool result image", needsAuth: true },
+      { src: "/api/session-artifacts/producer/scoped.png", alt: "tool result image", needsAuth: true },
+    ]);
+  });
+
   it("extracts Bedrock-style image source data", () => {
     const images = collectToolImages({
       content: [{ type: "image", source: { media_type: "image/jpeg", data: "jpegdata" } }],
