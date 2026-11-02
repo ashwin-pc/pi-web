@@ -1,6 +1,6 @@
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { resolveWebHomePath } from "../server/shared/webHome.js";
 import { createSettingsStore } from "../server/settings.js";
@@ -46,7 +46,9 @@ describe("resolveWebHomePath", () => {
       for (const file of [globalExtension, projectExtension]) {
         mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, "export default () => {};");
       }
-      expect(resolveWorkspacePiWebExtensionPaths(join(home, "project"))).toEqual([projectExtension]);
+      expect(resolveWorkspacePiWebExtensionPaths(join(home, "project"))).toEqual([
+        join(realpathSync(join(home, "project")), ".pi", "web", "extensions", "project.ts"),
+      ]);
       expect(resolveGlobalPiWebExtensionPaths()).toEqual([globalExtension]);
       const store = createSettingsStore(resolveWebHomePath("pi-web-settings.json", "/legacy/settings.json", process.env.PI_WEB_SETTINGS_FILE));
       await store.patch({ appearance: { density: "compact" } });

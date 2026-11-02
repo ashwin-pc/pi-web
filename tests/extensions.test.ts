@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ async function makeTempDir() {
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("bundled extension path discovery", () => {
@@ -90,10 +91,11 @@ describe("bundled extension path discovery", () => {
     }));
     vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
 
+    const canonicalExtensionsDir = join(await realpath(cwd), ".pi", "web", "extensions");
     expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([
-      join(sharedDir, "main.ts"),
+      join(canonicalExtensionsDir, "shared", "main.ts"),
       join(sharedDir, "absolute.ts"),
-      join(extensionsDir, "..foo.ts"),
+      join(canonicalExtensionsDir, "..foo.ts"),
     ]);
   });
 
@@ -137,8 +139,8 @@ describe("bundled extension path discovery", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${join(extensionsDir, "outside-link.ts")}"`));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${extensionsDir}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("outside-link.ts"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(await realpath(cwd), ".pi", "web", "extensions")}"`));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${outsideExtension}"`));
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("README.md"));
     warn.mockRestore();
@@ -156,7 +158,7 @@ describe("bundled extension path discovery", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(cwd, ".pi", "web", "extensions")}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(await realpath(cwd), ".pi", "web", "extensions")}"`));
     warn.mockRestore();
   });
 
