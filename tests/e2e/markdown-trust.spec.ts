@@ -38,14 +38,16 @@ test("remote images make no request before verdict, auto-load allowed hosts, and
       isError: false,
       text: [
         "![allowed](https://allowed.example.test/image.png)",
-        "![once](https://once.example.test/first.png)",
+        "[![once](https://once.example.test/first.png)](https://destination.example.test/once)",
         "![still gated](https://once.example.test/second.png)",
-        "![persist](https://persist.example.test/image.png)",
+        "[![persist](https://persist.example.test/image.png)](https://destination.example.test/persist)",
       ].join("\n\n"),
     }],
   } }));
 
   await page.goto("/");
+  let popups = 0;
+  page.on("popup", () => { popups += 1; });
   await expect(page.getByAltText("allowed")).toBeVisible();
   await expect(page.getByRole("group", { name: "Remote image" })).toHaveCount(3);
   expect(requests.some((request) => request.url.includes("once.example.test"))).toBe(false);
@@ -60,6 +62,7 @@ test("remote images make no request before verdict, auto-load allowed hosts, and
   const persist = page.getByRole("group", { name: "Remote image" }).filter({ hasText: "persist.example.test" });
   await persist.getByRole("button", { name: "Always allow this host" }).click();
   await expect(page.getByAltText("persist")).toBeVisible();
+  expect(popups).toBe(0);
 
   const saved = await (await page.request.get("/api/settings")).json();
   expect(saved.settings.security.remoteContentHosts).toContain("persist.example.test");

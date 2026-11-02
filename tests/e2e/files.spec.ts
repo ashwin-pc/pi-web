@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { previewContentSecurityPolicy } from "../../src/markdown/htmlPreviewGate.js";
 
 const artifactRoot = ".pi/web/artifacts";
 const files = {
@@ -197,6 +198,20 @@ test("large artifact preview renders interactive HTML, Markdown, and video", asy
   await expect(thumbnail).toHaveAttribute("tabindex", "-1");
   await expect(thumbnail).toHaveAttribute("aria-hidden", "true");
   await expect(thumbnail.contentFrame().locator("#interactive")).toHaveText("Ready");
+  const thumbnailContainment = await thumbnail.evaluate((element: HTMLIFrameElement) => {
+    const parsed = new DOMParser().parseFromString(element.srcdoc, "text/html");
+    const first = parsed.head.firstElementChild;
+    return {
+      tag: first?.tagName,
+      httpEquiv: first?.getAttribute("http-equiv"),
+      content: first?.getAttribute("content"),
+    };
+  });
+  expect(thumbnailContainment).toEqual({
+    tag: "META",
+    httpEquiv: "Content-Security-Policy",
+    content: previewContentSecurityPolicy(["https://markers.example.test"]),
+  });
   const thumbnailGeometry = await thumbnail.evaluate((iframe) => {
     const visual = iframe.closest<HTMLElement>(".artifactGalleryCardVisual")!.getBoundingClientRect();
     const frame = iframe.getBoundingClientRect();

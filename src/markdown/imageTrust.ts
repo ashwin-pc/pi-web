@@ -1,5 +1,5 @@
 import type { Role } from "../app/types.js";
-import { alwaysAllowHost, decideContent, type ContentResource } from "../security/contentPolicy.js";
+import { alwaysAllowHost, blockContentHost, decideContent, type ContentResource, type ContentPolicyVerdict } from "../security/contentPolicy.js";
 
 const inlineRasterImage = /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i;
 const unsafeUrlSyntax = /[\u0000-\u001F\u007F\\]/;
@@ -41,6 +41,52 @@ function createImage(placeholder: HTMLElement, source: Extract<MarkdownImageSour
   return image;
 }
 
+function suppressLinkedButtonActivation(container: HTMLElement) {
+  container.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("button")) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+}
+
+function blockedImageNotice(host: string) {
+  const blocked = document.createElement("span");
+  blocked.className = "remoteMarkdownImage";
+  blocked.setAttribute("role", "status");
+  blocked.textContent = `Remote image from ${host} was blocked.`;
+  return blocked;
+}
+
+function warnedImage(
+  placeholder: HTMLElement,
+  source: Extract<MarkdownImageSource, { kind: "remote" }>,
+  verdict: ContentPolicyVerdict,
+  enhanceImage: (image: HTMLImageElement) => void,
+) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "remoteMarkdownImageWarning";
+  const image = createImage(placeholder, source);
+  const marker = document.createElement("span");
+  marker.className = "remoteMarkdownImageWarningMarker";
+  marker.setAttribute("role", "status");
+  const detail = document.createElement("span");
+  detail.className = "remoteMarkdownImageWarningDetail";
+  detail.textContent = `${verdict.by}: ${verdict.reason || "Remote content needs attention"}`;
+  const block = document.createElement("button");
+  block.type = "button";
+  block.textContent = "Block host";
+  block.setAttribute("aria-label", `Block images from ${source.host} for this app session`);
+  block.addEventListener("click", () => {
+    blockContentHost(source.host);
+    wrapper.replaceWith(blockedImageNotice(source.host));
+  });
+  marker.append(detail, block);
+  wrapper.append(image, marker);
+  suppressLinkedButtonActivation(wrapper);
+  placeholder.replaceWith(wrapper);
+  enhanceImage(image);
+}
+
 export function enhanceRemoteMarkdownImages(
   root: ParentNode,
   enhanceImage: (image: HTMLImageElement) => void,
@@ -70,13 +116,19 @@ export function enhanceRemoteMarkdownImages(
         show();
         return;
       }
+      if (verdict.action === "warn") {
+        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        warnedImage(placeholder, checked, verdict, enhanceImage);
+        return;
+      }
       if (verdict.action === "block") {
         document.removeEventListener("pi-web-content-policy-changed", evaluate);
-        placeholder.textContent = `Remote image from ${checked.host} was blocked.`;
+        placeholder.replaceWith(blockedImageNotice(checked.host));
         return;
       }
       placeholder.setAttribute("role", "group");
       placeholder.setAttribute("aria-label", "Remote image");
+      suppressLinkedButtonActivation(placeholder);
       const detail = document.createElement("span");
       detail.className = "remoteMarkdownImageDetail";
       detail.append("Image from ");
