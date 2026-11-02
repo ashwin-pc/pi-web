@@ -1,19 +1,61 @@
 import type { IncomingMessage } from "node:http";
-import { forwardedHost, normalizedAuthority } from "./proxy.js";
+import { isIP } from "node:net";
+import { normalizedAuthority } from "./proxy.js";
 
-export const originFailureHint = "Origin does not match Host. If a reverse proxy rewrites Host, preserve the public Host, set PI_WEB_AUTH_ORIGIN to the public origin, or configure PI_WEB_AUTH_PROXY_PEERS with exact trusted proxy IPs that overwrite X-Forwarded-Host.";
+export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin (HTTPS recommended).";
+export const unconfiguredOriginWarning = "Rejected a browser request for an undeclared hostname. Set PI_WEB_AUTH_ORIGIN to the exact public origin (HTTPS recommended). One public origin is supported because browser sessions and WebAuthn credentials are bound to one relying-party origin.";
 let warned = false;
+
+export function createOriginRejectionReporter(
+  configuredOrigin: string | undefined,
+  warn: (message: string) => void = console.warn,
+): (req: IncomingMessage) => void {
+  let reported = false;
+  return (_req) => {
+    if (!configuredOrigin && !reported) {
+      reported = true;
+      warn(unconfiguredOriginWarning);
+    }
+  };
+}
+
+function isCanonicalLoopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function effectivePort(url: URL): string {
+  return url.port || (url.protocol === "http:" ? "80" : "443");
+}
+
+function localLoopbackAlias(origin: URL, configured: URL): boolean {
+  return origin.protocol === "http:"
+    && configured.protocol === "http:"
+    && isCanonicalLoopback(origin.hostname)
+    && isCanonicalLoopback(configured.hostname)
+    && effectivePort(origin) === effectivePort(configured);
+}
+
+function safeMatchingHost(req: IncomingMessage, origin: URL): boolean {
+  const hostname = origin.hostname.replace(/^\[|\]$/g, "");
+  if (hostname !== "localhost" && isIP(hostname) === 0) return false;
+  return normalizedAuthority(req.headers.host, origin.protocol as "http:" | "https:") === origin.host.toLowerCase();
+}
+
 /** Shared by public auth, cookie mutations, WebSockets and supervisor. */
 export function trustedOrigin(req: IncomingMessage, configuredOrigin: string): boolean {
   const origin = req.headers.origin;
-  if (!origin) return true;
+  if (!origin) {
+    const fetchSite = req.headers["sec-fetch-site"];
+    return fetchSite === "same-origin" || fetchSite === "none";
+  }
   let valid = false;
   try {
     const parsed = new URL(origin);
-    valid = (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.origin === origin &&
-      (parsed.origin === new URL(configuredOrigin).origin ||
-       parsed.host.toLowerCase() === normalizedAuthority(req.headers.host, parsed.protocol) ||
-       parsed.host.toLowerCase() === forwardedHost(req, parsed.protocol));
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin !== origin) return false;
+    const configured = new URL(configuredOrigin);
+    valid = parsed.origin === configured.origin
+      || localLoopbackAlias(parsed, configured)
+      || safeMatchingHost(req, parsed);
   } catch { /* Reject malformed origins. */ }
   if (!valid && req.headers["x-forwarded-host"] && req.headers["x-forwarded-host"] !== req.headers.host && !warned) {
     warned = true;
