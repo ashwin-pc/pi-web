@@ -7,6 +7,7 @@ import {
   defaultAppIdentity,
   isAvatarPresetId,
   isAvatarAssetId,
+  maxAvatarAnimationDecodedBytes,
   maxAvatarPackageBytes,
   maxAvatarZipBytes,
   resolveAvatarBundle,
@@ -235,7 +236,9 @@ export function createIdentitySettings(
   exportPackage.type = "button";
   exportPackage.id = "identityPackageExport";
   exportPackage.disabled = true;
-  const packageHelp = el("p", "settingsHint", "Images: PNG, JPEG or WebP under 5 MB. Portable packages: .pi-avatar.zip containing a manifest, still.png (new-session fallback), icon.png, optional fab.png (launcher image; defaults to still.png) and optional transparent single-play new-session.apng (up to 8 MB, 512×512, 240 frames and 15 seconds). Legacy .pi-avatar.json packages are also accepted. Import applies immediately without changing app names; export can be imported on another updated Pi Web instance.");
+  const decodedMiB = maxAvatarAnimationDecodedBytes / (1024 * 1024);
+  const maxFullSizeFrames = Math.floor(maxAvatarAnimationDecodedBytes / ((512 * 4 + 1) * 512));
+  const packageHelp = el("p", "settingsHint", `Images: PNG, JPEG or WebP under 5 MB. Portable packages: .pi-avatar.zip containing a manifest, still.png (new-session fallback), icon.png, optional fab.png (launcher image; defaults to still.png) and optional transparent single-play new-session.apng (up to 8 MB, 512×512, 240 frames and 15 seconds). Animation limits are separate ceilings, so not all combinations are accepted. At most ${decodedMiB} MiB of cumulative decoded frames are accepted, including a separate default poster; this permits at most ${maxFullSizeFrames} full-size 512×512 RGBA frames. Legacy .pi-avatar.json packages are also accepted. Import applies immediately without changing app names; export can be imported on another updated Pi Web instance.`);
   const packageActions = el("div", "identityActions");
   packageActions.append(importPackage, exportPackage);
   custom.after(packageActions, packageInput, packageHelp);

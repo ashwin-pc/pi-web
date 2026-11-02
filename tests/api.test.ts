@@ -181,6 +181,57 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
+  it("rejects invalid and oversized push subscription requests", async () => {
+    const invalid = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-invalid",
+        subscription: {
+          endpoint: "https://push.invalid.example/collect",
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const malformed = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+
+    const oversized = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-oversized",
+        subscription: {
+          endpoint: `https://fcm.googleapis.com/fcm/send/${"x".repeat(17_000)}`,
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
+  it("prevents successful JSON API responses from being cached", async () => {
+    const response = await fetch(`${baseUrl}/api/state`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toMatchObject({ sessionId: "mock-current", model: { provider: "mock" } });
+  });
+
+  it("prevents JSON API errors from being cached without changing their status or body", async () => {
+    const response = await fetch(`${baseUrl}/api/unknown-route`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toEqual({ ok: false, error: "Unknown API route" });
+  });
+
   it("requires explicit same-origin browser intent for open-policy mutations", async () => {
     const body = JSON.stringify({ defaults: { thinkingLevel: "high" } });
     const missingOrigin = await nativeFetch(`${baseUrl}/api/settings`, {
@@ -349,7 +400,7 @@ describe("pi-web mock API", () => {
   it("bounds mock event request bodies before broadcast and replay", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const port = Number(new URL(baseUrl).port);
-    const live = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current`);
+    const live = await mockWebSocket(baseUrl, "sessionId=mock-current");
     const liveEvents: any[] = [];
     live.on("message", (data) => liveEvents.push(JSON.parse(String(data))));
     await once(live, "open");
@@ -371,17 +422,21 @@ describe("pi-web mock API", () => {
     const declared = await rawPost(port, "/api/mock/event", declaredBody, {
       "content-type": "application/json",
       "content-length": String(declaredBody.length),
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     const streamed = await rawPost(port, "/api/mock/event", streamedBody, {
       "content-type": "application/json",
       "transfer-encoding": "chunked",
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     expect([declared.status, streamed.status]).toEqual([413, 413]);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(liveEvents.some((event) => String(event.testMarker).startsWith("oversized-"))).toBe(false);
     live.close();
 
-    const replay = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
+    const replay = await mockWebSocket(baseUrl, `sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
     const replayEvents: any[] = [];
     replay.on("message", (data) => replayEvents.push(JSON.parse(String(data))));
     await once(replay, "open");
@@ -1101,20 +1156,24 @@ describe("artifact serving", () => {
   let baseUrl: string;
   let artifactDir: string;
   let legacyArtifactDir: string;
+  let unrelatedCwd: string;
 
   beforeAll(async () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     legacyArtifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+    unrelatedCwd = await mkdtemp(join(tmpdir(), "pi-web-unrelated-artifacts-"));
     await mkdir(artifactDir, { recursive: true });
     await mkdir(legacyArtifactDir, { recursive: true });
+    await mkdir(join(unrelatedCwd, ".pi", "web", "artifacts"), { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
     await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
     await writeFile(join(artifactDir, "test.mp3"), Buffer.from("MP3"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
+    await writeFile(join(unrelatedCwd, ".pi", "web", "artifacts", "unrelated.txt"), "UNRELATED");
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_CWD: process.cwd() },
@@ -1132,6 +1191,7 @@ describe("artifact serving", () => {
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
+    await rm(unrelatedCwd, { recursive: true, force: true });
   });
 
   it("serves an artifact file without authentication", async () => {
@@ -1178,6 +1238,23 @@ describe("artifact serving", () => {
     expect(res.status).toBe(200);
     const body = await res.arrayBuffer();
     expect(Buffer.from(body).toString()).toBe("LEGACY");
+  });
+
+  it("does not resolve session-less artifacts from unrelated known workspaces", async () => {
+    const created = await fetch(`${baseUrl}/api/sessions/new`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: unrelatedCwd }),
+    });
+    expect(created.status).toBe(200);
+    await created.json();
+
+    const unscoped = await fetch(`${baseUrl}/api/artifacts/unrelated.txt`);
+    expect(unscoped.status).toBe(404);
+
+    const queried = await fetch(`${baseUrl}/api/artifacts/test.png?sessionId=mock-current`);
+    expect(queried.status).toBe(200);
+    expect(await queried.text()).toBe("PNG");
   });
 
   it("protects artifacts and diagnostics with the same stored API-token gate", async () => {
@@ -1544,10 +1621,10 @@ describe("Live session lifecycle", () => {
     let acknowledgedPings = 0;
     const ws = await mockWebSocket(baseUrl, "sessionId=mock-older&clientId=heartbeat-test", { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
-    ws.on("ping", () => {
+    ws.on("ping", (data) => {
       if (!replyToPings) return;
       acknowledgedPings += 1;
-      ws.pong();
+      ws.pong(data);
     });
     try {
       await new Promise<void>((resolve, reject) => {

@@ -1,6 +1,37 @@
 import { readFile } from "node:fs/promises";
+import { request as httpRequest, type ClientRequest } from "node:http";
 import { expect, test } from "@playwright/test";
 import { unzipSync } from "fflate";
+
+function startSlowUpload(baseURL: string, path: string, contentType: string): ClientRequest {
+  const url = new URL(path, baseURL);
+  const upload = httpRequest(url, {
+    method: "POST",
+    headers: { "content-type": contentType, "content-length": "1024" },
+  });
+  upload.on("error", () => undefined);
+  upload.write(Buffer.from([0x89]));
+  return upload;
+}
+
+for (const [name, path, contentType] of [
+  ["PNG", "/api/identity/avatar", "image/png"],
+  ["package", "/api/identity/avatar/package", "application/json"],
+] as const) {
+  test(`slow ${name} body does not block a concurrent settings mutation`, async ({ request }, info) => {
+    test.skip(info.project.name !== "desktop", "Avatar/settings mutation lock regression");
+    const upload = startSlowUpload(String(info.project.use.baseURL), path, contentType);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const started = Date.now();
+      const response = await request.patch("/api/settings", { data: { identity: { name: `Concurrent ${name}` } }, timeout: 2_000 });
+      expect(response.ok()).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      upload.destroy();
+    }
+  });
+}
 
 test("concurrent package export and reset never omit selected optional roles", async ({ request }, info) => {
   test.skip(info.project.name !== "desktop", "Portable package snapshot serialization");

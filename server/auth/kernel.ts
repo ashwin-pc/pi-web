@@ -515,7 +515,7 @@ export class AuthKernel {
     req?: IncomingMessage,
     verified = true,
     credential?: { passwordHash?: string; passkeyId?: string; grantHash?: string },
-  ) {
+  ): Promise<void> {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
     const device = req?.headers["user-agent"]?.slice(0, 200),
