@@ -83,7 +83,7 @@ test("collapsed tool cards defer detail rendering and authenticated images until
   expect(result.collapsed).toEqual({ highlight: 0, auto: 0, fetch: 0, children: 1 });
   expect(result.expanded).toEqual({ highlight: 1, auto: 0, fetch: 1, args: 1, images: 1, body: "saved\n[image]" });
   expect(result.repeated).toEqual({ highlight: 1, auto: 0, fetch: 1 });
-  expect(result.requests).toEqual(["/api/session-artifacts/producer-session/nested/output%20final.png"]);
+  expect(result.requests).toEqual([new URL("/api/session-artifacts/producer-session/nested/output%20final.png", page.url()).href]);
   expect(result.bounded.highlight).toBe(1);
   expect(result.bounded.auto).toBe(0);
   expect(result.bounded.scripts).toBe(0);
