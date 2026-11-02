@@ -349,7 +349,7 @@ describe("pi-web mock API", () => {
   it("bounds mock event request bodies before broadcast and replay", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const port = Number(new URL(baseUrl).port);
-    const live = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current`);
+    const live = await mockWebSocket(baseUrl, "sessionId=mock-current");
     const liveEvents: any[] = [];
     live.on("message", (data) => liveEvents.push(JSON.parse(String(data))));
     await once(live, "open");
@@ -381,7 +381,7 @@ describe("pi-web mock API", () => {
     expect(liveEvents.some((event) => String(event.testMarker).startsWith("oversized-"))).toBe(false);
     live.close();
 
-    const replay = new WebSocket(`ws://127.0.0.1:${port}/ws?sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
+    const replay = await mockWebSocket(baseUrl, `sessionId=mock-current&lastSeq=${ordinarySeq - 1}`);
     const replayEvents: any[] = [];
     replay.on("message", (data) => replayEvents.push(JSON.parse(String(data))));
     await once(replay, "open");
