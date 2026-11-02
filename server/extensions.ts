@@ -105,7 +105,6 @@ function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryCont
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 
       const entryPath = join(dir, entry.name);
-      if (!realpathForDiscovery(entryPath, context)) continue;
       let isFile = entry.isFile();
       let isDirectory = entry.isDirectory();
 
@@ -119,7 +118,9 @@ function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryCont
         }
       }
 
-      if (isFile && isExtensionFile(entry.name)) {
+      if (!isDirectory && !(isFile && isExtensionFile(entry.name))) continue;
+      if (!realpathForDiscovery(entryPath, context)) continue;
+      if (isFile) {
         discovered.push(entryPath);
         continue;
       }
@@ -138,41 +139,35 @@ function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryCont
 
 function discoverExtensionEntryPathsWithPolicy(
   dir: string,
-  seenDirs = new Set<string>(),
   policy: DiscoveryPolicy = "trusted",
+  containmentRoot?: string,
 ): string[] {
   if (!existsSync(dir)) return [];
   let root: string;
-  try { root = realpathSync(dir); } catch { return []; }
-  for (const seenDir of [...seenDirs]) {
-    try { seenDirs.add(realpathSync(seenDir)); } catch { seenDirs.add(resolve(seenDir)); }
-  }
-  return discoverExtensionEntryPathsInternal(dir, { root, seenDirs, policy });
+  try { root = containmentRoot || realpathSync(dir); } catch { return []; }
+  return discoverExtensionEntryPathsInternal(dir, { root, seenDirs: new Set(), policy });
 }
 
-export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<string>()): string[] {
-  return discoverExtensionEntryPathsWithPolicy(dir, seenDirs);
+export function discoverExtensionEntryPaths(dir: string): string[] {
+  return discoverExtensionEntryPathsWithPolicy(dir);
 }
 
 export function resolveWorkspacePiWebExtensionPaths(cwd: string) {
-  return discoverExtensionEntryPathsWithPolicy(
-    join(cwd, ".pi", "web", "extensions"),
-    new Set(),
-    "workspace-contained",
-  );
+  let workspaceDir: string;
+  try { workspaceDir = join(realpathSync(cwd), ".pi", "web", "extensions"); } catch { return []; }
+  const globalDir = resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions"));
+  try {
+    if (realpathSync(workspaceDir) === realpathSync(globalDir)) return [];
+  } catch {
+    // A missing global directory is unrelated to workspace discovery.
+  }
+  return discoverExtensionEntryPathsWithPolicy(workspaceDir, "workspace-contained", workspaceDir);
 }
 
 export function resolveGlobalPiWebExtensionPaths() {
   return discoverExtensionEntryPaths(
     resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions")),
   );
-}
-
-export function resolvePiWebExtensionPaths(cwd: string) {
-  return dedupePaths([
-    ...resolveWorkspacePiWebExtensionPaths(cwd),
-    ...resolveGlobalPiWebExtensionPaths(),
-  ]);
 }
 
 export function resolveBundledExtensionPaths(options: BundledExtensionPathOptions) {

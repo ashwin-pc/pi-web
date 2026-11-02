@@ -157,8 +157,7 @@ export class ExtensionHttpRegistry {
     }
     const includeSessionUiState = url.searchParams.getAll("includeSessionUiState");
     if (includeSessionUiState.length && (
-      url.pathname !== "/api/state"
-      || includeSessionUiState.length !== 1
+      includeSessionUiState.length !== 1
       || !["true", "false"].includes(includeSessionUiState[0])
     )) throw new Error("Unambiguous includeSessionUiState is required");
     if (url.pathname === "/api/state" && client.targets !== "all"

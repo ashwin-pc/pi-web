@@ -1,11 +1,12 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discoverExtensionEntryPaths,
   resolveBundledExtensionPaths,
-  resolvePiWebExtensionPaths,
+  resolveGlobalPiWebExtensionPaths,
+  resolveWorkspacePiWebExtensionPaths,
 } from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 import { SessionSettlementTracker } from "../server/session/settlement.js";
@@ -70,7 +71,7 @@ describe("bundled extension path discovery", () => {
     await symlink(checkoutExtension, join(extensionsDir, "example.ts"));
     vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
 
-    expect(resolvePiWebExtensionPaths(join(root, "project"))).toEqual([join(extensionsDir, "example.ts")]);
+    expect(resolveGlobalPiWebExtensionPaths()).toEqual([join(extensionsDir, "example.ts")]);
   });
 
   it("allows sibling, absolute, and ..foo manifest entries inside the extension root", async () => {
@@ -89,7 +90,7 @@ describe("bundled extension path discovery", () => {
     }));
     vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
 
-    expect(resolvePiWebExtensionPaths(cwd)).toEqual([
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([
       join(sharedDir, "main.ts"),
       join(sharedDir, "absolute.ts"),
       join(extensionsDir, "..foo.ts"),
@@ -128,16 +129,34 @@ describe("bundled extension path discovery", () => {
     await mkdir(packageDir, { recursive: true });
     await writeFile(outsideExtension, "export default () => {};\n");
     await symlink(outsideExtension, join(extensionsDir, "outside-link.ts"));
+    await symlink(outsideExtension, join(extensionsDir, "README.md"));
     await writeFile(join(packageDir, "package.json"), JSON.stringify({
       pi: { extensions: [outsideExtension] },
     }));
     vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    expect(resolvePiWebExtensionPaths(cwd)).toEqual([]);
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${join(extensionsDir, "outside-link.ts")}"`));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${await realpath(extensionsDir)}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${extensionsDir}"`));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${outsideExtension}"`));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("README.md"));
+    warn.mockRestore();
+  });
+
+  it("rejects a workspace extension root symlinked outside the workspace", async () => {
+    const root = await makeTempDir();
+    const cwd = join(root, "project");
+    const outside = join(root, "outside-extensions");
+    await mkdir(join(cwd, ".pi", "web"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "index.ts"), "export default () => {};\n");
+    await symlink(outside, join(cwd, ".pi", "web", "extensions"));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(resolveWorkspacePiWebExtensionPaths(cwd)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${join(cwd, ".pi", "web", "extensions")}"`));
     warn.mockRestore();
   });
 
