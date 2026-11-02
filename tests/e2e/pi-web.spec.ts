@@ -1871,6 +1871,9 @@ test.describe("image rendering", () => {
 
   test("standalone markdown previews retain artifact session provenance", async ({ page }) => {
     const requested: string[] = [];
+    await page.request.patch("/api/settings", {
+      data: { security: { remoteContentHosts: [] } },
+    });
     await page.route(/\/api\/session-artifacts\/producer-session\/nested\/report%20one\.md\?download=1$/, async (route) => {
       requested.push(route.request().url());
       await route.fulfill({
@@ -1909,7 +1912,17 @@ test.describe("image rendering", () => {
       "src",
       "/api/session-artifacts/producer-session/nested/already%20scoped.png",
     );
-    await expect(images.nth(2)).toHaveAttribute("src", "https://cdn.example/api/artifacts/external.png");
+    const external = page.locator("#artifactPreviewBody .remoteMarkdownImage", { hasText: "cdn.example" });
+    await expect(external).toHaveAttribute("data-remote-image-src", "https://cdn.example/api/artifacts/external.png");
+    await expect(images).toHaveCount(2);
+    await expect.poll(() => requested.length).toBe(3);
+    expect(requested).not.toContain("https://cdn.example/api/artifacts/external.png");
+
+    await external.getByRole("button", { name: "Load", exact: true }).click();
+    await expect(page.getByAltText("External", { exact: true })).toHaveAttribute(
+      "src",
+      "https://cdn.example/api/artifacts/external.png",
+    );
     await expect.poll(() => requested.length).toBe(4);
 
     const queried = "/api/artifacts/nested/report%20one.md?sessionId=query-producer";
