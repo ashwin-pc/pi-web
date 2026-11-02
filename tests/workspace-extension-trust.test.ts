@@ -64,7 +64,7 @@ async function fixture() {
       settingsManager: SettingsManager.create(workspace, agentDir, { projectTrusted: false }),
       additionalExtensionPaths: [],
     },
-    resolveProjectTrust: () => trust.isTrusted(workspace),
+    resolveProjectTrust: () => trust.isTrustedForLoading(workspace),
     resolveAdditionalExtensionPaths: (trusted) => [
       ...resolveGlobalPiWebExtensionPaths(),
       ...trust.extensionPaths(workspace, trusted),
@@ -128,6 +128,10 @@ describe("workspace extension trust", () => {
     await symlink(insideSettings, settings);
 
     const trust = new WorkspaceExtensionTrust(agentDir);
+    expect(await trust.status(workspace)).toMatchObject({
+      trusted: false,
+      blockedByWorkspaceBoundary: false,
+    });
     expect((await trust.status(workspace)).resources).toContainEqual({
       kind: "package",
       path: "inside-package",
@@ -135,9 +139,66 @@ describe("workspace extension trust", () => {
 
     await rm(settings);
     await symlink(outsideSettings, settings);
-    const resources = (await trust.status(workspace)).resources;
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+    expect(trust.isTrusted(workspace)).toBe(true);
+    expect(await trust.isTrustedForLoading(workspace)).toBe(false);
+    const outsideStatus = await trust.status(workspace);
+    expect(outsideStatus).toMatchObject({
+      trusted: false,
+      desiredTrusted: false,
+      blockedByWorkspaceBoundary: true,
+    });
+    const resources = outsideStatus.resources;
     expect(resources).toContainEqual({ kind: "resource", path: ".pi/settings.json" });
     expect(resources).not.toContainEqual({ kind: "package", path: "outside-package" });
+  });
+
+  it("blocks saved trust when linked settings leave the workspace and restores contained links", async () => {
+    const { root, workspace, marker, packageDir, trust, loader } = await fixture();
+    const settings = join(workspace, ".pi", "settings.json");
+    const containedSettings = join(workspace, ".pi", "settings-contained.json");
+    const outsideSettings = join(root, "outside-settings.json");
+    const settingsContent = JSON.stringify({ packages: ["../local-package"] });
+    await writeFile(containedSettings, settingsContent);
+    await writeFile(outsideSettings, settingsContent);
+
+    await trust.trust(workspace);
+    await loader.reload();
+    await rm(marker, { force: true });
+    await rm(settings);
+    await symlink(outsideSettings, settings);
+
+    await loader.reload();
+
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+    const blockedPaths = loader.getExtensions().extensions.map((extension: any) => extension.path || extension.resolvedPath);
+    expect(blockedPaths.some((path) => path?.includes(`${workspace}/.pi/`))).toBe(false);
+    expect(blockedPaths.some((path) => path?.includes(packageDir))).toBe(false);
+    const blockedExecution = existsSync(marker) ? await readFile(marker, "utf8") : "";
+    expect(blockedExecution).not.toContain("regular");
+    expect(blockedExecution).not.toContain("web");
+    expect(blockedExecution).not.toContain("package");
+    expect(await trust.status(workspace)).toMatchObject({
+      trusted: false,
+      desiredTrusted: false,
+      blockedByWorkspaceBoundary: true,
+    });
+
+    await rm(settings);
+    await symlink(containedSettings, settings);
+    await rm(marker, { force: true });
+    await loader.reload();
+
+    expect(loader.getAppliedProjectTrust()).toBe(true);
+    const containedPaths = loader.getExtensions().extensions.map((extension: any) => extension.path || extension.resolvedPath);
+    expect(containedPaths.some((path) => path?.includes(`${workspace}/.pi/`))).toBe(true);
+    expect(containedPaths.some((path) => path?.includes(packageDir))).toBe(true);
+    expect(await trust.status(workspace)).toMatchObject({
+      trusted: true,
+      desiredTrusted: true,
+      blockedByWorkspaceBoundary: false,
+    });
   });
 
   it("blocks all project code while global extensions remain available", async () => {
@@ -397,13 +458,14 @@ describe("workspace extension trust route", () => {
           workspace: "/real/workspace",
           trusted,
           desiredTrusted: trusted,
+          blockedByWorkspaceBoundary: false,
           resources: [{ kind: "extension", path: ".pi/extensions/demo.js" }],
           trustedWorkspaces: trusted ? ["/real/workspace"] : [],
         }),
         trust: () => {
           calls.push("trust");
           trusted = true;
-          return { workspace: "/real/workspace", trusted: true, desiredTrusted: true, resources: [], trustedWorkspaces: ["/real/workspace"] };
+          return { workspace: "/real/workspace", trusted: true, desiredTrusted: true, blockedByWorkspaceBoundary: false, resources: [], trustedWorkspaces: ["/real/workspace"] };
         },
         revoke: () => { calls.push("revoke"); },
         trustedWorkspaces: () => [],
@@ -482,6 +544,43 @@ describe("workspace extension trust route", () => {
 
     expect(res.status).toBe(409);
     expect(JSON.parse(res.body).error).toContain("Workspace changed");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a new trust grant while linked settings leave the workspace", async () => {
+    const root = await tempRoot();
+    const workspace = join(root, "workspace");
+    const agentDir = join(root, "agent");
+    const settings = join(workspace, ".pi", "settings.json");
+    const outsideSettings = join(root, "outside-settings.json");
+    await mkdir(join(workspace, ".pi"), { recursive: true });
+    await writeFile(outsideSettings, JSON.stringify({ packages: [] }));
+    await symlink(outsideSettings, settings);
+    const trust = new WorkspaceExtensionTrust(agentDir);
+    const res = response();
+    const calls: string[] = [];
+
+    await handleWorkspaceExtensionTrustRoute(
+      { method: "POST" } as any,
+      res,
+      new URL("http://localhost/api/extensions/workspace-trust"),
+      { ok: true, via: "session", identity: { id: "owner" }, sessionHash: "session" },
+      {
+        trust,
+        sessions: {
+          require: async () => ({ sessionId: "session" }),
+          cwdForSession: () => workspace,
+          workspaceTrustState: () => ({ appliedTrusted: false, busy: false }),
+          reloadExtensions: async () => { calls.push("reload"); },
+        },
+        readBody: async () => ({ sessionId: "session", workspace: realWorkspacePath(workspace) }),
+        broadcast: () => { calls.push("broadcast"); },
+      },
+    );
+
+    expect(res.status).toBe(409);
+    expect(JSON.parse(res.body).error).toContain("settings must remain inside");
+    expect(new ProjectTrustStore(agentDir).getEntry(workspace)).toBeNull();
     expect(calls).toEqual([]);
   });
 });

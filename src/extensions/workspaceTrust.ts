@@ -4,6 +4,7 @@ type WorkspaceTrustStatus = {
   workspace: string;
   trusted: boolean;
   desiredTrusted?: boolean;
+  blockedByWorkspaceBoundary?: boolean;
   appliedTrusted?: boolean | null;
   pendingReload?: boolean;
   busy?: boolean;

@@ -44,7 +44,7 @@ describe("workspace trust reload errors", () => {
         settingsManager: SettingsManager.create(workspace, agentDir, { projectTrusted: false }),
         additionalExtensionPaths: [],
       },
-      resolveProjectTrust: () => trust.isTrusted(workspace),
+      resolveProjectTrust: () => trust.isTrustedForLoading(workspace),
       resolveAdditionalExtensionPaths: (trusted) => trust.extensionPaths(workspace, trusted),
     });
     const session = { sessionId: "session", isStreaming: false, isCompacting: false };

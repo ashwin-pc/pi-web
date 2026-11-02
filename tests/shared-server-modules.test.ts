@@ -252,8 +252,12 @@ describe("shared Git helpers", () => {
   it("neutralizes repository-selected Git helpers while preserving trusted config", () => {
     const overrides = gitConfigHardeningOverrides([
       { scope: "global", key: "core.editor", value: "trusted-editor" },
+      { scope: "global", key: "url.https://local.example/.insteadOf", value: "trusted-local:" },
+      { scope: "global", key: "url.ssh://push.example/.pushInsteadOf", value: "trusted-push:" },
       { scope: "local", key: "core.editor", value: "repository-editor" },
       { scope: "worktree", key: "sequence.editor", value: "repository-sequence-editor" },
+      { scope: "local", key: "url.https://local.example/.insteadOf", value: "repository-local:" },
+      { scope: "worktree", key: "url.ssh://push.example/.pushInsteadOf", value: "repository-push:" },
       { scope: "local", key: "remote.Origin.promisor", value: "true" },
       { scope: "worktree", key: "remote.Origin.partialCloneFilter", value: "blob:none" },
       { scope: "local", key: "extensions.partialClone", value: "Origin" },
@@ -265,6 +269,8 @@ describe("shared Git helpers", () => {
       { key: "core.editor", value: "true" },
       { key: "core.editor", value: "trusted-editor" },
       { key: "sequence.editor", value: "true" },
+      { key: "url.https://local.example/.insteadOf", value: "trusted-local:" },
+      { key: "url.ssh://push.example/.pushInsteadOf", value: "trusted-push:" },
       { key: "remote.Origin.promisor", value: "false" },
       { key: "remote.Origin.partialCloneFilter", value: "" },
       { key: "extensions.partialClone", value: "" },
@@ -275,19 +281,17 @@ describe("shared Git helpers", () => {
     for (const repositoryValue of [
       "repository-editor",
       "repository-sequence-editor",
+      "repository-local",
+      "repository-push",
       "blob:none",
       "repository-archive",
     ]) expect(serialized).not.toContain(repositoryValue);
-
-    expect(() => gitConfigHardeningOverrides([
-      { scope: "local", key: "url.https://local.example/.insteadOf", value: "local:" },
-    ])).toThrow("Repository Git URL rewrites are not supported");
-    expect(() => gitConfigHardeningOverrides([
-      { scope: "worktree", key: "url.https://local.example/.pushInsteadOf", value: "local:" },
-    ])).toThrow("Repository Git URL rewrites are not supported");
+    expect(overrides.filter(({ key, value }) =>
+      key.toLowerCase().startsWith("url.") && value === "",
+    )).toEqual([]);
   });
 
-  it("rejects repository URL rewrites while preserving trusted rewrites and ordinary Git behavior", async () => {
+  it("keeps local Git reads usable while blocking repository URL rewrites on network commands", async () => {
     const cwd = await makeRepo();
     const globalConfig = join(await tempDir("pi-web-shared-git-url-config-"), "global.gitconfig");
     await writeFile(globalConfig, `[url "https://trusted.example/"]\n\tinsteadOf = trusted:\n`);
@@ -295,13 +299,8 @@ describe("shared Git helpers", () => {
 
     await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
       withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
-        await expect(git(["ls-remote", "--get-url", "local:repo.git"], 15_000, cwd))
-          .rejects.toThrow("Repository Git URL rewrites are not supported");
-
-        runGit(cwd, "config", "--unset-all", "url.https://local.example/.insteadOf");
-        await expect(git(["ls-remote", "--get-url", "trusted:repo.git"], 15_000, cwd))
-          .resolves.toMatchObject({ stdout: "https://trusted.example/repo.git\n" });
         await writeFile(join(cwd, "tracked.txt"), "second\n");
+        await expect(gitStatus(cwd)).resolves.toMatchObject({ ok: true, isRepo: true });
         await expect(gitLog(cwd)).resolves.toMatchObject({
           ok: true,
           commits: [expect.objectContaining({ subject: "initial" })],
@@ -310,6 +309,16 @@ describe("shared Git helpers", () => {
           ok: true,
           diff: expect.stringContaining("+second"),
         });
+        await expect(git(["config", "--get", "url.https://local.example/.insteadOf"], 15_000, cwd))
+          .resolves.toMatchObject({ stdout: "local:\n" });
+        await expect(git(["ls-remote", "--get-url", "local:repo.git"], 15_000, cwd))
+          .rejects.toThrow("Git ls-remote is disabled because this repository configures URL rewrites");
+        await expect(git(["fetch", "--prune"], 15_000, cwd))
+          .rejects.toThrow("Git fetch is disabled because this repository configures URL rewrites");
+
+        runGit(cwd, "config", "--unset-all", "url.https://local.example/.insteadOf");
+        await expect(git(["ls-remote", "--get-url", "trusted:repo.git"], 15_000, cwd))
+          .resolves.toMatchObject({ stdout: "https://trusted.example/repo.git\n" });
       }));
   });
 

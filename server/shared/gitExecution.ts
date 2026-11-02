@@ -81,6 +81,11 @@ function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
   }
 }
 
+function isUrlRewriteKey(key: string) {
+  const normalized = key.toLowerCase();
+  return normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized);
+}
+
 export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfigOverride[] {
   assertSafeRemoteConfig(entries);
   const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
@@ -90,10 +95,7 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
   const overrides: GitConfigOverride[] = [];
   const add = (key: string, value: string) => overrides.push({ key, value });
   const resetToTrusted = (key: string, fallback?: string) => {
-    if (fallback === undefined) {
-      throw new Error(`Repository Git URL rewrites are not supported: ${JSON.stringify(key)}`);
-    }
-    add(key, fallback);
+    if (fallback !== undefined) add(key, fallback);
     for (const entry of trusted) if (configKeysEqual(entry.key, key)) add(entry.key, entry.value);
   };
   const safeFallback = (key: string) => {
@@ -179,6 +181,7 @@ export function gitConfigEnv(
 
 export type GitExecution = {
   entries: GitConfigEntry[];
+  hasRepositoryUrlRewrites: boolean;
   env: NodeJS.ProcessEnv;
   args: (args: string[]) => string[];
 };
@@ -195,12 +198,19 @@ export async function loadGitExecution(cwd: string): Promise<GitExecution> {
   const inheritedCommandConfig = entries
     .filter((entry) => entry.scope === "command")
     .map(({ key, value }) => ({ key, value }));
+  const hasRepositoryUrlRewrites = entries.some(
+    (entry) => (entry.scope === "local" || entry.scope === "worktree") && isUrlRewriteKey(entry.key),
+  );
   const env = gitConfigEnv(gitConfigHardeningOverrides(entries), bootstrapEnv, inheritedCommandConfig);
   return {
     entries,
+    hasRepositoryUrlRewrites,
     env,
     args(args) {
       const [command, ...commandArgs] = args;
+      if (hasRepositoryUrlRewrites && ["fetch", "pull", "push", "ls-remote"].includes(command)) {
+        throw new Error(`Git ${command} is disabled because this repository configures URL rewrites`);
+      }
       const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
       const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
       const submoduleDisplayPolicy = ["status", "diff"].includes(command) ? ["--ignore-submodules=dirty"] : [];

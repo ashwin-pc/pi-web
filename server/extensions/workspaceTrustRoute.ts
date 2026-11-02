@@ -94,6 +94,10 @@ export async function handleWorkspaceExtensionTrustRoute(
       send(res, 409, { ok: false, error: "Workspace changed. Review its resources before trusting it." });
       return true;
     }
+    if (current.blockedByWorkspaceBoundary) {
+      send(res, 409, { ok: false, error: "Workspace settings must remain inside the workspace before trust can be granted." });
+      return true;
+    }
     if (session.isStreaming || session.isCompacting) {
       send(res, 409, {
         ok: false,
@@ -132,6 +136,7 @@ export async function handleWorkspaceExtensionTrustRoute(
         workspace,
         trusted: false,
         desiredTrusted: false,
+        blockedByWorkspaceBoundary: false,
         appliedTrusted: null,
         pendingReload: false,
         busy: false,

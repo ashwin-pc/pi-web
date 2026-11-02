@@ -20,6 +20,7 @@ export type WorkspaceExtensionTrustStatus = {
   workspace: string;
   trusted: boolean;
   desiredTrusted: boolean;
+  blockedByWorkspaceBoundary: boolean;
   resources: WorkspaceTrustResource[];
   trustedWorkspaces: string[];
 };
@@ -169,6 +170,24 @@ export class WorkspaceExtensionTrust {
     return this.decision(cwd, settingsManager).trusted;
   }
 
+  private async settingsRemainInWorkspace(workspace: string): Promise<boolean> {
+    try {
+      await readWorkspaceFile(workspace, ".pi/settings.json");
+      return true;
+    } catch (error) {
+      return !(error instanceof WorkspaceFileError && error.status === 403);
+    }
+  }
+
+  async isTrustedForLoading(
+    cwd: string,
+    settingsManager?: Pick<SettingsManager, "getDefaultProjectTrust">,
+  ): Promise<boolean> {
+    const workspace = realWorkspacePath(cwd);
+    return await this.settingsRemainInWorkspace(workspace)
+      && this.decision(workspace, settingsManager).trusted;
+  }
+
   trustedWorkspaces(): string[] {
     return readTrustedWorkspacePaths(this.agentDir);
   }
@@ -180,7 +199,10 @@ export class WorkspaceExtensionTrust {
 
   async status(cwd: string): Promise<WorkspaceExtensionTrustStatus> {
     const workspace = realWorkspacePath(cwd);
-    const decision = this.decision(workspace);
+    const blockedByWorkspaceBoundary = !await this.settingsRemainInWorkspace(workspace);
+    const decision = blockedByWorkspaceBoundary
+      ? { trusted: false, inherited: false, defaulted: false }
+      : this.decision(workspace);
     const trusted = decision.trusted;
     const trustedWorkspaces = this.trustedWorkspaces();
     if (trusted && (decision.inherited || decision.defaulted) && !trustedWorkspaces.includes(workspace)) {
@@ -191,6 +213,7 @@ export class WorkspaceExtensionTrust {
       workspace,
       trusted,
       desiredTrusted: trusted,
+      blockedByWorkspaceBoundary,
       resources: await projectResources(workspace, this.trustedExtensionPaths),
       trustedWorkspaces,
     };
@@ -198,6 +221,9 @@ export class WorkspaceExtensionTrust {
 
   async trust(cwd: string): Promise<WorkspaceExtensionTrustStatus> {
     const workspace = realWorkspacePath(cwd);
+    if (!await this.settingsRemainInWorkspace(workspace)) {
+      throw new Error("Workspace settings must remain inside the workspace before trust can be granted");
+    }
     this.store.set(workspace, true);
     return this.status(workspace);
   }
