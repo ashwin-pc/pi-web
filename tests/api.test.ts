@@ -480,11 +480,44 @@ describe("pi-web mock API", () => {
 
     const content = await fetch(`${baseUrl}${attachment.contentUrl}`);
     expect(content.status).toBe(200);
+    expect(content.headers.get("content-type")).toBe("image/png");
+    expect(content.headers.get("content-disposition")).toBe(`inline; filename="tiny.png"; filename*=UTF-8''tiny.png`);
+    expect(content.headers.get("x-content-type-options")).toBe("nosniff");
     expect(Buffer.from(await content.arrayBuffer()).toString()).toBe("png");
 
     await rm(dirname(attachment.path), { recursive: true, force: true });
     const missing = await fetch(`${baseUrl}${attachment.contentUrl}`);
     expect(missing.status).toBe(410);
+  });
+
+  it("downloads active and unknown attachment names as inert bytes", async () => {
+    const uploaded: Array<{ path: string; contentUrl: string }> = [];
+    try {
+      for (const [name, bytes] of [
+        ["page.html", "<script>document.body.dataset.ran='yes'</script>"],
+        ["vector.svg", "<svg xmlns='http://www.w3.org/2000/svg'><script>document.body.dataset.ran='yes'</script></svg>"],
+        ["payload.bin", "<html><script>document.body.dataset.ran='yes'</script></html>"],
+      ]) {
+        const upload = await fetch(`${baseUrl}/api/attachments?name=${encodeURIComponent(name)}&mediaType=text%2Fhtml`, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: Buffer.from(bytes),
+        });
+        expect(upload.status).toBe(201);
+        const { attachment } = await upload.json();
+        uploaded.push(attachment);
+
+        const content = await fetch(`${baseUrl}${attachment.contentUrl}`);
+        expect(content.status).toBe(200);
+        expect(content.headers.get("content-type")).toBe("application/octet-stream");
+        expect(content.headers.get("content-disposition")).toBe(`attachment; filename="${name}"; filename*=UTF-8''${name}`);
+        expect(content.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(content.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+        expect(await content.text()).toBe(bytes);
+      }
+    } finally {
+      await Promise.all(uploaded.map((attachment) => rm(dirname(attachment.path), { recursive: true, force: true })));
+    }
   });
 
   it("persists and returns settings", async () => {
@@ -1112,6 +1145,9 @@ describe("artifact serving", () => {
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
     await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
     await writeFile(join(artifactDir, "test.mp3"), Buffer.from("MP3"));
+    await writeFile(join(artifactDir, "active.html"), "<!doctype html><script>document.body.dataset.ran='yes'</script>");
+    await writeFile(join(artifactDir, "active.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><script>document.body.dataset.ran='yes'</script></svg>");
+    await writeFile(join(artifactDir, "workspace.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
@@ -1129,6 +1165,9 @@ describe("artifact serving", () => {
     await rm(join(artifactDir, "test.png"), { force: true });
     await rm(join(artifactDir, "test.webm"), { force: true });
     await rm(join(artifactDir, "test.mp3"), { force: true });
+    await rm(join(artifactDir, "active.html"), { force: true });
+    await rm(join(artifactDir, "active.svg"), { force: true });
+    await rm(join(artifactDir, "workspace.png"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
@@ -1140,6 +1179,31 @@ describe("artifact serving", () => {
     expect(res.headers.get("content-type")).toContain("image/png");
     const body = await res.arrayBuffer();
     expect(Buffer.from(body).toString()).toBe("PNG");
+  });
+
+  it("isolates active artifact documents while retaining their exact bytes", async () => {
+    for (const [name, contentType] of [["active.html", "text/html; charset=utf-8"], ["active.svg", "image/svg+xml"]]) {
+      const expected = await readFile(join(artifactDir, name));
+      const res = await fetch(`${baseUrl}/api/artifacts/${name}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe(contentType);
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(expected);
+    }
+  });
+
+  it("fully sandboxes workspace SVG images while retaining image previews", async () => {
+    const svg = await fetch(`${baseUrl}/api/files/image?sessionId=mock-current&path=${encodeURIComponent(".pi/web/artifacts/active.svg")}`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+    expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(svg.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+
+    const png = await fetch(`${baseUrl}/api/files/image?sessionId=mock-current&path=${encodeURIComponent(".pi/web/artifacts/workspace.png")}`);
+    expect(png.status).toBe(200);
+    expect(png.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await png.arrayBuffer())).toEqual(await readFile(join(artifactDir, "workspace.png")));
   });
 
   it("serves artifacts from nested folders", async () => {
@@ -1164,12 +1228,14 @@ describe("artifact serving", () => {
     const audio = await fetch(`${baseUrl}/api/artifacts/test.mp3`);
     expect(audio.status).toBe(200);
     expect(audio.headers.get("content-type")).toBe("audio/mpeg");
+    expect(audio.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
 
     const video = await fetch(`${baseUrl}/api/artifacts/test.webm?sessionId=unknown-session`, { headers: { range: "bytes=1-2" } });
     expect(video.status).toBe(206);
     expect(video.headers.get("content-type")).toBe("video/webm");
     expect(video.headers.get("accept-ranges")).toBe("bytes");
     expect(video.headers.get("content-range")).toBe("bytes 1-2/4");
+    expect(video.headers.get("x-content-type-options")).toBe("nosniff");
     expect(Buffer.from(await video.arrayBuffer()).toString()).toBe("EB");
   });
 

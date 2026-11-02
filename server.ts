@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
 import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar, receiveAvatarPackage } from "./server/appIdentity.js";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -21,6 +21,7 @@ import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
+import { artifactResponsePolicy, attachmentResponsePolicy, contentTypeForPath, workspaceImageResponsePolicy } from "./server/shared/contentResponsePolicy.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
@@ -93,33 +94,6 @@ const systemInfoSnapshot = createSystemInfoProvider({
 let mockStateOverrides: Record<string, unknown> = {};
 const captureUploadLimiter = new CaptureUploadLimiter();
 
-const contentTypes: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
-  ".xhtml": "application/xhtml+xml",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".markdown": "text/markdown; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".bmp": "image/bmp",
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".mov": "video/quicktime",
-  ".ogv": "video/ogg",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".flac": "audio/flac",
-  ".opus": "audio/ogg",
-  ".pdf": "application/pdf",
-};
-
 function sendJson(res: ServerResponse, status: number, value: unknown) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
@@ -189,7 +163,7 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
 
   const size = statSync(resolvedFile).size;
   const headers: Record<string, string | number> = {
-    "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
+    ...artifactResponsePolicy(resolvedFile),
     "content-length": size,
     "accept-ranges": "bytes",
     "cache-control": "no-store",
@@ -235,7 +209,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
+  res.writeHead(200, { "content-type": contentTypeForPath(file) });
   pipeReadStream(res, file);
 }
 
@@ -795,7 +769,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         try {
           const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const image = await readWorkspaceImage(cwd, url.searchParams.get("path") || "");
-          res.writeHead(200, { "content-type": image.mimeType, "content-length": image.data.length, "cache-control": "no-store" });
+          res.writeHead(200, {
+            ...workspaceImageResponsePolicy(image.mimeType),
+            "content-length": image.data.length,
+            "cache-control": "no-store",
+          });
           res.end(image.data);
           return;
         } catch (error) {
@@ -873,7 +851,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           });
           if (!image) return sendJson(res, 415, { ok: false, error: "Not an image file" });
           res.writeHead(200, {
-            "content-type": contentTypes[extname(image.displayPath).toLowerCase()] || "application/octet-stream",
+            "content-type": contentTypeForPath(image.displayPath),
             "cache-control": "no-store",
           });
           if ("file" in image && typeof image.file === "string") pipeReadStream(res, image.file);
@@ -1370,10 +1348,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const file = resolveAttachmentFile(roots, id, name);
         if (!file) return sendJson(res, 410, { ok: false, error: "Attachment unavailable" });
         res.writeHead(200, {
-          "content-type": contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
+          ...attachmentResponsePolicy(name),
           "content-length": statSync(file).size,
           "cache-control": "private, no-store",
-          "content-disposition": `inline; filename="${name.replaceAll('"', "")}"`,
         });
         pipeReadStream(res, file);
         return;
