@@ -1,7 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { extensionHostActions } from "../extensions/extensionHostActions.js";
 import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { SystemInfoSnapshot } from "./types.js";
 
@@ -121,7 +120,6 @@ export function createSystemInfo(options: {
   const status = el("p", "systemInfoStatus");
   status.setAttribute("aria-live", "polite");
   const content = el("div", "systemInfoContent");
-  extensionHostActions(content);
   body.append(status, content);
   panel.append(header, body);
   if (inlineContainer) {

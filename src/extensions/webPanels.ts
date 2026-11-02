@@ -1,7 +1,6 @@
 import { iconElement, isIconName } from "../app/icons.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { extensionHostActions } from "./extensionHostActions.js";
 import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
 
 type WebPanelEntry = {
@@ -88,7 +87,6 @@ export function createWebPanels(options: {
 
   const body = document.createElement("div");
   body.className = "webPanelBody";
-  extensionHostActions(body);
   panel.append(header, body);
   document.body.append(panel);
 
@@ -129,9 +127,7 @@ export function createWebPanels(options: {
     if (!entry) return;
     const generation = ++requestGeneration;
     panel.setAttribute("aria-busy", "true");
-    if (!event) {
-      body.textContent = "Loading…";
-    }
+    if (!event) body.textContent = "Loading…";
     try {
       const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",

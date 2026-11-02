@@ -4,7 +4,6 @@ import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
-import { extensionHostActions } from "../extensions/extensionHostActions.js";
 import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { ComposerContextAttachment } from "../app/types.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
@@ -35,7 +34,6 @@ export function initGitPanel(options: {
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
   const tabsContainer = statusTab.parentElement!;
-  extensionHostActions(primary);
   let panelHandle: RightPanelHandle | undefined;
   let extensionTabs: GitExtensionTab[] = [];
   let extensionTabView: GitExtensionTabView | undefined;

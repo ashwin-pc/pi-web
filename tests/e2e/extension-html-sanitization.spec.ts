@@ -25,6 +25,7 @@ const contributionHtml = (sink: string, action: string) => `
   <a class="${sink}-active-url" href="javascript:window.extensionEventMarkers.push('${sink}-url')">Active URL</a>
   <a class="${sink}-named-target" href="https://example.invalid/named" target="extension-preview">Named target</a>
   <a class="${sink}-case-target" href="https://example.invalid/blank" target="_BLANK">Case target</a>
+  <map name="${sink}-map"><area class="${sink}-area-target" href="https://example.invalid/area" target="extension-preview" alt="Area target"></map>
   <iframe class="${sink}-frame" srcdoc="<script>parent.extensionEventMarkers.push('${sink}-frame')</script>"></iframe>
   <svg class="${sink}-svg" viewBox="0 0 20 20" width="20" height="20" role="img" aria-label="${sink} icon">
     <circle cx="10" cy="10" r="8" fill="currentColor"></circle>
@@ -35,68 +36,6 @@ async function openGitExtension(page: Page) {
   await page.locator("#gitButton").evaluate((button: HTMLButtonElement) => button.click());
   await page.locator(".gitExtensionTab", { hasText: "Security test" }).click();
 }
-
-const hostActionHtml = (render: number) => `
-  <div class="host-actions" data-render="${render}">
-    <button type="button" class="copy-click" data-web-copy="clicked value">
-      Copy click <span data-web-copy-status>ready</span>
-    </button>
-    <span class="copy-keyboard" role="button" tabindex="0" data-web-copy="keyboard value">
-      Copy keyboard <span data-web-copy-status>ready</span>
-    </span>
-    <button type="button" class="rerender" data-web-action="rerender">Rerender</button>
-  </div>
-`;
-
-test("host-delegated copy survives sanitization and rerenders", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.request.post("/api/mock/state", { data: {
-    webContributions: [
-      { version: 1, key: "host-panel", slot: "panel", kind: "rendered", title: "Host actions", label: "Host actions", icon: "copy" },
-      { version: 1, key: "host-panel-launcher", slot: "fab", kind: "static", title: "Host actions", label: "Host actions", icon: "copy", opens: "host-panel" },
-    ],
-  } });
-
-  const invocations: Array<Record<string, any>> = [];
-  await page.route("**/api/web-contributions/invoke", async (route) => {
-    const input = route.request().postDataJSON();
-    invocations.push(input);
-    await route.fulfill({ json: {
-      ok: true,
-      title: "Host actions",
-      html: hostActionHtml(invocations.length),
-    } });
-  });
-
-  await page.goto("/");
-  await page.locator(".actionLauncherToggle").click();
-  await page.locator(".actionLauncherItem", { hasText: "Host actions" }).click();
-
-  const panel = page.locator("#webExtensionPanel");
-  const clickCopy = panel.locator(".copy-click");
-  const keyboardCopy = panel.locator(".copy-keyboard");
-
-  await expect(clickCopy).toHaveAttribute("data-web-copy", "clicked value");
-  await expect(clickCopy.locator("[data-web-copy-status]")).toHaveText("ready");
-  await clickCopy.click();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("clicked value");
-  await expect(clickCopy.locator("[data-web-copy-status]")).toHaveText("Copied");
-
-  await keyboardCopy.focus();
-  await keyboardCopy.press("Space");
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("keyboard value");
-  await expect(keyboardCopy.locator("[data-web-copy-status]")).toHaveText("Copied");
-
-  await panel.locator(".rerender").click();
-  await expect.poll(() => invocations.some((input) =>
-    input.slot === "panel" && input.event?.action === "rerender")).toBe(true);
-  await expect(panel.locator(".host-actions")).toHaveAttribute("data-render", "2");
-
-  await panel.locator(".copy-keyboard").focus();
-  await panel.locator(".copy-keyboard").press("Enter");
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("keyboard value");
-  await expect(panel.locator(".copy-keyboard [data-web-copy-status]")).toHaveText("Copied");
-});
 
 test("sanitizes every privileged extension HTML sink without breaking contributions", async ({ page }, testInfo) => {
   const capture = async (name: string) => {
@@ -151,6 +90,7 @@ test("sanitizes every privileged extension HTML sink without breaking contributi
       .toBe("rgb(180, 190, 200)");
     await expect(root.locator(`.${sink}-named-target`)).toHaveAttribute("rel", "noopener noreferrer");
     await expect(root.locator(`.${sink}-case-target`)).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(root.locator(`.${sink}-area-target`)).toHaveAttribute("rel", "noopener noreferrer");
     await root.locator(`.${sink}-event-marker`).click();
     expect(await page.evaluate(() => (window as typeof window & { extensionEventMarkers: string[] }).extensionEventMarkers)).toEqual([]);
   };
