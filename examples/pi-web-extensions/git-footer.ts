@@ -1,5 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const FOOTER_KEY = "local-git-footer";
@@ -102,7 +105,49 @@ const fetchStates: { default: FetchState; custom: WeakMap<GitRunner, FetchState>
   default: { cwd: new Map(), repositories: new Map() }, custom: new WeakMap(),
 };
 
-async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
+// Reject filesystem indirection as well as Git symrefs. Git's no-deref update
+// below is essential: a symref created after this check must never move its target.
+export async function safeFetchDestination(common: string, ref: string, cwd: string): Promise<boolean> {
+  if (!/^refs\/remotes\//.test(ref) || ref.split("/").some(part => !part || part === "." || part === "..")) return false;
+  try {
+    await execFileAsync("git", ["check-ref-format", ref], { cwd, timeout: GIT_TIMEOUT_MS });
+    let path = common;
+    for (const part of ref.split("/")) {
+      path = join(path, part);
+      try { if ((await lstat(path)).isSymbolicLink()) return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    try {
+      await execFileAsync("git", ["symbolic-ref", "-q", ref], { cwd, timeout: GIT_TIMEOUT_MS });
+      return false;
+    } catch (error) { return (error as { code?: number }).code === 1; }
+  } catch { return false; }
+}
+
+export async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
+  // Never give fetch the user-controlled destination. Fetch into an unpredictable
+  // private ref, then publish with no-deref so even a concurrent symref replacement
+  // cannot redirect the update into refs/heads.
+  if (args.includes("fetch") && args.at(-1)?.includes(":")) {
+    const [source, destination] = args.at(-1)!.split(":");
+    const common = await runFetchGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
+    if (!common.ok || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
+    const staging = `refs/remotes/pi-web-fetch-${randomUUID()}`;
+    if (!await safeFetchDestination(common.output.trim(), staging, cwd)) return { ok: false, output: "" };
+    try {
+      const result = await runFetchProcess([...args.slice(0, -1), `${source}:${staging}`], cwd);
+      if (!result.ok) return result;
+      const oid = await runFetchGit(["rev-parse", "--verify", staging], cwd);
+      if (!oid.ok || !/^[a-f0-9]{40,64}$/.test(oid.output.trim()) || !await safeFetchDestination(common.output.trim(), destination, cwd)) return { ok: false, output: "" };
+      return await runFetchGit(["update-ref", "--no-deref", destination, oid.output.trim()], cwd);
+    } finally {
+      await runFetchGit(["update-ref", "--no-deref", "-d", staging], cwd);
+    }
+  }
+  return runFetchProcess(args, cwd);
+}
+
+export async function runFetchProcess(args: string[], cwd: string, timeoutMs = FETCH_TIMEOUT_MS, maxBuffer = 1024 * 1024): Promise<GitResult> {
   try {
     let defaultSsh = false;
     if (args.includes("fetch") && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
@@ -119,8 +164,7 @@ async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
     }
     return await new Promise<GitResult>((resolve) => {
       const child = spawn("git", args, {
-        cwd, detached: true, stdio: ["ignore", "pipe", "ignore"],
-        timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL",
+        cwd, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"],
         env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
         GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never",
         // No agent confirmations/pinentry or display-based authentication.
@@ -130,13 +174,42 @@ async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
         ...(defaultSsh ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10 -oIdentityAgent=none -oSecurityKeyProvider=/dev/null -oIgnoreUnknown=UseKeychain -oUseKeychain=no" } : {}) },
       });
       let output = "";
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        output += chunk;
-        if (output.length > 1024 * 1024) child.kill("SIGKILL");
+      let bytes = 0;
+      let failed = false;
+      let killing: Promise<void> | undefined;
+      const terminate = () => {
+        failed = true;
+        if (killing) return;
+        killing = new Promise<void>(done => {
+          if (!child.pid) { done(); return; }
+          if (process.platform === "win32") {
+            // Windows has no POSIX process groups; taskkill is the tree fallback.
+            const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+            killer.once("error", () => { child.kill("SIGKILL"); done(); });
+            killer.once("close", () => done());
+          } else {
+            try { process.kill(-child.pid, "SIGKILL"); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL"); }
+            done();
+          }
+        });
+      };
+      const timer = setTimeout(terminate, timeoutMs);
+      child.stdout.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > maxBuffer) { terminate(); return; }
+        output += chunk.toString("utf8");
       });
-      child.on("error", () => resolve({ ok: false, output: "" }));
-      child.on("close", code => resolve({ ok: code === 0, output }));
+      child.on("error", () => { clearTimeout(timer); resolve({ ok: false, output: "" }); });
+      child.on("close", async code => {
+        clearTimeout(timer);
+        const ok = !failed && code === 0;
+        // A transport can close inherited pipes before its leader exits. Clean
+        // the owned group even on ordinary completion, not just timeout.
+        terminate();
+        await killing;
+        resolve({ ok, output });
+      });
     });
   } catch { return { ok: false, output: "" }; }
 }

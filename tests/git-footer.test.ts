@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitFooterExtension } from "../examples/pi-web-extensions/git-footer.js";
+import { createGitFooterExtension, runFetchGit, runFetchProcess, safeFetchDestination } from "../examples/pi-web-extensions/git-footer.js";
 
 type Result = { ok: boolean; output: string; notRepo?: boolean };
 type Runner = (args: string[], cwd: string) => Promise<Result>;
@@ -549,5 +549,82 @@ describe("automatic upstream fetch", () => {
     setup(fetch, "/repo/other"); await flush();
     expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
     finish(ok()); await flush();
+  });
+});
+
+
+describe("real background fetch safety", () => {
+  it("rejects symrefs and filesystem symlinks without advancing a local branch", async () => {
+    const cwd = temp();
+    gitCommand(cwd, "init", "-b", "main");
+    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
+    gitCommand(cwd, "branch", "victim");
+    const before = gitCommand(cwd, "rev-parse", "victim");
+    gitCommand(cwd, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/victim");
+    expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/origin/main", cwd)).toBe(false);
+    expect((await runFetchGit(["fetch", "--refmap=", "--", ".", "+refs/heads/main:refs/remotes/origin/main"], cwd)).ok).toBe(false);
+    expect(gitCommand(cwd, "rev-parse", "victim")).toBe(before);
+    if (process.platform !== "win32") {
+      mkdirSync(join(cwd, ".git/refs/remotes/linked"));
+      symlinkSync("../../heads/victim", join(cwd, ".git/refs/remotes/linked/main"));
+      expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/linked/main", cwd)).toBe(false);
+      symlinkSync("../heads", join(cwd, ".git/refs/remotes/alias"));
+      expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/alias/victim", cwd)).toBe(false);
+    }
+    expect(await safeFetchDestination(join(cwd, ".git"), "refs/remotes/origin/new", cwd)).toBe(true);
+    expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/main:refs/remotes/origin/new"], cwd)).ok).toBe(true);
+    expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/new")).toBe(before);
+    expect(gitCommand(cwd, "for-each-ref", "refs/remotes/pi-web-fetch-")).toBe("");
+    if (process.platform !== "win32") {
+      gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "newer");
+      const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+      const bin = join(cwd, "bin");
+      mkdirSync(bin);
+      // Install a symref after the final validation, immediately before publish.
+      writeFileSync(join(bin, "git"), `#!/bin/sh
+if [ "$1" = update-ref ] && [ "$2" = --no-deref ] && [ "$3" = refs/remotes/origin/new ]; then
+  '${realGit}' symbolic-ref refs/remotes/origin/new refs/heads/victim
+fi
+exec '${realGit}' "$@"
+`, { mode: 0o755 });
+      const oldPath = process.env.PATH;
+      process.env.PATH = `${bin}:${oldPath}`;
+      try {
+        expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/main:refs/remotes/origin/new"], cwd)).ok).toBe(true);
+      } finally { process.env.PATH = oldPath; }
+      expect(gitCommand(cwd, "rev-parse", "victim")).toBe(before);
+      expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/new")).toBe(gitCommand(cwd, "rev-parse", "main"));
+    }
+  });
+
+  it.skipIf(process.platform === "win32").each(["timeout", "output"])("kills a real transport descendant on %s", async mode => {
+    const cwd = temp();
+    gitCommand(cwd, "init");
+    const pidFile = join(cwd, "child.pid");
+    const wrapper = join(cwd, "transport.sh");
+    // Ignore Git's SSH variant probe; the actual transport leaves an independent
+    // child alive even if its parent Git is killed. No network is contacted.
+    writeFileSync(wrapper, `#!/bin/sh
+case " $* " in *" -G "*) exit 0;; esac
+sleep 60 &
+echo $! > '${pidFile}'
+${mode === "output" ? 'while :; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; done' : 'wait'}
+`, { mode: 0o755 });
+    gitCommand(cwd, "config", "core.sshCommand", wrapper);
+    const args = mode === "output" ? ["-c", `alias.footer-test=!${wrapper}`, "footer-test"]
+      : ["fetch", "--", "ssh://invalid.example/repo", "main"];
+    const result = await runFetchProcess(args, cwd, mode === "timeout" ? 500 : 3000, 4096);
+    expect(result.ok).toBe(false);
+    expect(existsSync(pidFile)).toBe(true);
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    // On Linux an unreaped zombie may still answer signal 0; it is not running.
+    await vi.waitFor(() => {
+      let alive = true;
+      try {
+        process.kill(pid, 0);
+        if (existsSync(`/proc/${pid}/stat`)) alive = !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ");
+      } catch { alive = false; }
+      expect(alive).toBe(false);
+    });
   });
 });
