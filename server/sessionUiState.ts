@@ -408,7 +408,6 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
 function validPersistedState(raw: unknown): SessionUiState {
   if (!isRecord(raw)) throw new Error("Invalid session UI state object");
-  assertSessionUiStateBounds(raw);
   const version = raw.version === undefined ? 1 : raw.version;
   // Persisted v2/v3 always include lanes; legacy v1 always includes pinnedSessions.
   // Revision-only and preference-only fragments are damaged files, not empty history.

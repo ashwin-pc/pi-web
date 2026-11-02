@@ -75,6 +75,23 @@ describe("session UI state store", () => {
     expect((await store.read()).sessionNotes).toEqual(saved.sessionNotes);
   });
 
+  it("loads a legacy file whose note exceeds the current write limit", async () => {
+    const file = await tempFile();
+    const note = "x".repeat(9 * 1024);
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      revision: 9,
+      initialized: true,
+      lanes: [],
+      sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
+    }));
+
+    await expect(createSessionUiStateStore(file).read()).resolves.toMatchObject({
+      revision: 9,
+      sessionNotes: [{ sessionId: "legacy", note, updatedAt: since }],
+    });
+  });
+
   it("refuses an oversized legacy primary through a bounded read and leaves it untouched", async () => {
     const file = await tempFile();
     await writeFile(file, JSON.stringify({ version: 3, revision: 9, initialized: true, lanes: [] }));
