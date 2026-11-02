@@ -1,6 +1,6 @@
 # PR #262 visual evidence
 
-Captured from `security/markdown-rendering` at `fccc738` using the production build and synthetic content.
+Captured from `security/markdown-rendering` at `874c746` using the production build and synthetic content.
 
 Each state is shown at:
 
