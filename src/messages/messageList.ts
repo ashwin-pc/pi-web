@@ -9,6 +9,7 @@ import { isCompactDensity, isMinimalDensity } from "../app/appearance.js";
 import { renderCustomMessageReport, type CustomMessageReportInput } from "./customMessageReports.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
+import { fetchSameOriginAttachmentImage } from "./attachmentImageFetch.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
@@ -113,7 +114,13 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
     image.alt = name;
     if (attachment.data) image.src = `data:${mediaType};base64,${attachment.data}`;
     else if (attachment.contentUrl) {
-      void fetch(attachment.contentUrl, { headers: apiHeaders?.() })
+      const request = fetchSameOriginAttachmentImage(attachment.contentUrl, apiHeaders);
+      if (!request) {
+        item.classList.add("missing");
+        item.textContent = "!";
+        item.title = `${name} · Unavailable`;
+        onMissing?.();
+      } else void request
         .then((response) => {
           if (!response.ok) throw new Error("Attachment unavailable");
           return response.blob();

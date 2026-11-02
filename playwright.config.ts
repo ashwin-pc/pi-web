@@ -6,6 +6,7 @@ import { isolatedAuthEnv } from "./tests/auth-isolation.js";
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 9876);
 const authOnly = process.env.PI_WEB_E2E_AUTH === "1";
+const trustedUser = "owner@example.test";
 const runtimeDir = mkdtempSync(join(tmpdir(), "pi-web-playwright-"));
 const settingsFile = (serverPort: number) => join(runtimeDir, `settings-${serverPort}.json`);
 const sessionUiStateFile = (serverPort: number) => join(runtimeDir, `session-ui-state-${serverPort}.json`);
@@ -33,6 +34,8 @@ export default defineConfig({
   },
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    // APIRequestContext mutations need intent without changing browser GET identity.
+    extraHTTPHeaders: { "x-pi-web-test-client-intent": "playwright-test" },
     // Tracing this bundle can add several minutes to a retry while Playwright
     // collects and compresses source maps. Enable it only for focused debugging.
     trace: process.env.PI_WEB_E2E_TRACE === "1" ? "on-first-retry" : "off",
@@ -47,16 +50,16 @@ export default defineConfig({
     env: Object.fromEntries(Object.entries(isolatedAuthEnv()).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
     // E2E runs against the preflight production build. Starting many embedded
     // Vite optimizers in parallel made sharded runs slow and resource-sensitive.
-    command: `PI_WEB_DEV=0 NODE_ENV=test PI_WEB_MOCK=1 HOST=127.0.0.1 PORT=${port} PI_WEB_AUTH_STORE=${JSON.stringify(join(runtimeDir, `auth-${port}.json`))} PI_WEB_AUTH_MODE=${authOnly ? "legacy" : "none"} PI_WEB_AUTH_POLICY= PI_WEB_AUTH_METHODS= PI_WEB_AUTH_ORIGIN=http://127.0.0.1:${port} PI_WEB_AUTH_TRUSTED_HEADER= PI_WEB_AUTH_PROXY_PEERS= PI_WEB_TOKEN=${authOnly ? "test-secret" : ""} PI_WEB_CWD=$PWD PI_WEB_SETTINGS_FILE=${JSON.stringify(settingsFile(port))} PI_WEB_SESSION_UI_STATE_FILE=${JSON.stringify(sessionUiStateFile(port))} node --import tsx server.ts`,
+    command: `PI_WEB_DEV=0 NODE_ENV=test PI_WEB_MOCK=1 HOST=127.0.0.1 PORT=${port} PI_WEB_AUTH_STORE=${JSON.stringify(join(runtimeDir, `auth-${port}.json`))} PI_WEB_AUTH_MODE=${authOnly ? "external" : "none"} PI_WEB_AUTH_POLICY= PI_WEB_AUTH_METHODS= PI_WEB_AUTH_ORIGIN=http://127.0.0.1:${port} PI_WEB_AUTH_TRUSTED_HEADER=${authOnly ? "x-test-user" : ""} PI_WEB_AUTH_PROXY_PEERS= PI_WEB_CWD=$PWD PI_WEB_SETTINGS_FILE=${JSON.stringify(settingsFile(port))} PI_WEB_SESSION_UI_STATE_FILE=${JSON.stringify(sessionUiStateFile(port))} node --import tsx server.ts`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
     timeout: 20_000,
   },
   projects: [
-    { name: "mobile", use: { ...devices["Pixel 5"] }, testIgnore: "**/token.spec.ts" },
-    { name: "tablet", use: { viewport: { width: 768, height: 1024 } }, testIgnore: "**/token.spec.ts" },
-    { name: "desktop", use: { viewport: { width: 1280, height: 800 } }, testIgnore: ["**/token.spec.ts", "**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
+    { name: "mobile", use: { ...devices["Pixel 5"] }, testIgnore: ["**/auth.spec.ts", "**/multi-auth.spec.ts"] },
+    { name: "tablet", use: { viewport: { width: 768, height: 1024 } }, testIgnore: ["**/auth.spec.ts", "**/multi-auth.spec.ts"] },
+    { name: "desktop", use: { viewport: { width: 1280, height: 800 } }, testIgnore: ["**/auth.spec.ts", "**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
     { name: "isolated", use: { viewport: { width: 1280, height: 800 } }, testMatch: ["**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
-    { name: "auth", use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1280, height: 800 } }, testMatch: "**/token.spec.ts" },
+    { name: "auth", use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { "x-test-user": trustedUser } }, testMatch: ["**/auth.spec.ts"] },
   ],
 });

@@ -50,6 +50,7 @@ import { createActiveWorkerDock, type ActiveWorkerDockController } from "./compo
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
+import { createWorkspaceTrust, type WorkspaceTrustController } from "./extensions/workspaceTrust.js";
 import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
@@ -68,6 +69,12 @@ import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
+
+try {
+  localStorage.removeItem("pi-web-token");
+} catch {
+  // Storage can be unavailable under privacy policies; legacy credentials still must never be read.
+}
 
 initAppHeightSync();
 initSwAutoReload();
@@ -106,6 +113,7 @@ function handleSessionUiStateWarning(warning: string) {
   showPreferencesWarning(warning);
 }
 let settings: SettingsController;
+let workspaceTrust: WorkspaceTrustController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
 let statusBar: StatusBar;
@@ -479,6 +487,7 @@ function restoreComposerSession(sessionId: string) {
 }
 
 function activateSession(sessionId: string) {
+  workspaceTrust?.activate(sessionId);
   restoreComposerSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
@@ -505,6 +514,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
+    workspaceTrust?.activate(view.id);
     restoreComposerSession(view.id);
     selectSession(state, view.id);
   }
@@ -604,9 +614,8 @@ async function refreshState() {
         const value = await challenge.json() as { mode?: string; url?: string };
         if (value.mode === "redirect" && value.url) { location.assign(value.url); return; }
       }
-    } catch { /* legacy servers have no challenge endpoint */ }
-    elements.tokenOverlay.hidden = false;
-    elements.tokenInput.focus();
+    } catch { /* fall through to the canonical login route */ }
+    location.assign("/api/auth/login");
     return;
   }
   if (!res.ok) throw new Error(await res.text());
@@ -624,12 +633,13 @@ async function refreshState() {
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
-  const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
+  const [settingsResult, modelsResult, messagesResult, workspaceTrustResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
     refreshMessages(),
+    workspaceTrust.refresh(state.currentSessionId),
   ]);
-  for (const result of [settingsResult, modelsResult, messagesResult]) {
+  for (const result of [settingsResult, modelsResult, messagesResult, workspaceTrustResult]) {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
@@ -689,6 +699,9 @@ settings = createSettings({
     if (state.initialSyncComplete) void refreshMessages().catch(showSystemError);
   },
 });
+workspaceTrust = createWorkspaceTrust({
+  api,
+});
 
 const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
 if (!systemInfoInline) throw new Error("Missing inline system information container");
@@ -717,6 +730,7 @@ sessions = createSessions({
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
+    workspaceTrust.settle(state.currentSessionId);
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must
     // remain correct without opening each parent first.
@@ -826,7 +840,6 @@ systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
   || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
-  && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
   && !hasBlockingShortcutOverlay();
 let shortcutHelp: ShortcutHelpController;
@@ -838,7 +851,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
   },
   {
@@ -849,7 +861,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.toggleCurrentSessionPin(),
   },
   {
@@ -860,7 +872,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.moveCurrentSessionToLane("parked"),
   },
   {
@@ -871,7 +883,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.moveCurrentSessionToLane("bookmarks"),
   },
   {
@@ -902,7 +914,6 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => sessions.startNewSession(),
   },
   {
@@ -912,7 +923,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => shortcutHelp.toggle(),
   },
   {
@@ -920,8 +930,7 @@ const keyboardShortcuts: Shortcut[] = [
     key: ".",
     description: "Focus composer",
     scope: "global",
-    when: () => elements.tokenOverlay.hidden
-      && document.activeElement !== elements.promptEl
+    when: () => document.activeElement !== elements.promptEl
       && !hasBlockingShortcutOverlay(),
     run: () => elements.promptEl.focus(),
   },
@@ -932,7 +941,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "composer",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => elements.formEl.requestSubmit(),
   },
   {
@@ -943,8 +951,7 @@ const keyboardShortcuts: Shortcut[] = [
     allowInEditable: true,
     when: () => {
       const runtime = sessionRuntime(state);
-      return elements.tokenOverlay.hidden
-        && elements.slashCommandsEl.hidden
+      return elements.slashCommandsEl.hidden
         && (runtime.isStreaming || runtime.isRetrying);
     },
     run: () => composer.stopStreaming(),
@@ -954,7 +961,6 @@ shortcutHelp = createShortcutHelp(keyboardShortcuts);
 initKeyboardShortcuts(keyboardShortcuts, {
   getScopes: () => {
     const scopes: string[] = [];
-    if (!elements.tokenOverlay.hidden) scopes.push("token");
     if (!elements.settingsPanel.hidden) scopes.push("settings");
     if (!elements.modelSettingsPopover.hidden) scopes.push("modelSettings");
     if (conversationTree.isOpen()) scopes.push("conversationTree");

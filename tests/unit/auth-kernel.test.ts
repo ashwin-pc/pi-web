@@ -2,8 +2,8 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
-import { AuthKernel, AuthStore, hashSecret } from "../../server/auth/kernel.js";
+import { describe, expect, it, vi } from "vitest";
+import { AuthKernel, AuthStore, bumpRevocationEpoch, hashSecret } from "../../server/auth/kernel.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
 
 function req(headers: Record<string, string> = {}, url = "/") { return { headers, url } as any; }
@@ -11,23 +11,71 @@ function response() { const headers = new Map<string, string>(); return { status
 async function store() { return new AuthStore(join(await mkdtemp(join(tmpdir(), "pi-web-auth-")), "auth.json")); }
 
 describe("auth kernel", () => {
-  it("preserves legacy behavior only in explicit legacy mode", async () => {
-    const s = await store(); const k = new AuthKernel("legacy", s, "secret", false);
-    expect((await k.gate(req({ authorization: "Bearer secret" }))).ok).toBe(true);
-    expect((await k.gate(req({}, "/?token=secret"))).ok).toBe(true);
-    expect((await k.gate(req({ authorization: "Bearer wrong" }))).ok).toBe(false);
-    expect((await new AuthKernel("passkey", s, "secret", false).gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
+  it("never accepts query or arbitrary bearer credentials", async () => {
+    const s = await store();
+    const k = new AuthKernel("passkey", s, false);
+    expect((await k.gate(req({}, "/?token=secret"))).ok).toBe(false);
+    expect((await k.gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
   });
 
   it("attributes external requests using a configured trusted header and fails closed when absent", async () => {
-    const s = await store(); const k = new AuthKernel("external", s, "", false, "Tailscale-User-Login");
+    const s = await store(); const k = new AuthKernel("external", s, false, "Tailscale-User-Login");
     expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
     expect((await k.gate(req())).ok).toBe(false);
     expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
   });
 
+  it("requires authenticated supervisor tunnel provenance only when the socket is enabled", async () => {
+    const previous = {
+      socket: process.env.PI_WEB_TUNNEL_SOCKET,
+      supervised: process.env.PI_WEB_SUPERVISED,
+      secret: process.env.PI_WEB_SUPERVISOR_SECRET,
+    };
+    process.env.PI_WEB_TUNNEL_SOCKET = "/private/pi-web.sock";
+    process.env.PI_WEB_SUPERVISED = "1";
+    process.env.PI_WEB_SUPERVISOR_SECRET = "real-supervisor-secret";
+    let resetSupervisorContext: (() => void) | undefined;
+    try {
+      vi.resetModules();
+      const { AuthKernel: StartupAuthKernel } = await import("../../server/auth/kernel.js");
+      const { initializeSupervisorPeerContext } = await import("../../server/auth/supervisorPeer.js");
+      initializeSupervisorPeerContext(process.env);
+      resetSupervisorContext = () => initializeSupervisorPeerContext({});
+      const s = await store();
+      const k = new StartupAuthKernel("external", s, false, "x-verified-user");
+      const direct = {
+        headers: { "x-verified-user": "attacker", "x-pi-web-peer": "192.0.2.44", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "guessed" },
+        url: "/",
+        socket: { remoteAddress: "127.0.0.1" },
+      } as any;
+      expect((await k.gate(direct)).ok).toBe(false);
+
+      const supervised = {
+        headers: { "x-verified-user": "owner", "x-pi-web-peer": "192.0.2.44", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "real-supervisor-secret" },
+        url: "/",
+        socket: { remoteAddress: "::ffff:127.0.0.1" },
+      } as any;
+      expect(await k.gate(supervised)).toMatchObject({
+        ok: true,
+        via: "external",
+        identity: { id: "external:owner" },
+      });
+
+      const reserved = new StartupAuthKernel("external", s, false, "x-pi-web-tunnel");
+      expect((await reserved.gate(supervised)).ok).toBe(false);
+    } finally {
+      resetSupervisorContext?.();
+      if (previous.socket === undefined) delete process.env.PI_WEB_TUNNEL_SOCKET;
+      else process.env.PI_WEB_TUNNEL_SOCKET = previous.socket;
+      if (previous.supervised === undefined) delete process.env.PI_WEB_SUPERVISED;
+      else process.env.PI_WEB_SUPERVISED = previous.supervised;
+      if (previous.secret === undefined) delete process.env.PI_WEB_SUPERVISOR_SECRET;
+      else process.env.PI_WEB_SUPERVISOR_SECRET = previous.secret;
+    }
+  });
+
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
-    const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
+    const s = await store(); const k = new AuthKernel(mode, s, false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
     expect(gated.ok).toBe(true);
     if (!gated.ok) return;
 
@@ -61,18 +109,47 @@ describe("auth kernel", () => {
   });
 
   it("persists opaque hashed sessions and authenticates their cookie", async () => {
-    const s = await store(); const k = new AuthKernel("passkey", s, "", false), res = response();
+    const s = await store(); const k = new AuthKernel("passkey", s, false), res = response();
     await k.establishSession(res, { id: "passkey:owner" });
     const cookie = res.headers.get("set-cookie")!; const raw = /pi_web_session=([^;]+)/.exec(cookie)![1];
     expect(await k.gate(req({ cookie: `pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session", sessionHash: hashSecret(raw) });
     expect(await readFile(s.path, "utf8")).not.toContain(raw);
   });
 
-  it("accepts legacy session cookies and ignores malformed cookies", async () => {
-    const s = await store(); const k = new AuthKernel("legacy", s, "secret", false), res = response();
-    await k.establishSession(res, { id: "legacy:token" });
+  it("accepts existing session cookies and ignores malformed cookies", async () => {
+    const s = await store(); const k = new AuthKernel("passkey", s, false), res = response();
+    await k.establishSession(res, { id: "owner" });
     const raw = /pi_web_session=([^;]+)/.exec(res.headers.get("set-cookie")!)![1];
     expect(await k.gate(req({ cookie: `bad=%; pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session" });
+  });
+
+  it("rejects retired legacy sessions by method or identity without denying supported sessions", async () => {
+    const s = await store(); const now = Date.now();
+    await s.update(state => {
+      state.config = { policy: "authenticated", methods: ["password", "passkey", "external"] };
+      state.sessions.push(
+        { hash: hashSecret("legacy-method"), identity: { id: "owner" }, method: "legacy" as never, createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+        { hash: hashSecret("legacy-identity"), identity: { id: "legacy:token" }, method: "grant", createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+        { hash: hashSecret("supported"), identity: { id: "password:owner" }, method: "password", createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+      );
+      state.deviceGrants = [{
+        id: "legacy-grant",
+        hash: hashSecret("legacy-grant"),
+        createdAt: now,
+        expiresAt: now + 10_000,
+        createdBy: { id: "owner" },
+        createdBySessionHash: hashSecret("legacy-method"),
+      }];
+    });
+    const k = new AuthKernel("passkey", s, false);
+    expect((await k.gate(req({ cookie: "pi_web_session=legacy-method" }))).ok).toBe(false);
+    expect((await k.gate(req({ cookie: "pi_web_session=legacy-identity" }))).ok).toBe(false);
+    expect((await k.gate(req({ cookie: "pi_web_session=supported" }))).ok).toBe(true);
+    await expect(
+      k.establishSession(response(), { id: "owner" }, "grant", undefined, false, {
+        grantHash: hashSecret("legacy-grant"),
+      }),
+    ).rejects.toThrow("Invalid or expired device grant");
   });
 
   it("prunes expired and revoked sessions on update", async () => {
@@ -94,9 +171,35 @@ describe("auth kernel", () => {
   });
 
   it("mints hashed single-use WebSocket tickets with identity propagation", async () => {
-    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" });
-    expect(k.redeemWsTicket(ticket)?.identity).toEqual({ id: "token:automation" });
+    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ ok: true, identity: { id: "token:automation" }, via: "token", revocationEpoch: 2 });
+    expect(k.redeemWsTicket(ticket)).toMatchObject({ identity: { id: "token:automation" }, via: "token", revocationEpoch: 2 });
     expect(k.redeemWsTicket(ticket)).toBeUndefined();
+  });
+
+  it("enrolls successful extension authentication in the current revocation epoch", async () => {
+    const s = await store();
+    const extension = { ok: true, identity: { id: "extension:parent:test" }, via: "extension" } as const;
+    const k = new AuthKernel("none", s, false, "", "open", [], async () => extension, true);
+    const extensionReq = req({ authorization: "PiWebExtension synthetic" });
+
+    const initial = await k.gate(extensionReq);
+    expect(initial).toEqual({ ...extension, revocationEpoch: 0 });
+    if (!initial.ok) return;
+    expect(k.redeemWsTicket(k.mintWsTicket(initial))?.revocationEpoch).toBe(0);
+
+    await s.update((state) => bumpRevocationEpoch(state));
+    const reconnected = await k.gate(extensionReq);
+    expect(reconnected).toEqual({ ...extension, revocationEpoch: 1 });
+    if (!reconnected.ok) return;
+    expect(k.redeemWsTicket(k.mintWsTicket(reconnected))?.revocationEpoch).toBe(1);
+  });
+
+  it("does not let failed extension credentials fall through to open access", async () => {
+    const extensionReq = req({ authorization: "PiWebExtension invalid" });
+    const rejected = new AuthKernel("none", await store(), false, "", "open", [], async () => ({ ok: false, status: 403 }), true);
+    const unavailable = new AuthKernel("none", await store(), false, "", "open", [], undefined, true);
+    expect(await rejected.gate(extensionReq)).toEqual({ ok: false, status: 403 });
+    expect(await unavailable.gate(extensionReq)).toEqual({ ok: false });
   });
 
   it("serializes atomic updates", async () => {

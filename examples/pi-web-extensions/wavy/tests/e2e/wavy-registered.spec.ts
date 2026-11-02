@@ -9,11 +9,9 @@ test.afterEach(async () => { await server?.stop(); });
 test("real registered Wavy preview is opaque, HTML-only, and keeps local selection comments", async ({ page }) => {
   const anonymous = await request.newContext({ baseURL: server.origin }); expect((await anonymous.get("/api/state")).status()).toBe(401); await anonymous.dispose();
   const artifactRequests: string[] = []; page.on("request", request => { if (request.url().includes("/api/artifacts/")) artifactRequests.push(request.url()); });
-  await page.goto(`${server.origin}/?token=${server.token}`); await expect(page.locator("#statusTitle")).toBeVisible();
-  const preview = page.locator('.artifactPreview--file[data-artifact-name="registered.wavy"]');
-  await expect(preview.locator("iframe")).toHaveCount(0);
-  await preview.getByRole("button", { name: "Run preview" }).click();
-  const iframe = preview.locator("iframe");
+  await page.setExtraHTTPHeaders({ authorization: `Bearer ${server.token}` });
+  await page.goto(server.origin); await expect(page.locator("#statusTitle")).toBeVisible();
+  const preview = page.locator(".artifactPreview--file", { has: page.locator("iframe") }); const iframe = preview.locator("iframe");
   await expect(iframe).toHaveAttribute("sandbox", "allow-scripts"); await expect(iframe).not.toHaveAttribute("sandbox", /allow-same-origin/);
   const frame = iframe.contentFrame(); await expect(frame.getByRole("heading", { name: "Registered Wavy fixture" })).toBeVisible();
   // The registered iframe passed through core's exact cleanFooterText path. Compare

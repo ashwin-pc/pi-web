@@ -32,7 +32,7 @@ npm run instance -- my-instance --mock
 npm run instance -- my-instance --stop
 ```
 
-`npm run instance -- <name> [--mock] [--worktree]` creates private state folders in `~/.pi/web-instances/<name>/{web,pi}`, chooses a free public/child port pair, and starts `pi-web-<name>` in tmux. It clears inherited `PI_WEB_*` configuration (including `PI_WEB_TOKEN`), mints a stored API token with the auth CLI, waits for an authenticated API response, then prints the URL, token (shown once), and stop command. Use the UI's **Set token** action with that token. Logs are in `~/.pi/web-instances/<name>/server.log`. Duplicate launches fail without stopping the existing session.
+`npm run instance -- <name> [--mock] [--worktree]` creates private state folders in `~/.pi/web-instances/<name>/{web,pi}`, chooses a free public/child port pair, and starts `pi-web-<name>` in tmux. It clears inherited `PI_WEB_*` configuration, mints an internal named API token for its readiness check, and prints a single-use password/passkey setup URL plus the stop command. Logs are in `~/.pi/web-instances/<name>/server.log`. Duplicate launches fail without stopping the existing session.
 
 Without `--mock`, the launcher seeds missing `auth.json` and `models.json` from the current `PI_CODING_AGENT_DIR` (or `~/.pi/agent`); it never overwrites existing instance files or copies settings or sessions. **OAuth caveat:** copied credentials can share rotating refresh tokens with the source install; refreshing in either instance can invalidate the other's login. Use API keys or log in separately in the instance to avoid sharing OAuth credentials. `--mock` skips that copy and uses the mock harness.
 
@@ -157,7 +157,9 @@ A shared diff viewer supports side-by-side or stacked layouts with intraline hig
 
 ### Git status, graph, and commit diffs
 
-The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch` + rebase pull.
+The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch --prune origin` followed by `pull --rebase --autostash origin <branch>`. The panel inspects the selected repository without recursively executing Git inside its submodule worktrees; dirty submodule worktrees are ignored while changed gitlink commits remain visible. An initialized submodule can still be selected as a repository and inspected directly with the same hardening.
+
+Existing Sync can execute a child repository's clean filter in some submodule layouts. That risk predates this PR. PR #266 implements workspace trust, but does not gate Git Sync. A separate follow-up can use its trust model so untrusted workspaces refuse Sync or neutralize their filters, while trusted workspaces retain normal Sync behavior. PR #258 does not add that integration.
 
 ### Self-aware pi context
 
@@ -230,7 +232,7 @@ npm start
 
 ## Remote access
 
-pi-web binds to localhost by default. Remote browser login—especially passkeys—needs a secure HTTPS origin. Keep the app on loopback behind a TLS-terminating reverse proxy or secure-networking proxy, set `PI_WEB_AUTH_ORIGIN` to the exact public origin, and restrict direct backend access. Keeping the application listener on loopback also supports the scoped HTTP client used by server-side extensions; a direct non-loopback-only bind does not.
+pi-web binds to localhost by default. Remote browser login—especially passkeys—needs a secure HTTPS origin. Keep the app on loopback behind a TLS-terminating reverse proxy or secure-networking proxy, set `PI_WEB_AUTH_ORIGIN` to the exact public origin, and restrict direct backend access. A loopback listener does not prove that the browser used plaintext HTTP because a TLS-terminating proxy also connects over loopback. Keeping the application listener on loopback also supports the scoped HTTP client used by server-side extensions; a direct non-loopback-only bind does not.
 
 For example, Tailscale Serve can provide HTTPS while Node remains localhost-only:
 
@@ -248,17 +250,16 @@ In another terminal:
 tailscale serve --bg http://127.0.0.1:8787
 ```
 
-Open the configured HTTPS origin. On a new installation, follow the single-use setup URL printed by `pi-web`; no legacy token is needed. Existing legacy installations should enroll and verify a replacement in **Settings → Security** before retiring legacy. For exact proxy-header requirements, authentication migration, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
+Open the configured HTTPS origin. On a new installation, follow the random, short-lived, single-use setup URL printed by `pi-web`; public HTTPS origins support remote password or passkey setup, while loopback/localhost origins additionally require a loopback peer. Legacy token configuration fails closed; unset it and run `pi-web auth recover` to migrate saved settings and create a replacement password/passkey setup URL. For exact proxy-header requirements, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
 
 ## Environment variables
 
 - `HOST` - bind host, default `127.0.0.1`
 - `PORT` - bind port, default `8787`
-- `PI_WEB_TOKEN` - deprecated legacy credential; removable after replacement login is verified
 - `PI_WEB_AUTH_POLICY` - `authenticated` or deliberately `open`
-- `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,legacy,external`; saved Settings configuration takes precedence after enrollment/configuration
-- `PI_WEB_AUTH_MODE` - compatibility preset translated into the canonical policy/method defaults
-- `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF, including HTTPS and port
+- `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,external`; saved Settings configuration takes precedence after enrollment/configuration
+- `PI_WEB_AUTH_MODE` - compatibility preset: `none`, `passkey`, or `external`
+- `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF and cookie security, including scheme and port; plain HTTP local sessions must explicitly set an `http://localhost...`, `http://127.x...`, or `http://[::1]...` origin while listening on loopback
 - `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
 - `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend
 - `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`); independent dev/production instances must use different paths, otherwise policy and revocation changes are shared live

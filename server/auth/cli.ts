@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStore, hashSecret, randomSecret } from "./kernel.js";
+import { AuthStore, bumpRevocationEpoch, hashSecret, isLegacySession, randomSecret } from "./kernel.js";
 import { resolveAuthConfig } from "./config.js";
 import { resolveWebHomePath } from "../shared/webHome.js";
 
@@ -11,7 +11,27 @@ const store = new AuthStore(resolveWebHomePath("web/auth.json", join(process.env
 const value = (flag: string, fallback = "") => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] || fallback : fallback; };
 if (command === "bootstrap" || command === "recover") {
   const token = randomSecret(), minutes = Math.max(1, Math.min(30, Number(value("--minutes", "10"))));
-  await store.update(s => { s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + minutes * 60_000 }; const initial = resolveAuthConfig(process.env); s.config = { policy: "authenticated", methods: s.config?.methods || initial.methods }; });
+  await store.update(s => {
+    const initial = resolveAuthConfig(process.env, s.config);
+    const now = Date.now();
+    const legacySessionHashes = new Set(
+      s.sessions.filter(isLegacySession).map(session => session.hash),
+    );
+    for (const session of s.sessions) {
+      if (isLegacySession(session)) session.revokedAt = now;
+    }
+    for (const grant of s.deviceGrants || []) {
+      if (
+        legacySessionHashes.has(grant.createdBySessionHash) ||
+        grant.createdBy.id === "legacy:token"
+      )
+        grant.cancelledAt = now;
+    }
+    s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + minutes * 60_000 };
+    const saved = (s.config?.methods || initial.methods).filter(method => (method as string) !== "legacy");
+    s.config = { policy: "authenticated", methods: saved };
+    s.verifiedMethods = s.verifiedMethods?.filter(method => (method as string) !== "legacy");
+  });
   const origin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${process.env.PORT || "8787"}`;
   const url = new URL("/api/auth/bootstrap", origin); url.searchParams.set("token", token);
   console.log(`${command === "recover" ? "Recovery" : "Enrollment"} URL (single-use, expires in ${minutes}m):\n${url}`);
@@ -25,9 +45,9 @@ if (command === "bootstrap" || command === "recover") {
 } else if (command === "list") {
   const s = await store.read(); console.log(JSON.stringify({ credentials: s.credentials.map(({ publicKey, ...x }) => x), sessions: s.sessions.map(({ hash, ...x }) => x), apiTokens: s.apiTokens.map(({ hash, ...x }) => x) }, null, 2));
 } else if (command === "credential-revoke") {
-  const id = args[0]; await store.update(s => { const item = s.credentials.find(x => x.id === id); if (!item) throw new Error("Credential not found"); item.revokedAt = Date.now(); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("Credential and all sessions revoked.");
+  const id = args[0]; await store.update(s => { const item = s.credentials.find(x => x.id === id); if (!item) throw new Error("Credential not found"); item.revokedAt = Date.now(); bumpRevocationEpoch(s); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("Credential and all sessions revoked.");
 } else if (command === "sessions-revoke-all") {
-  await store.update(s => s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); })); console.log("All sessions revoked.");
+  await store.update(s => { bumpRevocationEpoch(s); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("All sessions revoked.");
 } else {
   console.error("Usage: pi-web auth <bootstrap|recover|list|token-create|token-revoke|credential-revoke|sessions-revoke-all> [options]"); process.exitCode = 2;
 }
