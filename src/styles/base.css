@@ -14,6 +14,10 @@
   --app-height: 100vh;
 }
 
+@supports (height: 100dvh) {
+  :root { --app-height: 100dvh; }
+}
+
 * { box-sizing: border-box; }
 
 * {
@@ -47,6 +51,17 @@ html, body {
   max-width: 100%;
   height: var(--app-height);
   overflow: hidden;
+  /* iOS Safari sometimes scrolls the html element when an input is focused
+     even with body { overflow: hidden }. Lock scroll position explicitly. */
+  overscroll-behavior: none;
+}
+/* `overflow: clip` is stricter than `overflow: hidden` — it disables
+   programmatic scrolling entirely, which prevents iOS Safari from horizontally
+   scrolling the document while tracking the caret of a focused textarea.
+   Supported in Safari 16+, Chrome 90+, Firefox 81+. We keep `overflow: hidden`
+   above as a fallback for older engines. */
+@supports (overflow: clip) {
+  html, body { overflow: clip; }
 }
 body {
   margin: 0;
