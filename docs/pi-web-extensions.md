@@ -419,7 +419,7 @@ ctx.ui.web.contribute("gcode.viewer", {
 });
 ```
 
-The context is `{ name, path, kind }`. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
+The context is `{ name, path, kind }`. The path is either `/api/artifacts/...` or `/api/session-artifacts/<session>/...`; in the scoped form, the session segment always matches the invoking session. Extensions must parse both forms, as [`artifactRelativeFromUrl`](../examples/pi-web-extensions/3d-modeling/shared.ts) does. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
 
@@ -442,7 +442,7 @@ Run `/reload` or restart pi-web after installing it.
 
 ## Artifact preview action API
 
-`ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.
+`ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, kind, and either an `/api/artifacts/...` path or a session-scoped `/api/session-artifacts/<session>/...` path. The scoped session always matches the invoking session; parse both path forms as described above. The handler may return Markdown or a plain-text message shown in the card.
 
 ```ts
 ctx.ui.web.setArtifactAction("publish", {
