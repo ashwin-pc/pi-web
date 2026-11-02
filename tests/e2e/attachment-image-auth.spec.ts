@@ -105,8 +105,10 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
   await expect(card).toHaveCount(1);
   // Compact and minimal density defer images behind visible tool controls.
   const summary = page.getByRole("button", { name: "Show 1 tool", exact: true });
-  if (await summary.isVisible()) await summary.click();
-  await expect(card).toBeVisible();
+  await expect(async () => {
+    if (await summary.isVisible()) await summary.click();
+    await expect(card).toBeVisible();
+  }).toPass();
   const details = card.locator(".toolCardExpandToggle");
   if (await details.isVisible() && await details.getAttribute("aria-expanded") === "false") await details.click();
 
