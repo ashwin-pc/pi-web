@@ -170,8 +170,8 @@ test("script-driven preview navigation can request its URL before the parent sho
   let markerRequests = 0;
   let noticesWhenRequested = -1;
   await page.route("https://navigation.example.test/marker", async (route) => {
-    markerRequests += 1;
     noticesWhenRequested = await page.locator(".htmlPreviewNavigation").count();
+    markerRequests += 1;
     return route.fulfill({
       contentType: "text/html",
       body: "<script>parent.postMessage({type:'pi-web-preview-navigation',url:location.href},'*')</script>",
