@@ -53,7 +53,7 @@ function rawGet(
 
 function rawPost(port: number, path: string, body: Buffer, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers }, (res) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers: { "x-pi-web-test-client-intent": "api-test", ...headers } }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString() }));
