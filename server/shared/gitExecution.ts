@@ -164,7 +164,12 @@ export function gitConfigEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
   inheritedCommandConfig: GitConfigOverride[] = [],
 ) {
-  const env: NodeJS.ProcessEnv = { ...baseEnv, GIT_TERMINAL_PROMPT: "0" };
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    GIT_TERMINAL_PROMPT: "0",
+    // Git 2.44+ honors this; older versions ignore the unknown environment variable.
+    GIT_NO_LAZY_FETCH: "1",
+  };
   delete env.GIT_CONFIG_PARAMETERS;
   delete env.GIT_CONFIG_COUNT;
   for (const key of Object.keys(env)) {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -291,6 +291,57 @@ describe("shared Git helpers", () => {
     )).toEqual([]);
   });
 
+  it("prevents object reads from lazily contacting a promisor remote", async () => {
+    const root = await tempDir("pi-web-shared-git-promisor-");
+    const source = join(root, "source");
+    const origin = join(root, "origin.git");
+    const baseline = join(root, "baseline");
+    const hardened = join(root, "hardened");
+    const marker = join(root, "upload-pack-called");
+    const uploadPack = join(root, "upload-pack");
+    const globalConfig = join(root, "global.gitconfig");
+
+    await mkdir(source);
+    runGit(source, "init", "-b", "main");
+    runGit(source, "config", "user.name", "Pi Web Tests");
+    runGit(source, "config", "user.email", "pi-web@example.test");
+    await writeFile(join(source, "payload.txt"), "promised content\n");
+    runGit(source, "add", "payload.txt");
+    runGit(source, "commit", "-m", "add promised object");
+    runGit(root, "clone", "--bare", source, origin);
+    runGit(origin, "config", "uploadpack.allowFilter", "true");
+    runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, baseline);
+    runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, hardened);
+    await writeFile(uploadPack, `#!/bin/sh
+printf called >> ${JSON.stringify(marker)}
+exec git-upload-pack "$@"
+`);
+    await chmod(uploadPack, 0o755);
+    await writeFile(globalConfig, `[remote "origin"]\n\tuploadpack = ${uploadPack}\n`);
+
+    const assertObjectMissing = (cwd: string) => execFileSync(
+      "git",
+      ["cat-file", "-e", "HEAD:payload.txt"],
+      { cwd, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } },
+    );
+    expect(() => assertObjectMissing(baseline)).toThrow();
+    expect(() => assertObjectMissing(hardened)).toThrow();
+
+    await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
+      withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
+        expect(execFileSync("git", ["show", "HEAD:payload.txt"], {
+          cwd: baseline,
+          encoding: "utf8",
+          env: { ...process.env, GIT_NO_LAZY_FETCH: "0" },
+        })).toBe("promised content\n");
+        await expect(access(marker)).resolves.toBeUndefined();
+        await rm(marker);
+
+        await expect(git(["show", "HEAD:payload.txt"], 15_000, hardened)).rejects.toThrow();
+        await expect(access(marker)).rejects.toThrow();
+      }));
+  });
+
   it("keeps local Git reads usable while blocking repository URL rewrites on network commands", async () => {
     const cwd = await makeRepo();
     const globalConfig = join(await tempDir("pi-web-shared-git-url-config-"), "global.gitconfig");
@@ -342,6 +393,7 @@ describe("shared Git helpers", () => {
     ]);
     expect(env).toMatchObject({
       PATH: "/trusted/bin",
+      GIT_NO_LAZY_FETCH: "1",
       GIT_CONFIG_COUNT: "4",
       GIT_CONFIG_KEY_0: "user.name",
       GIT_CONFIG_VALUE_0: "Parameters caller",
