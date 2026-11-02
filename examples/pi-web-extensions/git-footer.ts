@@ -104,14 +104,26 @@ const fetchStates: { default: FetchState; custom: WeakMap<GitRunner, FetchState>
 
 async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
   try {
+    let defaultSsh = false;
+    if (args.includes("fetch") && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+      try {
+        const configured = await execFileAsync("git", ["config", "--get", "core.sshCommand"], {
+          cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 65536,
+        });
+        defaultSsh = !configured.stdout.trim();
+      } catch (error) {
+        // Exit 1 means no configured value; other failures abort this attempt.
+        if ((error as { code?: number }).code !== 1) throw error;
+        defaultSsh = true;
+      }
+    }
     const { stdout } = await execFileAsync("git", args, {
       cwd, encoding: "utf8", timeout: FETCH_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
       env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
         GIT_ASKPASS: "", SSH_ASKPASS: "",
         // Respect trusted custom identities/proxies/wrappers. Default OpenSSH
         // is bounded and batch-only; custom transports retain the process timeout.
-        ...(!process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH
-          ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" } : {}) },
+        ...(defaultSsh ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10" } : {}) },
     });
     return { ok: true, output: stdout };
   } catch { return { ok: false, output: "" }; }
