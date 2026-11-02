@@ -162,8 +162,14 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
     if (!common.ok || !common.output.trim() || !remote.ok || !name || name === "." || /[\s\0]/.test(name)
       || !source?.startsWith("refs/heads/") || !destination?.startsWith("refs/remotes/")
       || /[\s:*?\[\\]/.test(source + destination)) return;
-    const repository = reserve(repositories, `${common.output.trim()}\0${name}\0${source}\0${destination}`);
-    if (!repository) return;
+    const repositoryKey = `${common.output.trim()}\0${name}\0${source}\0${destination}`;
+    const repository = reserve(repositories, repositoryKey);
+    if (!repository) {
+      // A sibling cwd may arrive just before fetch-completion's cooldown ends.
+      // Recheck when it expires rather than imposing another full minute.
+      entry.next = Math.max(Date.now() + REFRESH_MS, repositories.get(repositoryKey)?.next ?? 0);
+      return;
+    }
     repository.pending = (async () => {
       let success = false;
       try {
@@ -180,6 +186,8 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
       }
     })().catch(() => undefined).finally(() => { repository.pending = undefined; });
     await repository.pending;
+    // Align discovery admission with completion-based success/failure cooldown.
+    entry.next = repository.next;
   })().catch(() => undefined).finally(() => {
     entry.pending = undefined;
     fetchState.active = Math.max(0, (fetchState.active ?? 1) - 1);
