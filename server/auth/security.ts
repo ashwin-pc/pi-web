@@ -6,7 +6,9 @@ import {
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 import {
+  bumpRevocationEpoch,
   hashSecret,
+  PasswordWorkUnavailableError,
   randomSecret,
   type AuthKernel,
   type AuthStore,
@@ -15,6 +17,7 @@ import {
 import type { PasskeyConfig } from "./passkey.js";
 import type { HumanAuthMethod } from "./config.js";
 import { changePassword } from "./password.js";
+import { readJsonBody } from "./requestBody.js";
 
 const DAY = 86_400_000;
 const registrations = new Map<
@@ -29,16 +32,12 @@ function send(res: ServerResponse, status: number, value: unknown) {
   });
   res.end(text);
 }
-async function input(req: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  let n = 0;
-  for await (const chunk of req) {
-    n += chunk.length;
-    if (n > 1_000_000) throw new Error("Body too large");
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString() || "{}");
-}
+const input = (req: IncomingMessage) =>
+  readJsonBody(req, {
+    maxBytes: 1_000_000,
+    idleTimeoutMs: 10_000,
+    totalTimeoutMs: 15_000,
+  });
 function challengeOf(response: unknown) {
   try {
     const encoded = (response as any)?.response?.clientDataJSON;
@@ -124,7 +123,8 @@ export async function handleSecurityRoute(
       (url.pathname === "/api/auth/sessions" ||
         (url.pathname.startsWith("/api/auth/sessions/") &&
           ![auth.sessionHash, auth.sessionHash && hashSecret(auth.sessionHash)].includes(url.pathname.slice("/api/auth/sessions/".length))) ||
-        url.pathname.startsWith("/api/auth/passkeys/"))) ||
+        url.pathname.startsWith("/api/auth/passkeys/") ||
+        url.pathname.startsWith("/api/auth/tokens/"))) ||
     (req.method === "POST" &&
       ["/api/auth/tokens", "/api/auth/device-grants", "/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
         url.pathname,
@@ -146,13 +146,25 @@ export async function handleSecurityRoute(
       return true;
     }
   }
-  const updateSecurity: AuthStore["update"] = (mutator) => store.update(async (live) => {
-    if (destructive && !live.sessions.some((s) =>
-      s.hash === auth.sessionHash && !s.revokedAt && s.expiresAt > Date.now() &&
-      !!s.authenticatedAt && s.authenticatedAt >= Date.now() - 5 * 60_000))
-      throw new Error("Recent sign-in required; session changed during request");
-    await mutator(live);
-  });
+  const updateSecurity: AuthStore["update"] = (mutator) =>
+    store.update(async (live) => {
+      const transactionNow = Date.now();
+      if (
+        destructive &&
+        !live.sessions.some(
+          (s) =>
+            s.hash === auth.sessionHash &&
+            !s.revokedAt &&
+            s.expiresAt > transactionNow &&
+            !!s.authenticatedAt &&
+            s.authenticatedAt >= transactionNow - 5 * 60_000,
+        )
+      )
+        throw new Error(
+          "Recent sign-in required; session changed during request",
+        );
+      return mutator(live);
+    });
   const requireSession = () => {
     if (auth.via === "session") return true;
     send(res, 403, { ok: false, error: "A browser session is required" });
@@ -226,19 +238,20 @@ export async function handleSecurityRoute(
     if (!requireSession()) return true;
     const body = await input(req) as { revokeApiTokens?: boolean };
     await updateSecurity((s) => {
+      bumpRevocationEpoch(s);
       for (const item of s.sessions) item.revokedAt = now;
       for (const grant of s.deviceGrants || []) grant.cancelledAt = now;
       if (body.revokeApiTokens !== false)
         for (const token of s.apiTokens) token.revokedAt = now;
     });
-    kernel.clearSession(res);
+    kernel.clearSession(res, req);
     send(res, 200, { ok: true });
     return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     if (!requireSession()) return true;
     await kernel.revokeSession(req);
-    kernel.clearSession(res);
+    kernel.clearSession(res, req);
     send(res, 200, { ok: true });
     return true;
   }
@@ -261,21 +274,38 @@ export async function handleSecurityRoute(
       });
       return true;
     }
-    const retiring = [...kernel.methods].some((m) => !methods.includes(m));
-    const usable = methods.filter((m) => kernel.methodReady(m, state));
-    if (usable.length !== methods.length) {
-      send(res, 409, {
-        error: "Enroll credentials before enabling a sign-in method",
-      });
+    const nextMethods = [...new Set(methods)];
+    let conflict: string | undefined;
+    await updateSecurity((live) => {
+      const currentMethods = live.config?.methods || [...kernel.methods];
+      const retiring = currentMethods.some(
+        (method) => !nextMethods.includes(method),
+      );
+      const usable = nextMethods.filter((method) =>
+        kernel.methodReady(method, live),
+      );
+      if (usable.length !== nextMethods.length) {
+        conflict = "Enroll credentials before enabling a sign-in method";
+        return false;
+      }
+      if (
+        retiring &&
+        !usable.some((method) => live.verifiedMethods?.includes(method))
+      ) {
+        conflict =
+          "Enroll and verify a replacement login before retiring a method";
+        return false;
+      }
+      live.config = {
+        policy: kernel.configurationPolicy(live.config?.policy),
+        methods: nextMethods,
+      };
+    });
+    if (conflict) {
+      send(res, 409, { error: conflict });
       return true;
     }
-    if (retiring && !usable.some((m) => state.verifiedMethods?.includes(m))) {
-      send(res, 409, {
-        error: "Enroll and verify a replacement login before retiring a method",
-      });
-      return true;
-    }
-    await kernel.configure([...new Set(methods)]);
+    await kernel.refreshConfig();
     send(res, 200, { ok: true });
     return true;
   }
@@ -283,13 +313,19 @@ export async function handleSecurityRoute(
     if (!requireSession()) return true;
     const b = (await input(req)) as { password?: unknown; revokeApiTokens?: boolean };
     try {
-      await changePassword(store, b.password, auth.sessionHash!, b.revokeApiTokens !== false);
-      await kernel.configure([
-        ...new Set([...kernel.methods, "password" as const]),
-      ]);
+      await changePassword(
+        store,
+        b.password,
+        auth.sessionHash!,
+        b.revokeApiTokens !== false,
+        { policy: kernel.configurationPolicy(), methods: kernel.methods },
+      );
+      await kernel.refreshConfig();
       send(res, 200, { ok: true });
     } catch (error) {
-      send(res, 400, {
+      const busy = error instanceof PasswordWorkUnavailableError;
+      if (busy) res.setHeader("retry-after", "2");
+      send(res, busy ? 503 : 400, {
         ok: false,
         error: error instanceof Error ? error.message : "Invalid password",
       });
@@ -311,7 +347,7 @@ export async function handleSecurityRoute(
         current = item.hash === auth.sessionHash;
       }
     });
-    if (current) kernel.clearSession(res);
+    if (current) kernel.clearSession(res, req);
     send(
       res,
       found ? 200 : 404,
@@ -333,7 +369,7 @@ export async function handleSecurityRoute(
         for (const session of s.sessions) session.revokedAt = now;
       }
     });
-    if (found) kernel.clearSession(res);
+    if (found) kernel.clearSession(res, req);
     send(
       res,
       found ? 200 : 404,
@@ -453,10 +489,12 @@ export async function handleSecurityRoute(
         name: pending.name,
         createdAt: now,
       });
+      s.config = {
+        policy: kernel.configurationPolicy(s.config?.policy),
+        methods: [...new Set([...(s.config?.methods || kernel.methods), "passkey" as const])],
+      };
     });
-    await kernel.configure([
-      ...new Set([...kernel.methods, "passkey" as const]),
-    ]);
+    await kernel.refreshConfig();
     send(res, 201, { ok: true });
     return true;
   }
