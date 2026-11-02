@@ -12,6 +12,7 @@ import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
+import { internalViewerPrincipal } from "../server/session/viewerLeases.js";
 
 describe("owned Pi runtime handle", () => {
   it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
@@ -354,6 +355,44 @@ describe("LocalSessionService contract", () => {
     expect(remove).toHaveBeenCalledWith("saved", join(cwd, "saved.jsonl"));
     unsubscribe();
     await service.disposeAll();
+  });
+
+  it("refuses protected and busy deletes while preserving saved idle deletion", async () => {
+    const remove = vi.fn(async () => "trashed" as const);
+    const { service, initial } = await fixtureService({ remove });
+
+    await expect(service.delete(initial.sessionId)).rejects.toMatchObject({
+      status: 409,
+      message: "This session is the server's default session and cannot be deleted while pi-web is running.",
+    });
+
+    const streaming = await service.create(undefined);
+    service.sessionForId(streaming.sessionId)!.isStreaming = true;
+    await expect(service.delete(streaming.sessionId)).rejects.toMatchObject({ status: 409 });
+    service.sessionForId(streaming.sessionId)!.isStreaming = false;
+
+    const compacting = await service.create(undefined);
+    service.sessionForId(compacting.sessionId)!.isCompacting = true;
+    await expect(service.delete(compacting.sessionId)).rejects.toMatchObject({ status: 409 });
+    service.sessionForId(compacting.sessionId)!.isCompacting = false;
+
+    const working = await service.create(undefined);
+    const workingSession = service.sessionForId(working.sessionId)!;
+    let finishNavigate!: () => void;
+    let enteredNavigate!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredNavigate = resolve; });
+    workingSession.navigateTree = () => {
+      enteredNavigate();
+      return new Promise((resolve) => { finishNavigate = () => resolve({ cancelled: false }); });
+    };
+    const navigation = service.navigate(working.sessionId, "result", {});
+    await entered;
+    await expect(service.delete(working.sessionId)).rejects.toMatchObject({ status: 409 });
+    finishNavigate();
+    await navigation;
+
+    await expect(service.delete(working.sessionId)).resolves.toEqual({ id: working.sessionId, disposition: "trashed" });
+    expect(remove).toHaveBeenCalledWith(working.sessionId, working.sessionFile);
   });
 
   it.each([
@@ -857,7 +896,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     vi.useFakeTimers();
 
     const viewed = await service.create(undefined);
-    service.acquireViewer(viewed.sessionId, "viewer");
+    service.acquireViewer(viewed.sessionId, "viewer", internalViewerPrincipal);
     await vi.advanceTimersByTimeAsync(19);
     expect(service.lifecycleSnapshot().viewerLeases).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -925,51 +964,109 @@ describe("LocalSessionService standalone lifecycle", () => {
   it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {
     const { service, initial } = await fixtureService();
     const second = await service.create(undefined);
-    service.acquireViewer(initial.sessionId, "client", 20);
-    const connection = service.connectViewer("client")!;
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 20);
+    const connection = service.connectViewer("client", internalViewerPrincipal)!;
     const snapshot = () => service.lifecycleSnapshot().liveSessions;
-    service.acquireViewer(second.sessionId, "client", 19);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 19);
     expect(snapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
       expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 0 }),
     ]));
-    service.acquireViewer(second.sessionId, "client", 21);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 21);
     expect(snapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 0 }),
       expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 1 }),
     ]));
-    service.acquireViewer(initial.sessionId, "other-client", 0);
+    service.acquireViewer(initial.sessionId, "other-client", internalViewerPrincipal, 0);
     expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(1);
-    service.acquireViewer(initial.sessionId, "client");
-    service.acquireViewer(second.sessionId, "client", 20);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal);
+    service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 20);
     expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(2);
     service.disconnectViewer(connection);
-    service.releaseViewer("other-client");
+    service.releaseViewer("other-client", internalViewerPrincipal);
+  });
+
+  it("isolates equal client ids by credential principal and scopes lifecycle diagnostics", async () => {
+    const { service, initial, cwd } = await fixtureService();
+    const second = await service.create(undefined);
+    const browser = "identity:external:alice";
+    const automation = "identity:token:automation";
+
+    service.acquireViewer(initial.sessionId, "same-client", browser, 10);
+    service.acquireViewer(second.sessionId, "same-client", automation, 999);
+    service.acquireViewer(second.sessionId, "same-client", browser, 9);
+
+    expect(service.lifecycleSnapshot(browser).viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "same-client", sessionId: initial.sessionId }),
+    ]);
+    expect(service.lifecycleSnapshot(automation).viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "same-client", sessionId: second.sessionId }),
+    ]);
+    expect(JSON.stringify(service.lifecycleSnapshot(browser))).not.toContain(cwd);
+
+    service.acquireViewer(second.sessionId, "same-client", browser, 11);
+    expect(service.lifecycleSnapshot(browser).viewerLeases[0]?.sessionId).toBe(second.sessionId);
+    service.releaseViewer("same-client", automation);
+    expect(service.lifecycleSnapshot(browser).viewerLeases).toHaveLength(1);
+  });
+
+  it("drops sequence ceilings with expired leases", async () => {
+    vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "20");
+    const { service, initial } = await fixtureService();
+    vi.useFakeTimers();
+
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 100);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases).toEqual([]);
+
+    expect(service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 1)).toBe(true);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases).toHaveLength(1);
   });
 
   it("does not let an obsolete acquisition extend the viewer release timer", async () => {
     vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "100");
     const { service, initial } = await fixtureService();
     vi.useFakeTimers();
-    service.acquireViewer(initial.sessionId, "client", 2);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 2);
     await vi.advanceTimersByTimeAsync(75);
-    service.acquireViewer(initial.sessionId, "client", 1);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 1);
     await vi.advanceTimersByTimeAsync(25);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
     await service.disposeAll("reset");
   });
 
+  it("attaches an obsolete WebSocket to the existing lease without repointing or resetting its sequence", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 2);
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    const connection = service.connectViewer("client", internalViewerPrincipal)!;
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: initial.sessionId,
+      sockets: 1,
+    });
+
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]?.sessionId).toBe(initial.sessionId);
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 3)).toBe(true);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: second.sessionId,
+      sockets: 1,
+    });
+    service.disconnectViewer(connection);
+  });
+
   it("does not let a stale socket release a replacement viewer lease", async () => {
     const { service, cwd } = await fixtureService();
     const first = await service.create(undefined);
-    service.acquireViewer(first.sessionId, "client");
-    const staleConnection = service.connectViewer("client")!;
+    service.acquireViewer(first.sessionId, "client", internalViewerPrincipal);
+    const staleConnection = service.connectViewer("client", internalViewerPrincipal)!;
 
     await service.disposeAll("reset");
     const replacement = fixtureSession(cwd, "replacement").session;
     service.setCurrentSession(replacement);
-    service.acquireViewer(replacement.sessionId, "client");
-    const activeConnection = service.connectViewer("client")!;
+    service.acquireViewer(replacement.sessionId, "client", internalViewerPrincipal);
+    const activeConnection = service.connectViewer("client", internalViewerPrincipal)!;
 
     service.disconnectViewer(staleConnection);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([
@@ -979,6 +1076,34 @@ describe("LocalSessionService standalone lifecycle", () => {
       expect.objectContaining({ sessionId: "replacement", viewerLeases: 1 }),
     ]);
     service.disconnectViewer(activeConnection);
+  });
+
+  it("does not acquire a lease when a socket closes during delayed resolution", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    const principal = "identity:external:alice";
+    const socket = {
+      OPEN: 1,
+      readyState: 1,
+      once: vi.fn(),
+    };
+    let finishResolution!: () => void;
+    const resolution = new Promise<PiWebSession | undefined>((resolve) => {
+      finishResolution = () => resolve(service.sessionForId(second.sessionId));
+    });
+
+    const pending = (async () => {
+      const target = await resolution;
+      if (socket.readyState !== socket.OPEN) return;
+      service.acquireViewer((target || initial).sessionId, "client", principal, 1);
+      const connection = service.connectViewer("client", principal);
+      if (connection) socket.once("close", () => service.disconnectViewer(connection));
+    })();
+    socket.readyState = 3;
+    finishResolution();
+    await pending;
+    expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([]);
+    expect(socket.once).not.toHaveBeenCalled();
   });
 
   it("isolates concurrent disposal and disposes each runtime once", async () => {
@@ -999,8 +1124,8 @@ describe("LocalSessionService standalone lifecycle", () => {
 
   it("resets mock lifecycle state, leases, and registrations standalone", async () => {
     const { service, initial, fixture, cwd } = await fixtureService({ isMock: true });
-    service.acquireViewer(initial.sessionId, "mock-client");
-    service.connectViewer("mock-client");
+    service.acquireViewer(initial.sessionId, "mock-client", internalViewerPrincipal);
+    service.connectViewer("mock-client", internalViewerPrincipal);
     const replacementFixture = fixtureSession(cwd, "mock-reset");
 
     await service.resetWith(replacementFixture.session);
@@ -1048,6 +1173,43 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(tail.entries.map((entry) => entry.entryId)).toEqual(["root", "old", "active", ...Array.from({ length: 197 }, (_, index) => `tail-${index}`)]);
     expect(creates).toHaveLength(1);
     expect(await readFile(coldPath, "utf8")).toBe(original);
+  });
+
+  it("omits excluded shell commands and output from live and cold session reads", async () => {
+    let coldPath = "";
+    const { service, initial, cwd } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "hidden-shell", path: coldPath, cwd, name: "", firstMessage: "", allMessagesText: "",
+        created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"), messageCount: 2,
+      }] : [],
+    });
+    const hidden = {
+      type: "message", id: "hidden", parentId: null,
+      message: { role: "bashExecution", command: "printf TOP-SECRET-COMMAND", output: "TOP-SECRET-OUTPUT", excludeFromContext: true },
+    };
+    const visible = {
+      type: "message", id: "visible", parentId: "hidden",
+      message: { role: "bashExecution", command: "printf normal", output: "normal-output", excludeFromContext: false },
+    };
+    initial.sessionManager.getBranch = () => [hidden, visible] as any;
+    initial.sessionManager.getEntry = (id: string) => [hidden, visible].find((entry) => entry.id === id) as any;
+
+    const live = await service.readSession({ sessionId: initial.sessionId }, 20);
+    expect(JSON.stringify(live)).not.toContain("TOP-SECRET");
+    expect(live.entries).toEqual([expect.objectContaining({ entryId: "visible", text: expect.stringContaining("normal-output") })]);
+    await expect(service.readSession({ sessionId: initial.sessionId, entryId: "hidden" }, 1)).rejects.toMatchObject({ status: 404 });
+
+    coldPath = join(cwd, "hidden-shell.jsonl");
+    await writeFile(coldPath, [
+      JSON.stringify({ type: "session", version: 3, id: "hidden-shell", cwd }),
+      JSON.stringify(hidden),
+      JSON.stringify(visible),
+      "",
+    ].join("\n"));
+    const cold = await service.readSession({ sessionId: "hidden-shell" }, 20);
+    expect(JSON.stringify(cold)).not.toContain("TOP-SECRET");
+    expect(cold.entries).toEqual([expect.objectContaining({ entryId: "visible", text: expect.stringContaining("normal-output") })]);
+    await expect(service.readSession({ sessionId: "hidden-shell", entryId: "hidden" }, 1)).rejects.toMatchObject({ status: 404 });
   });
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {
@@ -1099,7 +1261,21 @@ describe("session route boundary", () => {
     expect(route).toContain("sessionService.navigate");
     expect(route).not.toContain("finish");
     expect(source).toContain('url.pathname === "/api/session/lifecycle"');
-    expect(source).toContain("sessionService.lifecycleSnapshot()");
+    expect(source).toContain("sessionService.lifecycleSnapshot(requestViewerPrincipal)");
     expect(route).not.toContain("setTimeout");
+  });
+
+  it("binds viewer sockets only after resolution and an open-state check", async () => {
+    const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
+    const resolved = source.indexOf("targetSession = await resolveWebSocketHelloSession");
+    const openCheck = source.indexOf("realtimeWs.readyState !== realtimeWs.OPEN", resolved);
+    const acquire = source.indexOf("sessionService.acquireViewer", openCheck);
+    const connect = source.indexOf("sessionService.connectViewer", acquire);
+    const registerClose = source.indexOf('realtimeWs.once("close"', connect);
+    expect([resolved, openCheck, acquire, connect, registerClose].every((index) => index >= 0)).toBe(true);
+    expect(resolved).toBeLessThan(openCheck);
+    expect(openCheck).toBeLessThan(acquire);
+    expect(acquire).toBeLessThan(connect);
+    expect(connect).toBeLessThan(registerClose);
   });
 });

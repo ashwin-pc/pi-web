@@ -7,6 +7,7 @@ import type { ApiHeaders } from "../app/api.js";
 import { isCompactDensity } from "../app/appearance.js";
 import { activityCardVisibilityRestoredEvent, setActivityCardMetadata } from "../messages/activitySummary.js";
 import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
+import { scopeArtifactUrl } from "../artifacts/url.js";
 import { fetchSameOriginAttachmentImage } from "../messages/attachmentImageFetch.js";
 
 export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
@@ -332,11 +333,7 @@ export function textFromToolResult(result: unknown): string {
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
 
-function isExplicitAbsoluteUrl(url: string) {
-  return /^[a-z][a-z0-9+.-]*:/i.test(url);
-}
-
-export function collectToolImages(result: unknown): ToolImage[] {
+export function collectToolImages(result: unknown, sessionId = ""): ToolImage[] {
   result = parseJsonLikeResult(result);
   const images: ToolImage[] = [];
   const visit = (value: unknown) => {
@@ -353,16 +350,23 @@ export function collectToolImages(result: unknown): ToolImage[] {
       const data = typeof obj.data === "string" ? obj.data : typeof source?.data === "string" ? source.data : undefined;
       const url = typeof obj.imageUrl === "string" ? obj.imageUrl : typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
-      else if (url) images.push({ src: url, alt, needsAuth: !isExplicitAbsoluteUrl(url) });
+      else if (url) {
+        const src = scopeArtifactUrl(url, sessionId);
+        images.push({ src, alt, needsAuth: src.startsWith("/") });
+      }
       else if (typeof obj.path === "string") {
         const marker = "/.pi/web/artifacts/";
         const normalized = obj.path.replaceAll("\\", "/");
         const artifactPath = normalized.includes(marker) ? normalized.slice(normalized.indexOf(marker) + marker.length) : normalized.replace(/^\/+/, "");
-        images.push({ src: `/api/artifacts/${artifactPath.split("/").map(encodeURIComponent).join("/")}`, alt, needsAuth: true });
+        const src = scopeArtifactUrl(`/api/artifacts/${artifactPath.split("/").map(encodeURIComponent).join("/")}`, sessionId);
+        images.push({ src, alt, needsAuth: true });
       }
     } else if (obj.type === "image_url" && obj.image_url && typeof obj.image_url === "object") {
       const imageUrl = obj.image_url as Record<string, unknown>;
-      if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: !isExplicitAbsoluteUrl(imageUrl.url) });
+      if (typeof imageUrl.url === "string") {
+        const src = scopeArtifactUrl(imageUrl.url, sessionId);
+        images.push({ src, alt: "tool result image", needsAuth: src.startsWith("/") });
+      }
     }
     visit(obj.content);
     visit(obj.raw);
@@ -372,8 +376,8 @@ export function collectToolImages(result: unknown): ToolImage[] {
   return images;
 }
 
-function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?: ApiHeaders) {
-  const images = collectToolImages(result);
+function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?: ApiHeaders, sessionId = "") {
+  const images = collectToolImages(result, sessionId);
   if (images.length === 0) return;
   const wrap = document.createElement("div");
   wrap.className = "toolCardImage";
@@ -441,7 +445,7 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void, onTranscriptChanged: () => void = () => {}): ToolCards {
+}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void, onTranscriptChanged: () => void = () => {}, getSessionId: () => string = () => ""): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
@@ -552,6 +556,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
       removePartialToolOutput(card);
       addErrorResult(card, result);
     }
+    const sessionId = getSessionId();
     renderWhenVisible(card, () => {
       if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
       const resultStr = isError ? "" : textFromToolResult(result);
@@ -559,7 +564,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
         removePartialToolOutput(card);
         addToolResultBody(card, resultStr);
       } else if (!isError) finalizePartialToolOutput(card);
-      addToolImagePreviews(card, result, apiHeaders);
+      addToolImagePreviews(card, result, apiHeaders, sessionId);
     });
     playToolCardStateTransition(card);
     addToolSessionChips(card, result, openSession);
@@ -573,6 +578,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "bash") addBashHeader(card, result, args);
     else addToolHeader(card, toolName, args);
     if (isError) addErrorResult(card, result);
+    const sessionId = getSessionId();
     renderWhenVisible(card, () => {
       if (!isError) {
         if (toolName === "edit" && args) renderEditDiff(card, args, result);
@@ -581,7 +587,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
           if (resultStr) addToolResultBody(card, resultStr);
         }
       }
-      addToolImagePreviews(card, result, apiHeaders);
+      addToolImagePreviews(card, result, apiHeaders, sessionId);
     });
     addToolSessionChips(card, result, openSession);
     const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
