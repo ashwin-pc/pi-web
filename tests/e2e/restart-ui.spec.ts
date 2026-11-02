@@ -11,7 +11,7 @@ async function mockSupervisor(page: Page, generation = 4) {
   await page.route("**/__supervisor/status", route => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ ok: true, childGeneration: generation, childPid: 1234 }),
+    body: JSON.stringify({ ok: true, runtimeProtocol: 1, childGeneration: generation, childPid: 1234 }),
   }));
 }
 
@@ -34,6 +34,17 @@ test("restart settings is hidden without a supervisor", async ({ page }) => {
   await expect(serverNav).toHaveJSProperty("hidden", true);
 });
 
+test("old supervisor requires manual full restart without stopping anything", async ({ page }) => {
+  await page.route("**/__supervisor/status", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ ok: true, childGeneration: 4, childPid: 1234 }),
+  }));
+  await page.goto("/");
+  await openServerSettings(page);
+  await expect(page.locator("#restartServerButton")).toBeDisabled();
+  await expect(page.locator("#restartServerState")).toContainText("Full application restart required; nothing has been stopped.");
+});
+
 test("restart cancellation sends no request", async ({ page }) => {
   await mockSupervisor(page);
   let requests = 0;
@@ -52,7 +63,7 @@ test("accepted restart waits for a newer ready generation", async ({ page }) => 
   await page.route("**/__supervisor/status", route => {
     statusReads += 1;
     const replaced = statusReads >= 3;
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, childGeneration: replaced ? 5 : 4, childPid: replaced ? 5678 : undefined }) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, runtimeProtocol: 1, childGeneration: replaced ? 5 : 4, childPid: replaced ? 5678 : undefined }) });
   });
   await page.route("**/api/restart", route => route.fulfill({ status: 202, contentType: "application/json", body: '{"ok":true}' }));
   await page.goto("/");
@@ -68,7 +79,7 @@ test("a new child PID is not ready until its authenticated app endpoint responds
   await page.route("**/__supervisor/status", route => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ ok: true, childGeneration: restartAccepted ? 10 : 9, childPid: restartAccepted ? 5678 : 1234 }),
+    body: JSON.stringify({ ok: true, runtimeProtocol: 1, childGeneration: restartAccepted ? 10 : 9, childPid: restartAccepted ? 5678 : 1234 }),
   }));
   let appProbes = 0;
   let appReady = false;

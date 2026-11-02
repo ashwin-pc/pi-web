@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { runtimeFingerprint, runtimePreflight, manualRuntimeRestartMessage } from "./server/runtimePreflight.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { join } from "node:path";
@@ -39,6 +40,11 @@ await new AuthKernel(authConfig.mode, authStore, true, authConfig.trustedHeader,
 const upgradeHandshakeMs = 10_000;
 const isChildDev = process.env.PI_WEB_DEV === "1";
 
+const loadedRuntimeFingerprint = await runtimeFingerprint(process.cwd()).catch(() => undefined);
+let shuttingDown = false;
+let restartPending = false;
+let crashTimer: ReturnType<typeof setTimeout> | undefined;
+let lifecycleError: string | undefined;
 let child: ChildProcess | undefined;
 let childStarting = false;
 let childGeneration = 0;
@@ -68,7 +74,9 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 }
 
 function startChild(): void {
-  if (childStarting) return;
+  if (childStarting || shuttingDown || (child && child.exitCode === null && child.signalCode === null)) return;
+  if (crashTimer) clearTimeout(crashTimer);
+  crashTimer = undefined;
   childStarting = true;
   childGeneration += 1;
   const generation = childGeneration;
@@ -99,6 +107,11 @@ function startChild(): void {
   nextChild.on("spawn", () => {
     childStarting = false;
   });
+  nextChild.on("error", (error) => {
+    childStarting = false;
+    lifecycleError = `Child spawn failed: ${error.message}`;
+    console.error(`[supervisor] ${lifecycleError}`);
+  });
 
   nextChild.on("exit", (code, signal) => {
     if (child?.pid === undefined || childGeneration !== generation) return;
@@ -106,26 +119,37 @@ function startChild(): void {
     console.log(`[supervisor] child #${generation} exited code=${code ?? ""} signal=${signal ?? ""}`);
     child = undefined;
     childStarting = false;
-    if (!wasIntentional) {
+    if (!wasIntentional && !shuttingDown && !restartPending) {
       console.warn(`[supervisor] child #${generation} stopped unexpectedly; restarting in 1s`);
-      setTimeout(startChild, 1000);
+      crashTimer = setTimeout(() => {
+        crashTimer = undefined;
+        void runtimePreflight(process.cwd(), loadedRuntimeFingerprint).then(result => {
+          if (!result.ok) {
+            lifecycleError = result.error;
+            console.error(`[supervisor] ${result.error}`);
+          } else if (!restartPending && !shuttingDown) startChild();
+        });
+      }, 1000);
     }
   });
 }
 
 function stopChild(): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const current = child;
     if (!current || current.pid === undefined || current.exitCode !== null) return resolve();
     intentionalStops.add(current.pid);
 
+    let killTimeout: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {
       current.kill("SIGKILL");
-      resolve();
+      // Never launch a replacement before the old process actually exits.
+      killTimeout = setTimeout(() => reject(new Error("Child did not exit after SIGKILL; replacement was not started.")), 1000);
     }, 5000);
 
     current.once("exit", () => {
       clearTimeout(timeout);
+      clearTimeout(killTimeout);
       resolve();
     });
 
@@ -135,9 +159,18 @@ function stopChild(): Promise<void> {
 
 async function restartChild(): Promise<void> {
   console.log("[supervisor] restarting child");
-  await stopChild();
-  await new Promise((resolve) => setTimeout(resolve, restartGraceMs));
-  startChild();
+  try {
+    if (crashTimer) clearTimeout(crashTimer);
+    crashTimer = undefined;
+    await stopChild();
+    await new Promise((resolve) => setTimeout(resolve, restartGraceMs));
+    startChild();
+  } catch (error) {
+    lifecycleError = error instanceof Error ? error.message : String(error);
+    console.error(`[supervisor] ${lifecycleError}`);
+  } finally {
+    restartPending = false;
+  }
 }
 
 async function handleRequest(
@@ -156,7 +189,7 @@ async function handleRequest(
 
     sanitizeProxyHeaders(req, tunnel);
 
-    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
+    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart" || url.pathname === "/api/restart/preflight") {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
       const auth = await authorization(req, true);
       if (auth !== "allowed") {
@@ -166,7 +199,30 @@ async function handleRequest(
           error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
         });
       }
-      sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
+      if (shuttingDown || restartPending) return sendJson(res, 409, { ok: false, error: "A lifecycle operation is already in progress." });
+      // Reserve before asynchronous filesystem checks so concurrent requests
+      // cannot both pass admission and replace the child twice.
+      restartPending = true;
+      let preflight;
+      try {
+        preflight = await runtimePreflight(process.cwd(), loadedRuntimeFingerprint);
+      } catch {
+        restartPending = false;
+        return sendJson(res, 503, { ok: false, error: "Runtime preflight failed; nothing has been stopped." });
+      }
+      if (!preflight.ok || url.searchParams.get("scope") === "full") {
+        restartPending = false;
+        return sendJson(res, 409, { ok: false, code: "FULL_RUNTIME_RESTART_REQUIRED", error: manualRuntimeRestartMessage, automaticFullRestartAvailable: false });
+      }
+      if (url.pathname === "/api/restart/preflight") {
+        restartPending = false;
+        return sendJson(res, 200, { ok: true, scope: "child", automaticFullRestartAvailable: false });
+      }
+      if (shuttingDown) {
+        restartPending = false;
+        return sendJson(res, 409, { ok: false, error: "Shutdown is in progress." });
+      }
+      sendJson(res, 202, { ok: true, scope: "child", message: "Restarting pi-web child" });
       void restartChild();
       return;
     }
@@ -175,6 +231,10 @@ async function handleRequest(
       if (await authorization(req) !== "allowed") return sendJson(res, 401, { ok: false, error: "Unauthorized" });
       return sendJson(res, 200, {
         ok: true,
+        runtimeProtocol: 1,
+        lifecycleError,
+        automaticFullRestartAvailable: false,
+        lifecycle: shuttingDown ? "stopping" : restartPending ? "restarting" : "running",
         childPid: child?.pid,
         childGeneration,
         childHost,
@@ -271,6 +331,10 @@ tunnelSupervisor.on("clientError", (_error, socket) => {
 
 let tunnelSocketIdentity: Awaited<ReturnType<typeof listenOnTunnelSocket>> | undefined;
 async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (crashTimer) clearTimeout(crashTimer);
+  crashTimer = undefined;
   console.log("[supervisor] shutting down");
   const listenerClosures = [
     new Promise<void>((resolve) => {

@@ -406,11 +406,27 @@ describe("pi-web supervisor", () => {
       expect(denied.status).toBe(401);
     } finally { process.kill(recovered.childPid!, "SIGCONT"); }
 
+    const fullRestart = await fetch(`http://127.0.0.1:${publicPort}/api/restart?scope=full`, {
+      method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(fullRestart.status).toBe(409);
+    expect(await fullRestart.json()).toMatchObject({ code: "FULL_RUNTIME_RESTART_REQUIRED", automaticFullRestartAvailable: false });
+    expect((await status(publicPort, supervisor, token.secret)).childPid).toBe(recovered.childPid);
+    const preflight = await fetch(`http://127.0.0.1:${publicPort}/api/restart/preflight`, {
+      method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(preflight.status).toBe(200);
+    expect((await status(publicPort, supervisor, token.secret)).childGeneration).toBe(recovered.childGeneration);
+
     const restartResponse = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
       method: "POST",
       headers: { authorization: `Bearer ${token.secret}` },
     });
     expect(restartResponse.status).toBe(202);
+    const concurrent = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+      method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(concurrent.status).toBe(409);
 
     const intentionallyRestarted = await waitFor(async () => {
       const current = await status(publicPort, supervisor, token.secret);

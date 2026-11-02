@@ -5,6 +5,7 @@ type SupervisorStatus = {
   ok?: boolean;
   childGeneration?: number;
   childPid?: number;
+  runtimeProtocol?: number;
 };
 
 const requestTimeoutMs = 8_000;
@@ -64,7 +65,10 @@ export function createRestartSettings(options: {
       const status = await readStatus();
       generation = status.childGeneration;
       show(true);
-      state.textContent = "Supervised restart is available.";
+      button.disabled = status.runtimeProtocol !== 1;
+      state.textContent = status.runtimeProtocol === 1
+        ? "Child server restart is available. This does not restart the full application."
+        : "Full application restart required; nothing has been stopped. This supervisor lacks update-safe restart support. Wait for active turns to finish, then stop and start pi-web using its original terminal or service manager.";
     } catch {
       show(false);
     }
@@ -106,7 +110,7 @@ export function createRestartSettings(options: {
       confirmed = await confirmSecurityAction({
         container,
         title: "Restart pi-web server?",
-        detail: "This affects all sessions and may interrupt work while every browser reconnects.",
+        detail: "This restarts only the child server, not the full application. It affects all sessions and may interrupt active work while every browser reconnects.",
         confirmLabel: "Restart server",
       });
     } finally {
