@@ -24,7 +24,7 @@ async function workspaceRoot(cwd: string) {
   return realpath(cwd);
 }
 
-async function existingWorkspacePath(cwd: string, pathValue: unknown) {
+export async function existingWorkspacePath(cwd: string, pathValue: unknown) {
   const root = await workspaceRoot(cwd);
   const path = normalizedRelativePath(pathValue);
   const lexical = resolve(root, path);

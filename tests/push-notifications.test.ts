@@ -1,8 +1,17 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPushNotificationService } from "../server/pushNotifications.js";
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...actual,
+    randomBytes: vi.fn((size: number) => actual.randomBytes(size)),
+  };
+});
 
 const subscription = {
   endpoint: "https://push.example.test/subscription-a",
@@ -45,5 +54,29 @@ describe("push notification subscriptions", () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
     const service = createPushNotificationService(join(dir, "push.json"));
     await expect(service.subscribe("browser-a", { endpoint: "https://push.example.test" })).rejects.toThrow("valid installationId");
+  });
+
+  it("uses exclusive random sibling writes and removes its temporary after a failed replace", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
+    const file = join(dir, "push.json");
+    await createPushNotificationService(file).publicKey();
+    const blockedFile = join(dir, "blocked.json");
+    await mkdir(blockedFile);
+    const replaceError = await createPushNotificationService(blockedFile).publicKey()
+      .then(() => undefined, (error: NodeJS.ErrnoException & { dest?: string }) => error);
+    expect(replaceError).toBeDefined();
+    const temporary = String(replaceError?.path);
+    expect(temporary).toMatch(new RegExp(`^${blockedFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[0-9a-f]{32}\\.tmp$`));
+    expect(replaceError?.dest).toBe(blockedFile);
+    await expect(access(temporary)).rejects.toThrow();
+
+    vi.mocked(randomBytes).mockReturnValueOnce(Buffer.alloc(16, 0xab));
+    const reservedTemporary = `${file}.${"ab".repeat(16)}.tmp`;
+    await writeFile(reservedTemporary, "reserved", { flag: "wx" });
+    const collision = createPushNotificationService(file);
+    await expect(collision.subscribe("browser-a", subscription)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await readFile(reservedTemporary, "utf-8")).toBe("reserved");
+    expect(JSON.parse(await readFile(file, "utf-8")).subscriptions).toEqual([]);
+    await unlink(reservedTemporary);
   });
 });

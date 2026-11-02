@@ -98,7 +98,7 @@ describe("workspace extension trust", () => {
       [join(workspaceAlias, ".pi", "extensions", "bundled.js")],
     );
     expect(trust.isTrusted(workspace)).toBe(false);
-    expect(trust.status(workspace).resources).toEqual([]);
+    expect((await trust.status(workspace)).resources).toEqual([]);
   });
 
   it("shows workspace extensions when an explicitly trusted source path is missing", async () => {
@@ -110,9 +110,34 @@ describe("workspace extension trust", () => {
     await writeFile(regular, "export default function () {}\n");
 
     const trust = new WorkspaceExtensionTrust(agentDir, [join(root, "missing.js")]);
-    expect(trust.status(workspace).resources).toEqual([
+    expect((await trust.status(workspace)).resources).toEqual([
       { kind: "extension", path: ".pi/extensions/regular.js" },
     ]);
+  });
+
+  it("reads linked settings only when their target remains in the workspace", async () => {
+    const root = await tempRoot();
+    const workspace = join(root, "workspace");
+    const agentDir = join(root, "agent");
+    const settings = join(workspace, ".pi", "settings.json");
+    const insideSettings = join(workspace, ".pi", "settings-source.json");
+    const outsideSettings = join(root, "outside-settings.json");
+    await mkdir(join(workspace, ".pi"), { recursive: true });
+    await writeFile(insideSettings, JSON.stringify({ packages: ["inside-package"] }));
+    await writeFile(outsideSettings, JSON.stringify({ packages: ["outside-package"] }));
+    await symlink(insideSettings, settings);
+
+    const trust = new WorkspaceExtensionTrust(agentDir);
+    expect((await trust.status(workspace)).resources).toContainEqual({
+      kind: "package",
+      path: "inside-package",
+    });
+
+    await rm(settings);
+    await symlink(outsideSettings, settings);
+    const resources = (await trust.status(workspace)).resources;
+    expect(resources).toContainEqual({ kind: "resource", path: ".pi/settings.json" });
+    expect(resources).not.toContainEqual({ kind: "package", path: "outside-package" });
   });
 
   it("blocks all project code while global extensions remain available", async () => {
@@ -125,7 +150,7 @@ describe("workspace extension trust", () => {
     expect(executed).not.toContain("regular");
     expect(executed).not.toContain("web");
     expect(executed).not.toContain("package");
-    expect(trust.status(loader.getStatus().cwd).resources).toEqual(expect.arrayContaining([
+    expect((await trust.status(loader.getStatus().cwd)).resources).toEqual(expect.arrayContaining([
       { kind: "extension", path: ".pi/extensions/regular.js" },
       { kind: "extension", path: ".pi/web/extensions/web.js" },
       { kind: "package", path: "../local-package" },
@@ -174,7 +199,7 @@ describe("workspace extension trust", () => {
     nativeStore.set(parent, true);
     nativeStore.set(workspace, null);
     expect(trust.isTrusted(workspace)).toBe(true);
-    expect(trust.status(workspace).trustedWorkspaces).toEqual([
+    expect((await trust.status(workspace)).trustedWorkspaces).toEqual([
       realWorkspacePath(parent),
       realWorkspacePath(workspace),
     ]);
@@ -198,13 +223,13 @@ describe("workspace extension trust", () => {
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
     expect(trust.isTrusted(workspace)).toBe(true);
     expect(existsSync(join(agentDir, "trust.json"))).toBe(false);
-    expect(trust.status(workspace).trustedWorkspaces).toEqual([realWorkspacePath(workspace)]);
+    expect((await trust.status(workspace)).trustedWorkspaces).toEqual([realWorkspacePath(workspace)]);
 
     trust.revoke(workspace);
     expect(JSON.parse(await readFile(join(agentDir, "trust.json"), "utf8"))).toEqual({
       [realWorkspacePath(workspace)]: false,
     });
-    expect(trust.status(workspace).trustedWorkspaces).toEqual([]);
+    expect((await trust.status(workspace)).trustedWorkspaces).toEqual([]);
 
     await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never" }));
     expect(trust.isTrusted(workspace)).toBe(false);
@@ -220,7 +245,7 @@ describe("workspace extension trust", () => {
     const trust = new WorkspaceExtensionTrust(agentDir);
     expect(trust.requiresTrust(workspace)).toBe(false);
     expect(trust.isTrusted(workspace)).toBe(false);
-    expect(trust.status(workspace)).toMatchObject({
+    expect(await trust.status(workspace)).toMatchObject({
       desiredTrusted: false,
       resources: [],
     });

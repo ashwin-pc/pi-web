@@ -40,8 +40,8 @@ function workspaceFrom(value: unknown): string | undefined {
   return typeof workspace === "string" && workspace ? workspace : undefined;
 }
 
-function statusFor(deps: RouteDependencies, session: object) {
-  const desired = deps.trust.status(deps.sessions.cwdForSession(session));
+async function statusFor(deps: RouteDependencies, session: object) {
+  const desired = await deps.trust.status(deps.sessions.cwdForSession(session));
   const sessionState = deps.sessions.workspaceTrustState(session);
   return {
     ...desired,
@@ -63,7 +63,7 @@ export async function handleWorkspaceExtensionTrustRoute(
 
   if (req.method === "GET") {
     const session = await deps.sessions.require(url.searchParams.get("sessionId") || undefined);
-    send(res, 200, { ok: true, ...statusFor(deps, session) });
+    send(res, 200, { ok: true, ...await statusFor(deps, session) });
     return true;
   }
 
@@ -89,7 +89,7 @@ export async function handleWorkspaceExtensionTrustRoute(
       isCompacting?: boolean;
     };
     const cwd = deps.sessions.cwdForSession(session);
-    const current = deps.trust.status(cwd);
+    const current = await deps.trust.status(cwd);
     if (current.workspace !== displayedWorkspace) {
       send(res, 409, { ok: false, error: "Workspace changed. Review its resources before trusting it." });
       return true;
@@ -104,7 +104,7 @@ export async function handleWorkspaceExtensionTrustRoute(
     await deps.trust.trust(current.workspace);
     deps.broadcast({ type: "workspace_trust_changed", workspace: current.workspace });
     const reloadStatus = await deps.sessions.reloadExtensions(sessionId);
-    send(res, 200, { ok: true, ...statusFor(deps, session), reloadStatus });
+    send(res, 200, { ok: true, ...await statusFor(deps, session), reloadStatus });
     return true;
   }
 
@@ -120,9 +120,11 @@ export async function handleWorkspaceExtensionTrustRoute(
     const session = sessionId ? await deps.sessions.require(sessionId) : undefined;
     await deps.trust.revoke(workspace);
     deps.broadcast({ type: "workspace_trust_changed", workspace });
-    const currentStatus = session
-      && deps.trust.status(deps.sessions.cwdForSession(session)).workspace === workspace
-      ? statusFor(deps, session)
+    const sessionStatus = session
+      ? await deps.trust.status(deps.sessions.cwdForSession(session))
+      : undefined;
+    const currentStatus = session && sessionStatus?.workspace === workspace
+      ? await statusFor(deps, session)
       : undefined;
     send(res, 200, {
       ok: true,

@@ -10,6 +10,7 @@ import {
   type GitConfigEntry,
   type GitExecution,
 } from "./gitExecution.js";
+import { existingWorkspacePath, WorkspaceFileError } from "./workspaceFiles.js";
 
 const execFileAsync = promisify(execFile);
 export { gitConfigEnv, gitConfigHardeningOverrides };
@@ -176,14 +177,19 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
 }
 
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {
-  if (!repo || repo === ".") return baseCwd;
-  if (repo.includes("\0") || isAbsolute(repo)) throw new Error("Invalid repository path");
-  const resolved = resolve(baseCwd, repo);
-  const rel = relative(baseCwd, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
-  const info = await stat(resolved);
+  if (repo && (repo.includes("\0") || isAbsolute(repo))) throw new Error("Invalid repository path");
+  let target: string;
+  try {
+    ({ target } = await existingWorkspacePath(baseCwd, repo || "."));
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && (error.status === 400 || error.status === 403)) {
+      throw new Error("Repository path is outside the workspace");
+    }
+    throw error;
+  }
+  const info = await stat(target);
   if (!info.isDirectory()) throw new Error("Repository path is not a directory");
-  return resolved;
+  return target;
 }
 
 const ignoredGitRepoDirs = new Set([".git", ".pi", ".pi-web-uploads", "node_modules", "dist", "build", ".cache", ".next", "target", "vendor"]);

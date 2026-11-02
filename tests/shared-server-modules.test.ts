@@ -249,6 +249,47 @@ describe("shared Git helpers", () => {
     ]);
   });
 
+  it("neutralizes repository-selected Git helpers while preserving trusted config", () => {
+    const overrides = gitConfigHardeningOverrides([
+      { scope: "global", key: "core.editor", value: "trusted-editor" },
+      { scope: "global", key: "url.HTTPS://mirror.example/.insteadOf", value: "trusted:" },
+      { scope: "global", key: "url.HTTPS://mirror.example/.pushInsteadOf", value: "trusted-push:" },
+      { scope: "local", key: "core.editor", value: "repository-editor" },
+      { scope: "worktree", key: "sequence.editor", value: "repository-sequence-editor" },
+      { scope: "local", key: "url.HTTPS://mirror.example/.insteadOf", value: "repository:" },
+      { scope: "local", key: "url.https://mirror.example/.pushInsteadOf", value: "repository-push:" },
+      { scope: "local", key: "remote.Origin.promisor", value: "true" },
+      { scope: "worktree", key: "remote.Origin.partialCloneFilter", value: "blob:none" },
+      { scope: "local", key: "extensions.partialClone", value: "Origin" },
+      { scope: "local", key: "tar.Custom.command", value: "repository-archive" },
+      { scope: "local", key: "remote.transport.vcs", value: "example" },
+    ]);
+
+    expect(overrides).toEqual(expect.arrayContaining([
+      { key: "core.editor", value: "true" },
+      { key: "core.editor", value: "trusted-editor" },
+      { key: "sequence.editor", value: "true" },
+      { key: "url.HTTPS://mirror.example/.insteadOf", value: "" },
+      { key: "url.HTTPS://mirror.example/.insteadOf", value: "trusted:" },
+      { key: "url.https://mirror.example/.pushInsteadOf", value: "" },
+      { key: "remote.Origin.promisor", value: "false" },
+      { key: "remote.Origin.partialCloneFilter", value: "" },
+      { key: "extensions.partialClone", value: "" },
+      { key: "tar.Custom.command", value: "false" },
+    ]));
+    expect(overrides.some(({ key }) => key.toLowerCase() === "remote.transport.vcs")).toBe(false);
+    const serialized = JSON.stringify(overrides);
+    for (const repositoryValue of [
+      "repository-editor",
+      "repository-sequence-editor",
+      "repository:",
+      "repository-push:",
+      "blob:none",
+      "repository-archive",
+    ]) expect(serialized).not.toContain(repositoryValue);
+    expect(serialized).not.toContain("trusted-push:");
+  });
+
   it("re-encodes bootstrap command config before hardening and clears inherited namespaces", () => {
     const env = gitConfigEnv([
       { key: "filter.a=b.clean", value: "" },
@@ -639,6 +680,22 @@ signed fixture
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
   }, 15_000);
+
+  it("selects only canonical repository directories contained by the workspace", async () => {
+    const workspace = await tempDir("pi-web-shared-git-selection-");
+    const inside = join(workspace, "inside");
+    const insideLink = join(workspace, "inside-link");
+    const outside = await tempDir("pi-web-shared-git-outside-");
+    const outsideLink = join(workspace, "outside-link");
+    await mkdir(inside);
+    await symlink(inside, insideLink, "dir");
+    await symlink(outside, outsideLink, "dir");
+
+    expect(await gitCwdFromRepoParam(null, workspace)).toBe(await realpath(workspace));
+    expect(await gitCwdFromRepoParam("inside-link", workspace)).toBe(await realpath(inside));
+    await expect(gitCwdFromRepoParam("../outside", workspace)).rejects.toThrow("Repository path is outside the workspace");
+    await expect(gitCwdFromRepoParam("outside-link", workspace)).rejects.toThrow("outside the workspace");
+  });
 
   it("syncs an advancing flat repository with a dirty parent from a nested directory", async () => {
     const cwd = await makeRepo();

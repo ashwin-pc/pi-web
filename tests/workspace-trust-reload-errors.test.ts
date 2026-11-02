@@ -89,7 +89,7 @@ describe("workspace trust reload errors", () => {
     expect(loader.getAppliedProjectTrust()).toBe(false);
     expectBrokenGlobalHealth();
 
-    trust.trust(workspace);
+    await trust.trust(workspace);
     await rm(marker, { force: true });
     await loader.reload();
     expect(loader.getAppliedProjectTrust()).toBe(true);

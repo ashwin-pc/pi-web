@@ -11,6 +11,8 @@ const unconditionalExecutableConfigDefaults = new Map([
   ["core.fsmonitor", "false"],
   ["core.gitproxy", "none"],
   ["core.alternateRefsCommand", "true"],
+  ["core.editor", "true"],
+  ["sequence.editor", "true"],
   ["gpg.program", "gpg"],
   ["gpg.openpgp.program", "gpg"],
   ["gpg.x509.program", "gpgsm"],
@@ -31,23 +33,28 @@ const defaultProtocolPolicies = new Map([
 ]);
 const remoteHelperIdentifier = /^[A-Za-z][A-Za-z0-9+.-]*$/;
 
-function filterConfigKey(key: string) {
+function subsectionConfigKey(key: string) {
+  const sectionSeparator = key.indexOf(".");
   const separator = key.lastIndexOf(".");
-  if (separator <= "filter.".length || key.slice(0, "filter.".length).toLowerCase() !== "filter.") return undefined;
+  if (sectionSeparator <= 0 || separator <= sectionSeparator + 1) return undefined;
+  const section = key.slice(0, sectionSeparator).toLowerCase();
+  if (!["filter", "remote", "tar", "url"].includes(section)) return undefined;
   return {
-    subsection: key.slice("filter.".length, separator),
+    section,
+    subsection: key.slice(sectionSeparator + 1, separator),
     variable: key.slice(separator + 1).toLowerCase(),
   };
 }
 
 function configKeysEqual(left: string, right: string) {
-  const leftFilter = filterConfigKey(left);
-  const rightFilter = filterConfigKey(right);
-  if (leftFilter || rightFilter) {
-    return leftFilter !== undefined &&
-      rightFilter !== undefined &&
-      leftFilter.subsection === rightFilter.subsection &&
-      leftFilter.variable === rightFilter.variable;
+  const leftSubsection = subsectionConfigKey(left);
+  const rightSubsection = subsectionConfigKey(right);
+  if (leftSubsection || rightSubsection) {
+    return leftSubsection !== undefined &&
+      rightSubsection !== undefined &&
+      leftSubsection.section === rightSubsection.section &&
+      leftSubsection.subsection === rightSubsection.subsection &&
+      leftSubsection.variable === rightSubsection.variable;
   }
   return left.toLowerCase() === right.toLowerCase();
 }
@@ -92,7 +99,9 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
     if (key.endsWith(".uploadpack")) return "git-upload-pack";
     if (key.endsWith(".receivepack")) return "git-receive-pack";
     if (key.endsWith(".proxy")) return "";
+    if (key.endsWith(".promisor")) return "false";
     if (key.startsWith("diff.") || key.startsWith("merge.")) return "false";
+    if (key.startsWith("tar.") && key.endsWith(".command")) return "false";
     return "";
   };
 
@@ -108,8 +117,16 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
     if (repositoryKey) resetToTrusted(repositoryKey, fallback);
   }
 
+  const repositoryConfigKeys = new Set(repository.map((entry) => entry.key));
+  for (const key of repositoryConfigKeys) {
+    const normalized = key.toLowerCase();
+    if (normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized)) resetToTrusted(key, "");
+    if ((normalized.startsWith("remote.") && /\.(?:promisor|partialclonefilter)$/.test(normalized)) || normalized === "extensions.partialclone") resetToTrusted(key, safeFallback(normalized));
+    if (normalized.startsWith("tar.") && normalized.endsWith(".command")) resetToTrusted(key, "false");
+  }
+
   const neutralizedFilters = new Set<string>();
-  for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
+  for (const key of [...repositoryConfigKeys].filter((key) => {
     const normalized = key.toLowerCase();
     return normalized === "credential.helper" ||
       /^credential\..+\.helper$/.test(normalized) ||
@@ -120,7 +137,7 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
       normalized === "protocol.allow" ||
       /^protocol\..+\.allow$/.test(normalized) ||
       /^remote\..+\.(?:proxy|uploadpack|receivepack)$/.test(normalized);
-  }))) {
+  })) {
     const normalized = key.toLowerCase();
     if (normalized.startsWith("filter.")) neutralizedFilters.add(key.slice(0, key.lastIndexOf(".")));
     resetToTrusted(key, safeFallback(normalized));
