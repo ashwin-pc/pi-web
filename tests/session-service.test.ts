@@ -1002,23 +1002,41 @@ describe("LocalSessionService standalone lifecycle", () => {
     await service.disposeAll();
   });
 
-  it("evicts only an idle runtime before admitting a replacement at the resident cap", async () => {
+  it("evicts only a durable idle runtime before admitting a replacement at the resident cap", async () => {
+    const idleId = "idle-durable";
     const coldId = "replacement";
     const { service, initial, cwd } = await fixtureService({
-      list: async () => [{
-        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
-      }],
+      list: async () => [idleId, coldId].map((id) => ({
+        id, path: join(cwd, `${id}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      })),
     });
+    await service.open(idleId);
     const admitted = [];
-    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
-    const idle = admitted[0];
-    for (const [index, state] of admitted.slice(1).entries()) service.acquireViewer(state.sessionId, `kept-${index}`, internalViewerPrincipal);
+    for (let index = 0; index < 14; index += 1) admitted.push(await service.create(undefined));
+    for (const [index, state] of admitted.entries()) service.acquireViewer(state.sessionId, `kept-${index}`, internalViewerPrincipal);
 
     await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
     expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
-    expect(service.sessionForId(idle.sessionId)).toBeUndefined();
+    expect(service.sessionForId(idleId)).toBeUndefined();
     expect(service.sessionForId(initial.sessionId)).toBe(initial);
-    for (const state of admitted.slice(1)) expect(service.sessionForId(state.sessionId)).toBeDefined();
+    for (const state of admitted) expect(service.sessionForId(state.sessionId)).toBeDefined();
+    await service.disposeAll();
+  });
+
+  it("keeps newly created sessions resident until their first prompt", async () => {
+    const coldId = "replacement";
+    const { service, cwd } = await fixtureService({
+      list: async () => [{
+        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }],
+    });
+    const created = [];
+    for (let index = 0; index < 15; index += 1) created.push(await service.create(undefined));
+
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.sessionForId(created[0].sessionId)).toBeDefined();
+    await service.prompt(created[0].sessionId, { message: "first prompt", mode: "steer", images: [] });
+    expect(service.sessionForId(created[0].sessionId)).toBeDefined();
     await service.disposeAll();
   });
 

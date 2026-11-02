@@ -14,7 +14,6 @@ import {
 
 let tempDirs: string[] = [];
 const MAX_SETTINGS_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_THINKING_LEVEL_LENGTH = 32;
 
 async function tempFile() {
   const dir = await mkdtemp(join(tmpdir(), "pi-web-settings-"));
@@ -85,26 +84,27 @@ describe("pi-web settings", () => {
     });
   });
 
-  it("retains long model identifiers while rejecting oversized bounded default strings", async () => {
+  it("retains long model identifiers and thinking levels", async () => {
     const file = await tempFile();
     const store = createSettingsStore(file);
     const longModel = { provider: `custom-${"p".repeat(256)}`, id: `arn:provider:${"m".repeat(2048)}` };
-    const saved = await store.patch({ defaults: { model: longModel, thinkingLevel: "medium" } });
-    expect(saved.defaults.model).toEqual(longModel);
-    expect((await createSettingsStore(file).read()).defaults.model).toEqual(longModel);
+    const thinkingLevel = "x".repeat(33);
+    const saved = await store.patch({ defaults: { model: longModel, thinkingLevel } });
+    expect(saved.defaults).toMatchObject({ model: longModel, thinkingLevel });
+    expect((await createSettingsStore(file).read()).defaults).toMatchObject({ model: longModel, thinkingLevel });
+  });
+
+  it("rejects settings writes above the read limit without changing the committed value", async () => {
+    const file = await tempFile();
+    const store = createSettingsStore(file);
+    const saved = await store.patch({ appearance: { density: "compact" } });
     const primary = await readFile(file, "utf8");
+
     await expect(store.patch({
-      defaults: { thinkingLevel: "x".repeat(MAX_THINKING_LEVEL_LENGTH + 1) },
-    })).rejects.toMatchObject({ name: "SettingsFieldBoundsError" });
+      defaults: { model: { provider: "custom", id: "x".repeat(MAX_SETTINGS_FILE_BYTES) } },
+    })).rejects.toMatchObject({ status: 413 });
     expect(await readFile(file, "utf8")).toBe(primary);
     expect(await store.read()).toEqual(saved);
-
-    expect(normalizeSettings({
-      defaults: {
-        thinkingLevel: "x".repeat(MAX_THINKING_LEVEL_LENGTH + 1),
-        model: longModel,
-      },
-    }).defaults).toEqual({ model: longModel });
   });
 
   it("loads an oversized legacy settings file through a fixed-size read and leaves it untouched", async () => {

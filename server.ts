@@ -16,8 +16,8 @@ import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
-import { createSessionUiStateStore, SessionUiStateBoundsError, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError, sessionUiStateLimits } from "./server/sessionUiState.js";
-import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError, SettingsFieldBoundsError, settingsFieldLimits } from "./server/settings.js";
+import { createSessionUiStateStore, SessionUiStateBoundsError, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError, sessionUiStateMaxBytes } from "./server/sessionUiState.js";
+import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError, settingsFieldLimits } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
@@ -1097,7 +1097,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, sessionUiStateLimits.maxBytes));
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, sessionUiStateMaxBytes));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
@@ -1111,11 +1111,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
-        if (requestedSessionId.length > sessionUiStateLimits.maxSessionIdLength) {
-          return sendJson(res, 400, { ok: false, error: "sessionId is too long" });
-        }
-        const sessionId = requestedSessionId || session.sessionId;
+        const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
         const sessionUiState = url.pathname.endsWith("/unread")
           ? await sessionUiStateStore.markUnread(sessionId)
           : await sessionUiStateStore.markRead(sessionId);
@@ -1201,22 +1197,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        try {
-          const patch = await readBody(req, settingsFieldLimits.maxPatchBytes);
-          const settings = await withAvatarMutation(async () => {
-            const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
-            // A stale settings form must not resurrect a reclaimed generation.
-            // Serialize the reference check with imports/reset and settings writes.
-            if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
-              throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
-            return settingsStore.patch(patch);
-          });
-          broadcast({ type: "settings_updated", settings });
-          return sendJson(res, 200, { ok: true, settings });
-        } catch (error) {
-          if (error instanceof SettingsFieldBoundsError) return sendJson(res, 413, { ok: false, error: error.message });
-          throw error;
-        }
+        const patch = await readBody(req, settingsFieldLimits.maxPatchBytes);
+        const settings = await withAvatarMutation(async () => {
+          const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
+          // A stale settings form must not resurrect a reclaimed generation.
+          // Serialize the reference check with imports/reset and settings writes.
+          if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
+            throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
+          return settingsStore.patch(patch);
+        });
+        broadcast({ type: "settings_updated", settings });
+        return sendJson(res, 200, { ok: true, settings });
       }
 
       if (method === "GET" && url.pathname === "/api/extensions/status") {

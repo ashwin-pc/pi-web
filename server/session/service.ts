@@ -110,6 +110,7 @@ type LiveSessionEntry = {
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
   lastTouched: number;
+  admissionEvictable: boolean;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
 };
@@ -260,6 +261,7 @@ export class LocalSessionService implements SessionService {
         const entry = this.liveSessions.get(sessionKey);
         if (!entry) return;
         entry.viewerClientIds.add(leaseKey);
+        entry.lastTouched = Date.now();
         this.cancelLiveSessionCleanup(entry);
       },
       removeViewer: (sessionKey, leaseKey) => {
@@ -905,7 +907,7 @@ export class LocalSessionService implements SessionService {
         value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
       }
       await this.applyDefaults(value);
-      this.registerLiveSession(value);
+      this.registerLiveSession(value, false);
       releaseAdmission();
       await this.deps.sessionConfig.finalizeCreatedSession(value.sessionId);
       return value;
@@ -923,12 +925,12 @@ export class LocalSessionService implements SessionService {
     if (defaults.thinkingLevel && value.getAvailableThinkingLevels().includes(defaults.thinkingLevel)) value.setThinkingLevel(defaults.thinkingLevel);
   }
 
-  private registerLiveSession(value: PiWebSession) {
+  private registerLiveSession(value: PiWebSession, admissionEvictable = true) {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), lastTouched: Date.now() });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), lastTouched: Date.now(), admissionEvictable });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -942,6 +944,10 @@ export class LocalSessionService implements SessionService {
     const sessionFile = value.sessionFile;
     const mapped = mapPiEvent(e);
     const raw = event as any;
+    if (raw?.type === "message_end") {
+      const entry = this.liveSessions.get(sessionPathKey(value));
+      if (entry) entry.admissionEvictable = true;
+    }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
       return;
@@ -1098,7 +1104,7 @@ export class LocalSessionService implements SessionService {
     return this.admissions.reserve({
       residentCount: () => this.liveSessions.size,
       evictableKeys: () => Array.from(this.liveSessions.entries())
-        .filter(([, entry]) => !entry.disposing && !this.shouldKeepLiveSession(entry))
+        .filter(([, entry]) => entry.admissionEvictable && !entry.disposing && !this.shouldKeepLiveSession(entry))
         .sort(([, a], [, b]) => a.lastTouched - b.lastTouched)
         .map(([key]) => key),
       evict: (key) => this.disposeLiveSession(key, "idle"),

@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 import { readUtf8FileBounded } from "./shared/boundedFile.js";
+import { HttpError } from "./shared/httpError.js";
 
 export type PiWebModelSetting = {
   provider: string;
@@ -34,7 +35,6 @@ export const extensionSettingsLimits = {
 export const settingsFieldLimits = {
   maxPatchBytes: 256 * 1024,
   maxFileBytes: 4 * 1024 * 1024,
-  thinkingLevel: 32,
 } as const;
 
 /** Namespaced owner id: `<extensionName>.<schemaId>` (at least one dot). */
@@ -47,13 +47,6 @@ export class ExtensionSettingsBoundsError extends Error {
   constructor(public readonly ownerId: string, message: string) {
     super(message);
     this.name = "ExtensionSettingsBoundsError";
-  }
-}
-
-export class SettingsFieldBoundsError extends Error {
-  constructor(readonly field: string, readonly maxLength: number) {
-    super(`${field} is too long (max ${maxLength} characters)`);
-    this.name = "SettingsFieldBoundsError";
   }
 }
 
@@ -285,12 +278,6 @@ function normalizeModel(value: unknown) {
   return provider && id ? { provider, id } : undefined;
 }
 
-function assertSettingsString(value: unknown, field: string, maxLength: number) {
-  if (typeof value === "string" && value.trim().length > maxLength) {
-    throw new SettingsFieldBoundsError(field, maxLength);
-  }
-}
-
 export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorId | undefined {
   return typeof value === "string" && sessionMarkerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
@@ -359,8 +346,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = normalizeModel(defaults?.model);
   if (model) settings.defaults.model = model;
-  if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim() &&
-    defaults.thinkingLevel.trim().length <= settingsFieldLimits.thinkingLevel) {
+  if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) {
     settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
   }
   const sessionBucketColor = normalizeSessionBucketColor(defaults?.sessionBucketColor);
@@ -412,7 +398,6 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       else delete next.defaults.model;
     }
     if ("thinkingLevel" in patch.defaults) {
-      assertSettingsString(patch.defaults.thinkingLevel, "defaults.thinkingLevel", settingsFieldLimits.thinkingLevel);
       if (typeof patch.defaults.thinkingLevel === "string" && patch.defaults.thinkingLevel.trim()) {
         next.defaults.thinkingLevel = patch.defaults.thinkingLevel.trim();
       } else {
@@ -458,9 +443,13 @@ export function createSettingsStore(file: string) {
 
   async function writeUnlocked(settings: PiWebSettings) {
     const normalized = normalizeSettings(settings);
+    const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
+    if (Buffer.byteLength(serialized) > settingsFieldLimits.maxFileBytes) {
+      throw new HttpError("Settings file is too large", 413);
+    }
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+    await writeFile(tmp, serialized, "utf-8");
     await rename(tmp, file);
     cached = normalized;
     return cloneSettings(cached);

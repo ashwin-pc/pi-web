@@ -196,14 +196,9 @@ export default function settingsTest(pi) {
     expect(result).toEqual({ status: 400, body: { ok: false, error: "malformed owner id" } });
   });
 
-  it("bounds generic settings bodies and fields while preserving the previous settings", async () => {
+  it("bounds generic settings bodies while preserving the previous settings", async () => {
     const before = await (await fetch(`${baseUrl}/api/settings`)).json();
     const beforeUi = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
-    const longField = await jsonRequest(baseUrl, "/api/settings", "PATCH", {
-      defaults: { thinkingLevel: "x".repeat(33) },
-    });
-    expect(longField).toMatchObject({ status: 413, body: { ok: false, error: expect.stringContaining("defaults.thinkingLevel") } });
-
     const largeBody = await chunkedJsonRequest(port, "/api/settings", "PATCH", {
       padding: "x".repeat(256 * 1024),
     });

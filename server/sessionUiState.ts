@@ -85,16 +85,7 @@ export class SessionUiStateBoundsError extends Error {
   constructor(message: string, readonly status = 413) { super(message); this.name = "SessionUiStateBoundsError"; }
 }
 
-export const sessionUiStateLimits = {
-  maxBytes: 8 * 1024 * 1024,
-  maxEntriesPerCollection: 4096,
-  maxSessionIdLength: 512,
-  maxNoteLength: 8 * 1024,
-  maxPathLength: 4 * 1024,
-  maxKindLength: 128,
-  maxTimestampLength: 64,
-  maxBucketLabelLength: 40,
-} as const;
+export const sessionUiStateMaxBytes = 8 * 1024 * 1024;
 
 const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 const markerColors = new Set<SessionMarkerColorId>(defaultBucketOrder);
@@ -131,65 +122,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizedBoundedString(value: unknown, maxLength: number): string {
-  if (typeof value !== "string") return "";
-  const text = value.trim();
-  return text.length <= maxLength ? text : "";
-}
-
-function assertBoundedString(value: unknown, maxLength: number, field: string) {
-  if (typeof value === "string" && value.trim().length > maxLength) {
-    throw new SessionUiStateBoundsError(`${field} is too long`);
-  }
-}
-
-function assertCollection(value: Record<string, unknown>, key: string, bounded = true) {
-  const collection = value[key];
-  if (bounded && Array.isArray(collection) && collection.length > sessionUiStateLimits.maxEntriesPerCollection) {
-    throw new SessionUiStateBoundsError(`${key} has too many entries`);
-  }
-  return Array.isArray(collection) ? collection : [];
-}
-
-function assertEntryStrings(entries: unknown[], fields: Array<[string, number]>, collection: string, currentEntries: unknown[] = []) {
-  const identity = collection === "pinnedSessions" ? "id" : "sessionId";
-  const currentById = new Map(currentEntries.filter(isRecord).map((entry) => [entry[identity], entry]));
-  for (const entry of entries) {
-    if (!isRecord(entry)) continue;
-    const current = currentById.get(entry[identity]);
-    if (current && fields.every(([field]) => entry[field] === current[field])) continue;
-    for (const [field, maxLength] of fields) assertBoundedString(entry[field], maxLength, `${collection}.${field}`);
-  }
-}
-
-function assertSessionUiStateBounds(value: unknown, current?: SessionUiState) {
-  if (!isRecord(value)) return;
-  const currentEntries = (key: string) => {
-    const entries = current ? (current as unknown as Record<string, unknown>)[key] : undefined;
-    return Array.isArray(entries) ? entries : [];
-  };
-  const ids: Array<[string, number]> = [["sessionId", sessionUiStateLimits.maxSessionIdLength]];
-  const timestamps: Array<[string, number]> = [["updatedAt", sessionUiStateLimits.maxTimestampLength]];
-  assertEntryStrings(assertCollection(value, "lanes"), [...ids, ["cwd", sessionUiStateLimits.maxPathLength], ["since", sessionUiStateLimits.maxTimestampLength]], "lanes", currentEntries("lanes"));
-  assertEntryStrings(assertCollection(value, "pinnedSessions"), [["id", sessionUiStateLimits.maxSessionIdLength], ["cwd", sessionUiStateLimits.maxPathLength]], "pinnedSessions", currentEntries("pinnedSessions"));
-  assertEntryStrings(assertCollection(value, "sessionNotes"), [...ids, ["note", sessionUiStateLimits.maxNoteLength], ...timestamps], "sessionNotes", currentEntries("sessionNotes"));
-  assertEntryStrings(assertCollection(value, "sessionMarkers"), [...ids, ...timestamps], "sessionMarkers", currentEntries("sessionMarkers"));
-  assertEntryStrings(assertCollection(value, "sessionUnreadStates"), [...ids, ["unreadAt", sessionUiStateLimits.maxTimestampLength], ...timestamps], "sessionUnreadStates", currentEntries("sessionUnreadStates"));
-  assertEntryStrings(assertCollection(value, "sessionOrigins", false), [
-    ...ids,
-    ["originSessionId", sessionUiStateLimits.maxSessionIdLength],
-    ["kind", sessionUiStateLimits.maxKindLength],
-    ...timestamps,
-  ], "sessionOrigins", currentEntries("sessionOrigins"));
-  for (const key of ["pinnedFolders", "favoriteFolders"]) {
-    for (const path of assertCollection(value, key)) assertBoundedString(path, sessionUiStateLimits.maxPathLength, key);
-  }
-  for (const key of ["allowedMarkerColors", "bucketOrder"]) assertCollection(value, key);
-  if (isRecord(value.bucketLabels)) {
-    for (const label of Object.values(value.bucketLabels)) assertBoundedString(label, sessionUiStateLimits.maxBucketLabelLength, "bucketLabels");
-  }
-}
-
 function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined {
   return typeof value === "string" && markerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
@@ -201,7 +133,7 @@ function normalizeBucketLabels(value: unknown): Partial<Record<SessionMarkerColo
   const result: Partial<Record<SessionMarkerColorId, string>> = {};
   for (const [key, rawLabel] of Object.entries(value)) {
     const color = normalizeMarkerColor(key);
-    const label = normalizedBoundedString(rawLabel, sessionUiStateLimits.maxBucketLabelLength);
+    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 40) : "";
     if (color && label) result[color] = label;
   }
   return result;
@@ -228,10 +160,10 @@ function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
 
 function normalizeLaneEntry(value: unknown): SessionLaneEntry | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
   const lane = value.lane;
   if (!sessionId || (lane !== "pinned" && lane !== "parked" && lane !== "bookmarks")) return undefined;
-  const cwd = normalizedBoundedString(value.cwd, sessionUiStateLimits.maxPathLength) || undefined;
+  const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
   const parsedSince = typeof value.since === "string" ? new Date(value.since) : new Date(NaN);
   const since = Number.isNaN(parsedSince.getTime()) ? new Date().toISOString() : parsedSince.toISOString();
   return { sessionId, lane, ...(cwd ? { cwd } : {}), since };
@@ -270,13 +202,13 @@ export function migrateSessionUiState(raw: unknown): unknown {
 }
 
 function normalizePinnedFolder(value: unknown): string | undefined {
-  const cwd = normalizedBoundedString(value, sessionUiStateLimits.maxPathLength);
+  const cwd = typeof value === "string" ? value.trim() : "";
   return cwd || undefined;
 }
 
 function normalizeSessionNote(value: unknown): SessionNote | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
   const note = typeof value.note === "string" ? value.note.trim() : "";
   if (!sessionId || !note) return undefined;
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
@@ -285,7 +217,7 @@ function normalizeSessionNote(value: unknown): SessionNote | undefined {
 
 function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
   const color = normalizeMarkerColor(value.color) || (typeof value.bucket === "string" ? legacyBucketToColor[value.bucket] : undefined);
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   if (!sessionId || !color) return undefined;
@@ -294,7 +226,7 @@ function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
 
 function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
   if (!sessionId) return undefined;
   const unreadAt = typeof value.unreadAt === "string" && value.unreadAt.trim() ? value.unreadAt.trim() : new Date().toISOString();
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : unreadAt;
@@ -303,9 +235,9 @@ function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undef
 
 function normalizeSessionOrigin(value: unknown): SessionOrigin | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
-  const originSessionId = normalizedBoundedString(value.originSessionId, sessionUiStateLimits.maxSessionIdLength);
-  const kind = normalizedBoundedString(value.kind, sessionUiStateLimits.maxKindLength) || "spawn";
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const originSessionId = typeof value.originSessionId === "string" ? value.originSessionId.trim() : "";
+  const kind = typeof value.kind === "string" && value.kind.trim() ? value.kind.trim() : "spawn";
   if (!sessionId || !originSessionId || sessionId === originSessionId) return undefined;
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   return { sessionId, originSessionId, kind, updatedAt };
@@ -330,26 +262,25 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   if (typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0) state.revision = value.revision;
   if (typeof value.initialized === "boolean") state.initialized = value.initialized;
 
-  const capped = (input: unknown) => Array.isArray(input) ? input.slice(0, sessionUiStateLimits.maxEntriesPerCollection) : [];
-  if (Array.isArray(value.lanes)) state.lanes = uniqueBy(capped(value.lanes).map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
+  if (Array.isArray(value.lanes)) state.lanes = uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
 
-  const notes = capped(value.sessionNotes).map(normalizeSessionNote).filter(Boolean) as SessionNote[];
-  const migratedLaneNotes = capped(value.lanes).map(normalizeSessionNote).filter(Boolean) as SessionNote[];
+  const notes = Array.isArray(value.sessionNotes) ? value.sessionNotes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
+  const migratedLaneNotes = Array.isArray(value.lanes) ? value.lanes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
   state.sessionNotes = uniqueBy([...notes, ...migratedLaneNotes], (item) => item.sessionId);
 
   if (Array.isArray(value.pinnedFolders)) {
-    state.pinnedFolders = uniqueBy(capped(value.pinnedFolders).map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+    state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
   if (Array.isArray(value.favoriteFolders)) {
-    state.favoriteFolders = uniqueBy(capped(value.favoriteFolders).map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+    state.favoriteFolders = uniqueBy(value.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
 
   if (Array.isArray(value.sessionMarkers)) {
-    state.sessionMarkers = uniqueBy(capped(value.sessionMarkers).map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
+    state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
   }
 
   if (Array.isArray(value.sessionUnreadStates)) {
-    state.sessionUnreadStates = uniqueBy(capped(value.sessionUnreadStates).map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
+    state.sessionUnreadStates = uniqueBy(value.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
   }
 
   if (Array.isArray(value.sessionOrigins)) {
@@ -365,7 +296,6 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
 export function applySessionUiStatePatch(current: SessionUiState, patch: unknown): SessionUiState {
   if (!isRecord(patch)) return cloneState(current);
-  assertSessionUiStateBounds(patch, current);
   const next = cloneState(current);
 
   if ("lanes" in patch && Array.isArray(patch.lanes)) next.lanes = uniqueBy(patch.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
@@ -472,7 +402,7 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
   }
   async function readValidated(path: string) {
     try {
-      return validPersistedState(JSON.parse(await readUtf8FileBounded(path, sessionUiStateLimits.maxBytes)));
+      return validPersistedState(JSON.parse(await readUtf8FileBounded(path, sessionUiStateMaxBytes)));
     } catch (error) {
       if (error instanceof BoundedFileError) throw new SessionUiStateBoundsError("Stored session UI state is too large");
       throw error;
@@ -506,7 +436,7 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     // Never use backups to downgrade an unsupported future-format primary.
     if (!primaryMissing) {
       try {
-        const raw = JSON.parse(await readUtf8FileBounded(file, sessionUiStateLimits.maxBytes));
+        const raw = JSON.parse(await readUtf8FileBounded(file, sessionUiStateMaxBytes));
         if (isRecord(raw) && typeof raw.version === "number" && raw.version > 3) throw new SessionUiStateUnavailableError(`Unsupported session UI state version ${raw.version}`);
       } catch (error) { if (error instanceof SessionUiStateUnavailableError) throw error; }
     }
@@ -556,7 +486,7 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     try { validPersistedState(next); }
     catch { throw new SessionUiStatePreconditionError(400, "Invalid session UI state payload"); }
     const serialized = `${JSON.stringify(next, null, 2)}\n`;
-    if (Buffer.byteLength(serialized) > sessionUiStateLimits.maxBytes) {
+    if (Buffer.byteLength(serialized) > sessionUiStateMaxBytes) {
       throw new SessionUiStateBoundsError("Session UI state is too large");
     }
     await mkdir(dirname(file), { recursive: true });
@@ -603,7 +533,6 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
   }
 
   async function markUnread(sessionId: string, unreadAt = new Date().toISOString()) {
-    assertBoundedString(sessionId, sessionUiStateLimits.maxSessionIdLength, "sessionId");
     const id = sessionId.trim();
     if (!id) return read();
     return update((current) => {
