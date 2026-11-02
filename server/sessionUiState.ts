@@ -269,7 +269,7 @@ function normalizePinnedFolder(value: unknown): string | undefined {
 function normalizeSessionNote(value: unknown): SessionNote | undefined {
   if (!isRecord(value)) return undefined;
   const sessionId = normalizedBoundedString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
-  const note = normalizedBoundedString(value.note, sessionUiStateLimits.maxNoteLength);
+  const note = typeof value.note === "string" ? value.note.trim() : "";
   if (!sessionId || !note) return undefined;
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   return { sessionId, note, updatedAt };
