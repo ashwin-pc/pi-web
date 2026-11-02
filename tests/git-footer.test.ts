@@ -597,6 +597,32 @@ exec '${realGit}' "$@"
     }
   });
 
+  it.skipIf(process.platform === "win32")("preserves a newer concurrent manual fetch when publishing", async () => {
+    const cwd = temp();
+    gitCommand(cwd, "init", "-b", "main");
+    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
+    const old = gitCommand(cwd, "rev-parse", "HEAD");
+    gitCommand(cwd, "branch", "snapshot");
+    gitCommand(cwd, "update-ref", "refs/remotes/origin/main", old);
+    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "manual fetch newer");
+    const newer = gitCommand(cwd, "rev-parse", "HEAD");
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const bin = join(cwd, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh
+if [ "$1" = update-ref ] && [ "$2" = --no-deref ] && [ "$3" = refs/remotes/origin/main ]; then
+  '${realGit}' update-ref refs/remotes/origin/main '${newer}'
+fi
+exec '${realGit}' "$@"
+`, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      expect((await runFetchGit(["fetch", "--refmap=", "--no-write-fetch-head", "--", ".", "+refs/heads/snapshot:refs/remotes/origin/main"], cwd)).ok).toBe(false);
+    } finally { process.env.PATH = oldPath; }
+    expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/main")).toBe(newer);
+    expect(gitCommand(cwd, "for-each-ref", "refs/remotes/pi-web-fetch-")).toBe("");
+  });
+
   it.skipIf(process.platform === "win32").each(["timeout", "output"])("kills a real transport descendant on %s", async mode => {
     const cwd = temp();
     gitCommand(cwd, "init");
