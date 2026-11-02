@@ -119,9 +119,13 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
   const reserve = (map: Map<string, FetchEntry>, key: string) => {
     const existing = map.get(key);
     if (existing?.pending || (existing && existing.next > Date.now())) return;
-    // Never evict an active request or a cooldown (including failure backoff).
-    for (const [id, entry] of map) if (!entry.pending && entry.next <= Date.now()) map.delete(id);
-    if (!existing && map.size >= MAX_CACHE_ENTRIES) return;
+    // Preserve consecutive failure history across cooldown expiry. Evict only
+    // when full, and never evict active requests or unexpired cooldowns.
+    if (!existing && map.size >= MAX_CACHE_ENTRIES) {
+      const candidate = [...map].find(([, entry]) => !entry.pending && entry.next <= Date.now());
+      if (!candidate) return;
+      map.delete(candidate[0]);
+    }
     const entry = existing ?? { next: 0, failures: 0 };
     map.set(key, entry);
     return entry;
@@ -148,7 +152,7 @@ function scheduleFetch(cwd: string, branch: string, git: GitRunner, statusGit: G
         // No pull, tags, submodules, pruning, maintenance, or configured refspecs
         // targeting local branches. Only remote-tracking refs may be updated.
         const result = await git(["-c", "credential.interactive=false", "-c", "core.askPass=",
-          "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
+          "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
           "--", name, `+refs/heads/*:refs/remotes/${name}/*`], cwd);
         success = result.ok;
         if (success) cacheFor(statusGit).clear(); // Includes sibling cwd/worktree caches.

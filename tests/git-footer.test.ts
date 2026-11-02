@@ -310,6 +310,27 @@ describe("git footer real local refs", () => {
     expect(gitCommand(cwd, "rev-parse", "refs/remotes/upstream/main")).not.toBe(gitCommand(cwd, "rev-parse", "HEAD"));
   });
 
+  it("never applies configured fetch mappings to local branches", async () => {
+    const remote = temp(), cwd = temp();
+    gitCommand(remote, "init", "-b", "main");
+    gitCommand(remote, "config", "user.name", "Footer Test");
+    gitCommand(remote, "config", "user.email", "footer@example.test");
+    writeFileSync(join(remote, "base"), "base");
+    gitCommand(remote, "add", "."); gitCommand(remote, "commit", "-m", "base");
+    gitCommand(cwd, "clone", remote, ".");
+    gitCommand(cwd, "branch", "victim");
+    const original = gitCommand(cwd, "rev-parse", "victim");
+    gitCommand(cwd, "config", "remote.origin.fetch", "+refs/heads/main:refs/heads/victim");
+    writeFileSync(join(remote, "base"), "advanced");
+    gitCommand(remote, "commit", "-am", "advance");
+    const advanced = gitCommand(remote, "rev-parse", "HEAD");
+    mount(undefined, cwd);
+    await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/main")).toBe(advanced));
+    expect(gitCommand(cwd, "rev-parse", "victim")).toBe(original);
+    // Let fetch completion invalidate its cache before the next cache-only test.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
   it("uses the process-wide default cache across independent module loads", async () => {
     const cwd = temp();
     gitCommand(cwd, "init", "-b", "first");
@@ -357,7 +378,7 @@ describe("automatic upstream fetch", () => {
     const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
     expect(calls()).toHaveLength(1);
     expect(calls()[0][0]).toEqual(["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
-      "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
+      "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
       "+refs/heads/*:refs/remotes/origin/*"]);
     await vi.advanceTimersByTimeAsync(59_999);
     expect(calls()).toHaveLength(1);
@@ -381,6 +402,22 @@ describe("automatic upstream fetch", () => {
     expect(runner.mock.calls.length).toBeGreaterThan(30);
     await vi.advanceTimersByTimeAsync(2_501);
     expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(2);
+  });
+  it("retains failure backoff when another repository reserves expired entries", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async (args: string[], cwd: string) => args[0] === "rev-parse" ? ok(`${cwd}/.git`)
+      : args[0] === "for-each-ref" ? ok("origin") : { ok: false, output: "" });
+    const first = setup(fetch, "/a"); await flush(); first.footer.stop();
+    await vi.advanceTimersByTimeAsync(120_000);
+    const second = setup(fetch, "/b"); await flush(); second.footer.stop();
+    const retry = setup(fetch, "/a"); await flush();
+    const calls = () => fetch.mock.calls.filter(([args, cwd]) => args.includes("fetch") && cwd === "/a");
+    expect(calls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(calls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(calls()).toHaveLength(3);
+    retry.footer.stop();
   });
   it("caps discovery concurrency across many repositories without blocking initialization", async () => {
     vi.useFakeTimers();
