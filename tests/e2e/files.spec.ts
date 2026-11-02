@@ -243,12 +243,13 @@ test("large artifact preview renders interactive HTML, Markdown, and video", asy
     };
   });
   const appOrigin = new URL(page.url()).origin;
+  const artifactBase = `${appOrigin}/api/session-artifacts/mock-current/`;
   expect(thumbnailContainment).toEqual({
     tag: "META",
     httpEquiv: "Content-Security-Policy",
-    content: previewContentSecurityPolicy(["https://markers.example.test"], appOrigin),
+    content: previewContentSecurityPolicy(["https://markers.example.test"], artifactBase),
     secondTag: "BASE",
-    baseHref: `${appOrigin}/api/session-artifacts/mock-current/`,
+    baseHref: artifactBase,
   });
   const thumbnailGeometry = await thumbnail.evaluate((iframe) => {
     const visual = iframe.closest<HTMLElement>(".artifactGalleryCardVisual")!.getBoundingClientRect();

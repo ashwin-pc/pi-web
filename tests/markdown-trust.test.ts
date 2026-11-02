@@ -484,7 +484,7 @@ describe("preview containment policy", () => {
     expect(approved).not.toContain("*");
   });
 
-  it("allows only a validated artifact base origin for relative preview resources", () => {
+  it("allows only a validated artifact base directory for relative preview resources", () => {
     expect(artifactPreviewBaseUrl(
       "/api/session-artifacts/s1/reports/index.html",
       "https://pi.example.test",
@@ -493,10 +493,15 @@ describe("preview containment policy", () => {
       "https://remote.example.test/api/artifacts/index.html",
       "https://pi.example.test",
     )).toBeUndefined();
-    const policy = previewContentSecurityPolicy([], "https://pi.example.test");
-    expect(policy).toContain("script-src 'unsafe-inline' 'unsafe-eval' https://pi.example.test");
-    expect(policy).toContain("style-src 'unsafe-inline' https://pi.example.test");
-    expect(policy).toContain("img-src data: blob: https://pi.example.test");
-    expect(policy).toContain("base-uri https://pi.example.test");
+    const artifactBase = "https://pi.example.test/api/session-artifacts/s1/reports/";
+    const policy = previewContentSecurityPolicy([], artifactBase);
+    expect(policy).toContain(`script-src 'unsafe-inline' 'unsafe-eval' ${artifactBase}`);
+    expect(policy).toContain(`style-src 'unsafe-inline' ${artifactBase}`);
+    expect(policy).toContain(`img-src data: blob: ${artifactBase}`);
+    expect(policy).toContain(`font-src data: ${artifactBase}`);
+    expect(policy).toContain(`media-src data: blob: ${artifactBase}`);
+    expect(policy).toContain(`frame-src ${artifactBase}`);
+    expect(policy).toContain(`connect-src ${artifactBase}`);
+    expect(policy).toContain(`base-uri ${artifactBase}`);
   });
 });

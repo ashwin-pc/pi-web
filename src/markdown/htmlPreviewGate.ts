@@ -27,14 +27,14 @@ const baseDirectives = [
 
 export function previewContentSecurityPolicy(
   allowedOrigins: Iterable<string> = [],
-  trustedBaseOrigin?: string,
+  trustedBaseUrl?: string,
 ) {
   const allowed = new Set(allowedOrigins);
-  if (trustedBaseOrigin) allowed.add(trustedBaseOrigin);
+  if (trustedBaseUrl) allowed.add(trustedBaseUrl);
   const origins = [...allowed].sort().join(" ");
   return baseDirectives.map((directive) => {
     const name = directive.split(" ", 1)[0];
-    if (name === "base-uri") return trustedBaseOrigin ? `base-uri ${trustedBaseOrigin}` : directive;
+    if (name === "base-uri") return trustedBaseUrl ? `base-uri ${trustedBaseUrl}` : directive;
     if (!origins) return directive;
     if (name === "connect-src" || name === "frame-src") return `${name} ${origins}`;
     return ["img-src", "script-src", "style-src", "font-src", "media-src"].includes(name)
@@ -75,7 +75,7 @@ export function containedPreviewDocument(
   for (const existing of documentNode.head.querySelectorAll("base")) existing.remove();
   const policy = documentNode.createElement("meta");
   policy.httpEquiv = "Content-Security-Policy";
-  policy.content = previewContentSecurityPolicy(allowedOrigins, trustedBase?.origin);
+  policy.content = previewContentSecurityPolicy(allowedOrigins, trustedBase?.href);
   documentNode.head.prepend(policy);
   let insertionPoint: HTMLElement = policy;
   if (trustedBase) {
