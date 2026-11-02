@@ -1913,13 +1913,14 @@ test.describe("image rendering", () => {
     await expect.poll(() => requested.length).toBe(4);
 
     const queried = "/api/artifacts/nested/report%20one.md?sessionId=query-producer";
-    await page.route(/\/api\/artifacts\/nested\/report%20one\.md\?sessionId=query-producer$/, (route) => {
+    const normalized = "/api/session-artifacts/query-producer/nested/report%20one.md";
+    await page.route(/\/api\/session-artifacts\/query-producer\/nested\/report%20one\.md$/, (route) => {
       requested.push(route.request().url());
       return route.fulfill({ contentType: "text/markdown", body: "# Query-scoped report" });
     });
     await page.goto(`/artifact-preview.html?src=${encodeURIComponent(queried)}`);
     await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Query-scoped report");
-    await expect(page.locator("#artifactPreviewRaw")).toHaveAttribute("href", queried);
+    await expect(page.locator("#artifactPreviewRaw")).toHaveAttribute("href", normalized);
   });
 
   test("renders html-preview fences inside inline markdown artifact cards", async ({ page }) => {
