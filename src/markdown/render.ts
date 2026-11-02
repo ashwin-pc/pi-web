@@ -457,7 +457,10 @@ function enhanceCodeBlocks(root: ParentNode) {
 function enhanceImages(root: ParentNode, sessionId = artifactActionSessionId()) {
   for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) {
     const src = img.getAttribute("src");
-    if (src) img.src = scopeArtifactUrl(src, sessionId);
+    if (src) {
+      const scoped = scopeArtifactUrl(src, sessionId);
+      if (scoped !== src) img.src = scoped;
+    }
     attachImageActions(img);
   }
 }
@@ -661,6 +664,7 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
     link.href = scopeArtifactUrl(link.getAttribute("href") || "", sessionId);
     const url = new URL(link.href, window.location.origin);
     const artifactUrl = `${url.pathname}${url.search}${url.hash}`;
+    const artifactPath = url.pathname;
     const builtInKind = artifactKind(url.pathname);
     const fileName = artifactName(url.pathname);
     const customPreview = builtInKind ? undefined : matchingArtifactPreview(fileName, "file");
@@ -682,7 +686,7 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
     open.title = "Open in Artifacts panel";
     open.setAttribute("aria-label", open.title);
     open.append(createElement(PanelRightOpen, { "aria-hidden": "true" }));
-    open.addEventListener("click", () => openArtifactInPanel(artifactUrl, open));
+    open.addEventListener("click", () => openArtifactInPanel(artifactPath, open));
     const download = document.createElement("button");
     download.type = "button";
     download.className = "artifactPreviewAction artifactPreviewAction--icon";
@@ -716,9 +720,9 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
     attachArtifactDisclosure(card, header, content);
     const refreshOverflow = attachArtifactOverflowControl(card, content);
     card.dataset.artifactName = fileName;
-    card.dataset.artifactPath = artifactUrl;
+    card.dataset.artifactPath = artifactPath;
     card.dataset.artifactKind = kind;
-    renderArtifactActions(card, fileName, artifactUrl, kind);
+    renderArtifactActions(card, fileName, artifactPath, kind);
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);
@@ -728,7 +732,7 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
       // positioning context as built-in HTML so the interaction shield covers
       // only the iframe instead of resolving against the larger artifact card.
       card.classList.add("artifactPreview--html");
-      void mountArtifactPreview(content, { name: fileName, path: artifactUrl, kind: "file" }, {
+      void mountArtifactPreview(content, { name: fileName, path: artifactPath, kind: "file" }, {
         title: `Interactive preview of ${title.textContent}`,
         className: "artifactPreviewFrame",
         isCurrent: () => card.isConnected,

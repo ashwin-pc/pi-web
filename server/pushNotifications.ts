@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import webPush, { type PushSubscription } from "web-push";
 
@@ -130,25 +130,11 @@ export function createPushNotificationService(
   }
 
   async function readState() {
-    return normalizeState(JSON.parse(await readFile(file, "utf-8")) as Partial<PushState>);
-  }
-
-  async function initializeState() {
-    const next: PushState = { version: 1, vapid: webPush.generateVAPIDKeys(), subscriptions: [] };
-    await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
-      await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-      await link(tmp, file);
-      cached = next;
-      return next;
+      return normalizeState(JSON.parse(await readFile(file, "utf-8")) as Partial<PushState>);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      return readState();
-    } finally {
-      await unlink(tmp).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+      throw new Error(`Invalid pi-web push state at ${file}; fix or delete it to re-enable notifications`);
     }
   }
 
@@ -167,7 +153,7 @@ export function createPushNotificationService(
           loaded = await readState();
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          loaded = await initializeState();
+          loaded = await persist({ version: 1, vapid: webPush.generateVAPIDKeys(), subscriptions: [] });
         }
         cached = loaded;
         webPush.setVapidDetails(subject, loaded.vapid.publicKey, loaded.vapid.privateKey);
@@ -179,16 +165,6 @@ export function createPushNotificationService(
     return loading;
   }
 
-  async function mutationState() {
-    const initialized = await state();
-    try {
-      return await readState();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return initialized;
-    }
-  }
-
   async function publicKey() {
     return (await state()).vapid.publicKey;
   }
@@ -198,7 +174,7 @@ export function createPushNotificationService(
     const subscription = normalizedSubscription(value);
     if (!installationId || !subscription) throw new Error("A valid installationId and supported push subscription are required");
     return serialize(async () => {
-      const current = await mutationState();
+      const current = await state();
       const now = new Date().toISOString();
       const id = subscriptionId(subscription.endpoint);
       const existing = current.subscriptions.find((item) => item.id === id);
@@ -226,7 +202,7 @@ export function createPushNotificationService(
     const endpoint = typeof endpointValue === "string" ? endpointValue.trim() : "";
     if (!installationId && !endpoint) throw new Error("installationId or endpoint is required");
     return serialize(async () => {
-      const current = await mutationState();
+      const current = await state();
       const subscriptions = current.subscriptions.filter((item) => {
         if (installationId && item.installationId !== installationId) return true;
         if (endpoint && item.subscription.endpoint !== endpoint) return true;
@@ -252,7 +228,7 @@ export function createPushNotificationService(
       });
       if (expired.size > 0) {
         await serialize(async () => {
-          const latest = await mutationState();
+          const latest = await state();
           const subscriptions = latest.subscriptions.filter((item) => !expired.has(item.id));
           if (subscriptions.length !== latest.subscriptions.length) await persist({ ...latest, subscriptions });
         });
