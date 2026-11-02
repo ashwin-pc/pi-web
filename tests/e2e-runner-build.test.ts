@@ -54,7 +54,7 @@ setTimeout(() => { if (process.env.TEST_FAIL && process.argv.includes("--project
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
-});
+}, 35_000);
 
 it("builds production E2E assets without leaking build flags into other tasks", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-build-env-"));

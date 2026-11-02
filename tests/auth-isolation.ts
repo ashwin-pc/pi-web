@@ -18,5 +18,7 @@ export function isolatedAuthEnv(): NodeJS.ProcessEnv {
     ) env[key] = "";
   }
   const home = mkdtempSync(join(tmpdir(), "pi-web-test-auth-"));
-  return { ...env, PI_WEB_HOME: home, PI_WEB_AUTH_STORE: join(home, "auth.json"), PI_WEB_AUTH_MODE: "none" };
+  // Production is the fixture default, including direct Vitest runs from a dev
+  // harness. Development-mode fixtures can explicitly override this afterward.
+  return { ...env, PI_WEB_DEV: "0", PI_WEB_HOME: home, PI_WEB_AUTH_STORE: join(home, "auth.json"), PI_WEB_AUTH_MODE: "none" };
 }
