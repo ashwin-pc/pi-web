@@ -72,6 +72,8 @@ function chunkedJsonRequest(port: number, path: string, method: string, body: un
       headers: {
         "content-type": "application/json",
         "transfer-encoding": "chunked",
+        origin: `http://127.0.0.1:${port}`,
+        "x-pi-web-client-id": "settings-endpoints-test",
       },
     }, (res) => {
       const chunks: Buffer[] = [];

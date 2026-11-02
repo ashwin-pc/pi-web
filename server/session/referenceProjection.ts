@@ -64,6 +64,7 @@ export function projectSessionReferenceRecord(entry: unknown, compact: boolean):
     !record.message || typeof record.message !== "object") return undefined;
   const message = record.message as Record<string, unknown>;
   const role = typeof message.role === "string" ? message.role : "unknown";
+  if (role === "bashExecution" && message.excludeFromContext === true) return undefined;
   const text = textForTail(referenceTextFromContent(message.content), role === "assistant" ? 700 : role === "toolResult" ? 200 : 400, compact);
   if (role === "assistant") {
     const lines = text.text ? [`[assistant] ${text.text}`] : [];
