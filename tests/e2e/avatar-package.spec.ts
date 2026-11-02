@@ -24,6 +24,13 @@ test.beforeEach(async ({ page }) => {
   await page.request.delete(`/api/identity/avatar?revision=${revision}`);
 });
 
+test("identity Settings disclose the cumulative APNG decoded limit", async ({ page }) => {
+  await openIdentity(page);
+  const help = page.locator("#identityPackageUpload + .settingsHint");
+  await expect(help).toContainText("Animation limits are separate ceilings, so not all combinations are accepted.");
+  await expect(help).toContainText("At most 32 MiB of cumulative decoded frames are accepted, including a separate default poster; this permits at most 31 full-size 512×512 RGBA frames.");
+});
+
 test("portable package preserves drafts, separate previews and static export/import roundtrip", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "Portable avatar lifecycle");
   const value = await avatarPackage();
