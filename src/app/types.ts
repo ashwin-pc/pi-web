@@ -578,7 +578,6 @@ export type SessionViewState = SessionRecord & {
 };
 
 export type AppState = {
-  token: string;
   currentModelKey: string;
   currentModelDisplay: string;
   currentThinkingLevel: string;
@@ -630,22 +629,11 @@ export const defaultPiWebSettings: PiWebSettings = {
   defaults: {},
 };
 
-const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
 const expandedWorkerBranchesStorageKey = "pi-web-expanded-worker-branches";
 const sessionIdUrlParam = "sessionId";
 const sessionIdHistoryStateKey = "piWebSessionId";
 const sessionScopedHistoryStateKeys = ["piWebArtifactView", "piWebWorkspaceView"] as const;
-
-function consumeUrlToken() {
-  const urlToken = new URLSearchParams(location.search).get("token");
-  if (!urlToken) return;
-
-  localStorage.setItem(tokenStorageKey, urlToken);
-  const url = new URL(location.href);
-  url.searchParams.delete("token");
-  history.replaceState(null, "", url.toString());
-}
 
 export type SessionCitation = SessionReference;
 
@@ -734,10 +722,7 @@ export function persistExpandedWorkerBranches(sessionIds: Set<string>) {
 }
 
 export function createAppState(): AppState {
-  consumeUrlToken();
-
   return {
-    token: localStorage.getItem(tokenStorageKey) || "",
     currentModelKey: "",
     currentModelDisplay: "",
     currentThinkingLevel: "off",
@@ -774,12 +759,4 @@ export function createAppState(): AppState {
     settings: defaultPiWebSettings,
     webSettingsSchemas: [],
   };
-}
-
-export function saveToken(token: string) {
-  localStorage.setItem(tokenStorageKey, token);
-}
-
-export function clearToken() {
-  localStorage.removeItem(tokenStorageKey);
 }

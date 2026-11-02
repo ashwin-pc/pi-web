@@ -1,14 +1,13 @@
 import type { ApiClient } from "../app/api.js";
-import { clearToken } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 import { confirmSecurityAction } from "./securityDialog.js";
 
-export type AuthMode = "none" | "legacy" | "passkey" | "external";
+export type AuthMode = "none" | "passkey" | "external";
 type Identity = { id: string; displayName?: string };
 type SecurityState = {
   mode: AuthMode;
   policy?: "open" | "authenticated";
-  methods?: Array<"passkey" | "password" | "legacy" | "external">;
+  methods?: Array<"passkey" | "password" | "external">;
   passwordConfigured?: boolean;
   verifiedMethods?: string[];
   externalAvailable?: boolean;
@@ -78,8 +77,6 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     setStatus(message, error);
   }
   function signedOut() {
-    // Explicit sign-in, never the legacy overlay or an ambient proxy exchange.
-    clearToken();
     location.assign("/api/auth/login");
   }
   const confirmAction = (title: string, detail: string, confirmLabel: string, tokens = false) =>
@@ -156,13 +153,13 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
   }
   async function changeMethod(method: string, enabled: Set<string>) {
     const checked = enabled.has(method);
-    if (checked && !await confirmAction(method === "legacy" ? "Retire legacy login?" : `Disable ${method} sign-in?`, "A remaining enabled method must have a verified login. Existing browser sessions remain until revoked.", method === "legacy" ? "Retire legacy login" : "Disable sign-in")) return;
+    if (checked && !await confirmAction(`Disable ${method} sign-in?`, "A remaining enabled method must have a verified login. Existing browser sessions remain until revoked.", "Disable sign-in")) return;
     const next = new Set(enabled);
     if (checked) next.delete(method);
     else next.add(method);
     await request("/api/auth/methods", { method: "PUT", body: JSON.stringify({ methods: [...next] }) });
     await refresh();
-    report(`${method === "legacy" && checked ? "Legacy login retired" : `${method} sign-in ${checked ? "disabled" : "enabled"}`}. Existing sessions remain until revoked.`);
+    report(`${method} sign-in ${checked ? "disabled" : "enabled"}. Existing sessions remain until revoked.`);
   }
   function date(value: number) {
     return new Date(value).toLocaleString();
@@ -180,8 +177,6 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     panels.clear();
     container.classList.add("securitySettings");
     const modeHints: Record<AuthMode, string> = {
-      legacy:
-        "Legacy token login is deprecated. Add and verify a replacement below before retiring it.",
       passkey: "Keep a backup credential and terminal recovery access.",
       external:
         "Only trust a proxy that strips caller-supplied identity headers. Direct access to the backend must be blocked.",
@@ -204,15 +199,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       reauth.textContent =
         "Sign in again for security changes (valid five minutes)";
       mode.append(reauth);
-      const authorization = api.headers().Authorization || api.headers().authorization;
-      if (state.methods?.includes("legacy") && authorization?.startsWith("Bearer "))
-        mode.append(button("Re-authenticate with saved token", async () => {
-          await request("/api/auth/legacy/login", { method: "POST", body: JSON.stringify({ password: authorization.slice(7) }) });
-          await refresh();
-          report("Credential verified; security changes available for five minutes");
-        }));
     }
-    if (state.methods && !state.methods.includes("legacy")) clearToken();
     container.append(mode);
 
     const enabled = new Set(
@@ -221,12 +208,11 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     if (state.policy === "authenticated") {
       const methods = section(
         "Sign-in methods",
-        "Legacy is deprecated. Enroll and test a replacement in another browser before disabling it. Existing sessions remain valid until revoked.",
+        "Keep at least one verified sign-in method enabled. Existing sessions remain valid until revoked.",
       );
       for (const method of [
         "passkey",
         "password",
-        "legacy",
         "external",
       ] as const) {
         const checked = enabled.has(method);
@@ -325,7 +311,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         devices.append(
           row(
             deviceName(session.device),
-            `${session.current ? "This device · " : ""}${session.method || "legacy"} · Last seen ${date(session.lastSeenAt)}`,
+            `${session.current ? "This device · " : ""}${session.method || "unknown"} · Last seen ${date(session.lastSeenAt)}`,
             button(
               "Sign out",
               async () => {
@@ -362,7 +348,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         "Password",
         state.passwordConfigured
           ? "Changing it revokes every other session and pending device link. API tokens are revoked by default; retaining them preserves their access."
-          : "Set a password before retiring the legacy method.",
+          : "Set a password for an additional sign-in option.",
       );
       const value = document.createElement("input");
       value.type = "password";
@@ -463,7 +449,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     if (state.policy === "authenticated") {
       const grants = section(
         "Add device",
-        "Create a cancellable, single-use link valid for two minutes. It never shares the permanent server token.",
+        "Create a cancellable, single-use link valid for two minutes. It never shares your sign-in credentials.",
       );
       const output = document.createElement("div");
       output.className = "deviceGrantOutput";
@@ -583,10 +569,6 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         row("Passkeys", `${state.passkeys.length} ${state.passkeys.length === 1 ? "key" : "keys"} · ${enabled.has("passkey") ? "Enabled" : "Disabled"}`, openButton("Manage", "Passkeys")),
         row("Password", state.passwordConfigured ? `${enabled.has("password") ? "Enabled" : "Disabled"} · ${state.verifiedMethods?.includes("password") ? "Verified login" : "Not yet verified"}` : "Not configured", openButton(state.passwordConfigured ? "Change" : "Set up", "Password")),
       );
-      if (enabled.has("legacy")) {
-        const replacementVerified = state.verifiedMethods?.some(method => method !== "legacy" && enabled.has(method));
-        card.append(row("Legacy token", replacementVerified ? "Replacement verified · Ready to retire" : "Deprecated · Verify a replacement before retiring", button("Retire", () => changeMethod("legacy", enabled))));
-      }
       if (enabled.has("external")) card.append(row("Trusted proxy", "External sign-in enabled", openButton("Manage", "Sign-in methods")));
       methods.append(card);
     }
@@ -622,7 +604,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       hint.textContent = "Includes this browser. You’ll need to sign in again.";
       safety.append(revoke, hint);
     }
-    if (panels.has("Sign-in methods")) safety.append(openButton("Sign-in options & legacy retirement", "Sign-in methods"));
+    if (panels.has("Sign-in methods")) safety.append(openButton("Sign-in options", "Sign-in methods"));
     safety.append(openButton("Authentication policy & reauthentication", "Authentication policy"));
     const reauth = document.createElement("a");
     reauth.href = "/api/auth/login";

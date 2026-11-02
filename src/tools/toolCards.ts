@@ -7,6 +7,7 @@ import type { ApiHeaders } from "../app/api.js";
 import { isCompactDensity } from "../app/appearance.js";
 import { activityCardVisibilityRestoredEvent, setActivityCardMetadata } from "../messages/activitySummary.js";
 import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
+import { fetchSameOriginAttachmentImage } from "../messages/attachmentImageFetch.js";
 
 export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
 
@@ -331,6 +332,10 @@ export function textFromToolResult(result: unknown): string {
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
 
+function isExplicitAbsoluteUrl(url: string) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(url);
+}
+
 export function collectToolImages(result: unknown): ToolImage[] {
   result = parseJsonLikeResult(result);
   const images: ToolImage[] = [];
@@ -348,7 +353,7 @@ export function collectToolImages(result: unknown): ToolImage[] {
       const data = typeof obj.data === "string" ? obj.data : typeof source?.data === "string" ? source.data : undefined;
       const url = typeof obj.imageUrl === "string" ? obj.imageUrl : typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
-      else if (url) images.push({ src: url, alt, needsAuth: url.startsWith("/") });
+      else if (url) images.push({ src: url, alt, needsAuth: !isExplicitAbsoluteUrl(url) });
       else if (typeof obj.path === "string") {
         const marker = "/.pi/web/artifacts/";
         const normalized = obj.path.replaceAll("\\", "/");
@@ -357,7 +362,7 @@ export function collectToolImages(result: unknown): ToolImage[] {
       }
     } else if (obj.type === "image_url" && obj.image_url && typeof obj.image_url === "object") {
       const imageUrl = obj.image_url as Record<string, unknown>;
-      if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: imageUrl.url.startsWith("/") });
+      if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: !isExplicitAbsoluteUrl(imageUrl.url) });
     }
     visit(obj.content);
     visit(obj.raw);
@@ -375,8 +380,9 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
   for (const image of images) {
     const img = document.createElement("img");
     img.alt = image.alt;
-    if (image.needsAuth && apiHeaders) {
-      fetch(image.src, { headers: apiHeaders() })
+    const request = apiHeaders ? fetchSameOriginAttachmentImage(image.src, apiHeaders) : undefined;
+    if (request) {
+      void request
         .then((res) => res.ok ? res.blob() : Promise.reject(new Error(res.statusText)))
         .then((blob) => {
           const objectUrl = URL.createObjectURL(blob);
@@ -384,7 +390,8 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
           img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         })
         .catch(() => { img.alt = `${image.alt} (failed to load)`; });
-    } else img.src = image.src;
+    } else if (image.needsAuth && apiHeaders) img.alt = `${image.alt} (failed to load)`;
+    else img.src = image.src;
     wrap.append(img);
   }
   card.append(wrap);
