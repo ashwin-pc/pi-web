@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyMarkdownImageSource, enhanceRemoteMarkdownImages, remoteMarkdownImagePlaceholder } from "../src/markdown/imageTrust.js";
 import { parsePanelDeepLink, setPanelDeepLinkDescriptors, validatedPanelDeepLink } from "../src/messages/panelDeepLinks.js";
-import { previewContentSecurityPolicy } from "../src/markdown/htmlPreviewGate.js";
+import { artifactPreviewBaseUrl, previewContentSecurityPolicy } from "../src/markdown/htmlPreviewGate.js";
 import { applyContentPolicySettings, blockContentHost, decideContent, registerContentPolicy } from "../src/security/contentPolicy.js";
 import { normalizeRemoteContentHost } from "../server/shared/remoteContentHosts.js";
 
@@ -118,6 +118,7 @@ describe("markdown image trust policy", () => {
       configurable: true,
       value: {
         createElement: (tag: string) => new FakeElement(tag),
+        querySelectorAll: () => [],
         addEventListener: (type: string, listener: () => void) => {
           const listeners = documentListeners.get(type) || new Set();
           listeners.add(listener);
@@ -481,5 +482,21 @@ describe("preview containment policy", () => {
     expect(approved).toContain("media-src data: blob: https://cdn.example:8443");
     expect(approved).toContain("frame-src https://cdn.example:8443");
     expect(approved).not.toContain("*");
+  });
+
+  it("allows only a validated artifact base origin for relative preview resources", () => {
+    expect(artifactPreviewBaseUrl(
+      "/api/session-artifacts/s1/reports/index.html",
+      "https://pi.example.test",
+    )).toBe("https://pi.example.test/api/session-artifacts/s1/reports/");
+    expect(artifactPreviewBaseUrl(
+      "https://remote.example.test/api/artifacts/index.html",
+      "https://pi.example.test",
+    )).toBeUndefined();
+    const policy = previewContentSecurityPolicy([], "https://pi.example.test");
+    expect(policy).toContain("script-src 'unsafe-inline' 'unsafe-eval' https://pi.example.test");
+    expect(policy).toContain("style-src 'unsafe-inline' https://pi.example.test");
+    expect(policy).toContain("img-src data: blob: https://pi.example.test");
+    expect(policy).toContain("base-uri https://pi.example.test");
   });
 });

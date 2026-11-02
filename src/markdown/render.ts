@@ -4,7 +4,7 @@ import { Check, Copy, createElement, Download, MessageCircle, PanelRightOpen } f
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
-import { createHtmlPreviewGate } from "./htmlPreviewGate.js";
+import { artifactPreviewBaseUrl, createHtmlPreviewGate } from "./htmlPreviewGate.js";
 import {
   classifyMarkdownImageSource,
   enhanceRemoteMarkdownImages,
@@ -776,6 +776,7 @@ function enhanceArtifactLinks(root: ParentNode) {
             frameClassName: "htmlPreviewFrame artifactPreviewFrame",
             frameTitle: `Preview of ${title.textContent}`,
             from: { sessionId: artifactActionSessionId(), role: "assistant" },
+            artifactBaseUrl: artifactPreviewBaseUrl(url.pathname),
           });
           content.replaceChildren(gate);
           attachArtifactInteractionShield(card, content, title.textContent || fileName);

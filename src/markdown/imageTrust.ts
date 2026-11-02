@@ -3,6 +3,9 @@ import { alwaysAllowHost, blockContentHost, decideContent, type ContentResource,
 
 const inlineRasterImage = /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i;
 const unsafeUrlSyntax = /[\u0000-\u001F\u007F\\]/;
+const livePlaceholderEvaluators = new WeakMap<HTMLElement, () => void>();
+const linkedButtonContainers = new WeakSet<HTMLElement>();
+let policyListenerDocument: Document | undefined;
 
 export type MarkdownImageSource =
   | { kind: "automatic"; src: string }
@@ -42,6 +45,8 @@ function createImage(placeholder: HTMLElement, source: Extract<MarkdownImageSour
 }
 
 function suppressLinkedButtonActivation(container: HTMLElement) {
+  if (linkedButtonContainers.has(container)) return;
+  linkedButtonContainers.add(container);
   container.addEventListener("click", (event) => {
     if (!(event.target instanceof Element) || !event.target.closest("button")) return;
     event.preventDefault();
@@ -87,6 +92,22 @@ function warnedImage(
   enhanceImage(image);
 }
 
+function stopTrackingPlaceholder(placeholder: HTMLElement) {
+  livePlaceholderEvaluators.delete(placeholder);
+}
+
+function trackPlaceholder(placeholder: HTMLElement, evaluate: () => void) {
+  livePlaceholderEvaluators.set(placeholder, evaluate);
+  if (policyListenerDocument === document) return;
+  policyListenerDocument = document;
+  const owner = document;
+  owner.addEventListener("pi-web-content-policy-changed", () => {
+    for (const live of owner.querySelectorAll<HTMLElement>(".remoteMarkdownImage[data-remote-image-enhanced]")) {
+      if (live.isConnected) livePlaceholderEvaluators.get(live)?.();
+    }
+  });
+}
+
 export function enhanceRemoteMarkdownImages(
   root: ParentNode,
   enhanceImage: (image: HTMLImageElement) => void,
@@ -103,11 +124,11 @@ export function enhanceRemoteMarkdownImages(
     const resource: ContentResource = { kind: "image", url: checked.src, from };
     const evaluate = () => void decideContent(resource).then((verdict) => {
       if (!placeholder.isConnected) {
-        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        stopTrackingPlaceholder(placeholder);
         return;
       }
       const show = () => {
-        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        stopTrackingPlaceholder(placeholder);
         const image = createImage(placeholder, checked);
         placeholder.replaceWith(image);
         enhanceImage(image);
@@ -117,12 +138,12 @@ export function enhanceRemoteMarkdownImages(
         return;
       }
       if (verdict.action === "warn") {
-        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        stopTrackingPlaceholder(placeholder);
         warnedImage(placeholder, checked, verdict, enhanceImage);
         return;
       }
       if (verdict.action === "block") {
-        document.removeEventListener("pi-web-content-policy-changed", evaluate);
+        stopTrackingPlaceholder(placeholder);
         placeholder.replaceWith(blockedImageNotice(checked.host));
         return;
       }
@@ -152,7 +173,7 @@ export function enhanceRemoteMarkdownImages(
       });
       placeholder.replaceChildren(detail, load, persist);
     });
-    document.addEventListener("pi-web-content-policy-changed", evaluate);
+    trackPlaceholder(placeholder, evaluate);
     evaluate();
   }
 }

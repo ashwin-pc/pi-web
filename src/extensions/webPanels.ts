@@ -19,7 +19,6 @@ type WebPanelView = {
 export type WebPanelsController = {
   setPanels(value: unknown, sessionId: string): void;
   entries(): WebPanelEntry[];
-  has(key: string): boolean;
   open(key: string, initialEvent?: PiWebPanelEvent): void;
   update(key: string): void;
   isOpen(): boolean;
@@ -240,7 +239,6 @@ export function createWebPanels(options: {
       }
     },
     entries: () => [...panels],
-    has: (key) => panels.some((entry) => entry.key === key),
     open,
     update: (key) => {
       if (key !== activeKey || !panelHandle.isOpen()) return;

@@ -8,6 +8,7 @@ export type HtmlPreviewGateOptions = {
   frameTitle?: string;
   from?: { sessionId: string; role: Role };
   inertFrame?: boolean;
+  artifactBaseUrl?: string;
   onMount?: (frame: HTMLIFrameElement) => void;
 };
 
@@ -24,12 +25,17 @@ const baseDirectives = [
   "base-uri 'none'",
 ];
 
-export function previewContentSecurityPolicy(allowedOrigins: Iterable<string> = []) {
+export function previewContentSecurityPolicy(
+  allowedOrigins: Iterable<string> = [],
+  trustedBaseOrigin?: string,
+) {
   const allowed = new Set(allowedOrigins);
-  if (!allowed.size) return baseDirectives.join("; ");
+  if (trustedBaseOrigin) allowed.add(trustedBaseOrigin);
   const origins = [...allowed].sort().join(" ");
   return baseDirectives.map((directive) => {
     const name = directive.split(" ", 1)[0];
+    if (name === "base-uri") return trustedBaseOrigin ? `base-uri ${trustedBaseOrigin}` : directive;
+    if (!origins) return directive;
     if (name === "connect-src" || name === "frame-src") return `${name} ${origins}`;
     return ["img-src", "script-src", "style-src", "font-src", "media-src"].includes(name)
       ? `${directive} ${origins}` : directive;
@@ -40,15 +46,47 @@ function reporter() {
   return `(()=>{const send=value=>parent.postMessage(value,'*');const report=()=>{const b=document.body,e=document.documentElement;if(!b)return;const cs=getComputedStyle(b);let right=0,bottom=0,measured=false;for(const n of b.childNodes){let r;if(n.nodeType===1)r=n.getBoundingClientRect();else if(n.nodeType===3&&n.textContent.trim()){const range=document.createRange();range.selectNodeContents(n);r=range.getBoundingClientRect()}if(!r)continue;measured=true;right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}send({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width:measured?Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0')):e.clientWidth})};addEventListener('securitypolicyviolation',e=>{document.documentElement.dataset.piWebBlockedUri=e.blockedURI;send({type:'pi-web-preview-policy',blockedURI:e.blockedURI})});addEventListener('click',e=>{const a=e.target&&e.target.closest&&e.target.closest('a[href]');if(a){e.preventDefault();send({type:'pi-web-preview-navigation',url:a.href})}},true);addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()`;
 }
 
-export function containedPreviewDocument(source: string, allowedOrigins: Iterable<string> = []) {
+export function artifactPreviewBaseUrl(value: string, appOrigin = window.location.origin) {
+  try {
+    const url = new URL(value, appOrigin);
+    if (url.origin !== appOrigin || !/^\/api\/(?:artifacts|session-artifacts)\//.test(url.pathname)) return;
+    url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1);
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch {
+    return;
+  }
+}
+
+function validatedArtifactBaseUrl(value: string | undefined) {
+  if (!value) return;
+  const base = artifactPreviewBaseUrl(value);
+  return base === value ? new URL(base) : undefined;
+}
+
+export function containedPreviewDocument(
+  source: string,
+  allowedOrigins: Iterable<string> = [],
+  artifactBaseUrl?: string,
+) {
   const documentNode = new DOMParser().parseFromString(source, "text/html");
+  const trustedBase = validatedArtifactBaseUrl(artifactBaseUrl);
+  for (const existing of documentNode.head.querySelectorAll("base")) existing.remove();
   const policy = documentNode.createElement("meta");
   policy.httpEquiv = "Content-Security-Policy";
-  policy.content = previewContentSecurityPolicy(allowedOrigins);
+  policy.content = previewContentSecurityPolicy(allowedOrigins, trustedBase?.origin);
   documentNode.head.prepend(policy);
+  let insertionPoint: HTMLElement = policy;
+  if (trustedBase) {
+    const base = documentNode.createElement("base");
+    base.href = trustedBase.href;
+    policy.after(base);
+    insertionPoint = base;
+  }
   const reportScript = documentNode.createElement("script");
   reportScript.textContent = reporter();
-  policy.after(reportScript);
+  insertionPoint.after(reportScript);
   return `<!doctype html>${documentNode.documentElement.outerHTML}`;
 }
 
@@ -98,7 +136,7 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
       loads += 1;
       if (next === frame && loads > 1) showNavigation();
     });
-    next.srcdoc = containedPreviewDocument(options.source, approvedOrigins);
+    next.srcdoc = containedPreviewDocument(options.source, approvedOrigins, options.artifactBaseUrl);
     return next;
   };
 

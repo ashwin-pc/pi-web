@@ -366,7 +366,6 @@ messages = createMessageList({
   citationHref: absoluteSessionCitationHref,
   openCitation,
   openSession: (sessionId) => void sessions.openSessionById(sessionId),
-  isPanelRegistered: (key) => webPanels.has(key),
   openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
 });
 const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId), messages.reconcileActivity);

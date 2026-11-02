@@ -299,15 +299,13 @@ export function createMessageList(options: {
   citationHref?: (reference: SessionCitation) => string;
   /** Open an extension panel from a transcript deep link. */
   openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
-  /** Check the live extension registry before opening a panel deep link. */
-  isPanelRegistered?: (key: string) => boolean;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, isPanelRegistered, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
@@ -538,7 +536,6 @@ export function createMessageList(options: {
     event.preventDefault();
     const panelLink = panelDeepLinkEvent(anchor);
     if (!panelLink) return;
-    if (!isPanelRegistered?.(panelLink.key)) return;
     openPanel?.(panelLink.key, panelLink.event);
   });
   function settlePointerIntent() {
