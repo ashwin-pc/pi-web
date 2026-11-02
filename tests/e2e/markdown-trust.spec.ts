@@ -111,7 +111,7 @@ test("contained preview runs without a click, reports blocked fetch, then succee
   expect(containment).toEqual({
     tag: "META",
     httpEquiv: "Content-Security-Policy",
-    content: "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
+    content: "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'",
   });
   const notice = preview.locator(".htmlPreviewNotice", { hasText: "data.example.test" });
   await expect(notice).toBeVisible();
@@ -164,6 +164,69 @@ test("contained preview replaces self-navigation with a notice and can reload", 
   await expect(navigation.getByRole("button", { name: "Open in new tab" })).toBeVisible();
   await navigation.getByRole("button", { name: "Reload preview" }).click();
   await expect(preview.locator("iframe").contentFrame().locator("#leave")).toBeVisible();
+});
+
+test("script-driven preview navigation can request its URL before the parent shows a host notice", async ({ page }) => {
+  let markerRequests = 0;
+  let noticesWhenRequested = -1;
+  await page.route("https://navigation.example.test/marker", async (route) => {
+    markerRequests += 1;
+    noticesWhenRequested = await page.locator(".htmlPreviewNavigation").count();
+    return route.fulfill({
+      contentType: "text/html",
+      body: "<script>parent.postMessage({type:'pi-web-preview-navigation',url:location.href},'*')</script>",
+    });
+  });
+  await page.route("**/api/messages**", (route) => route.fulfill({ json: {
+    ok: true,
+    messages: [{
+      role: "assistant",
+      isError: false,
+      text: "```html-preview\n<script>location.href='https://navigation.example.test/marker'</script>\n```",
+    }],
+  } }));
+
+  await page.goto("/");
+  await expect.poll(() => markerRequests).toBe(1);
+  expect(noticesWhenRequested).toBe(0);
+  const navigation = page.locator(".message.assistant .htmlPreviewNavigation");
+  await expect(navigation).toBeVisible();
+  await expect(navigation).toContainText("navigation.example.test");
+  await expect(navigation).not.toContainText(/blocked|prevented/i);
+});
+
+test("preview WebRTC availability is a browser channel outside the CSP directives", async ({ page }) => {
+  await page.route("**/api/messages**", (route) => route.fulfill({ json: {
+    ok: true,
+    messages: [{
+      role: "assistant",
+      isError: false,
+      text: [
+        "```html-preview",
+        "<p id=\"webrtc\">starting</p>",
+        "<script>",
+        "(async()=>{",
+        "const status=document.getElementById('webrtc');",
+        "let peer;",
+        "try{",
+        "peer=new RTCPeerConnection({iceServers:[{urls:'stun:webrtc-residual.example.test:3478'}]});",
+        "const channel=peer.createDataChannel('containment-probe');",
+        "const offer=await peer.createOffer();",
+        "await peer.setLocalDescription(offer);",
+        "status.textContent=`configured ${channel.label} ${peer.localDescription?.type}`;",
+        "}catch(error){status.textContent=`failed ${error?.name||error}`}",
+        "finally{peer?.close()}",
+        "})()",
+        "</script>",
+        "```",
+      ].join("\n"),
+    }],
+  } }));
+
+  await page.goto("/");
+  const preview = page.locator(".message.assistant .htmlPreview");
+  await expect(preview.locator("iframe").contentFrame().locator("#webrtc")).toHaveText("configured containment-probe offer");
+  await expect(preview.locator(".htmlPreviewNotice")).toHaveCount(0);
 });
 
 test("inline HTML preview runs on mount and keeps its Source control outside the iframe", async ({ page }) => {

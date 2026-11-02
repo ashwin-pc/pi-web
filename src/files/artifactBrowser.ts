@@ -317,6 +317,7 @@ export function initArtifactBrowser(options: {
               source,
               frameTitle: `Live contained thumbnail of ${entry.name}`,
               from: { sessionId: "", role: "assistant" },
+              inertFrame: true,
             }));
           });
       });

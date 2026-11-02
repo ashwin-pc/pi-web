@@ -334,7 +334,7 @@ ctx.ui.web.setHeaderAction("open-notes", {
 
 ## Artifact preview renderer API
 
-`artifact-preview` contributions render otherwise-generic artifact formats inside a sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files.
+`artifact-preview` contributions render otherwise-generic artifact formats inside an automatically running, sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files. pi-web injects a CSP that blocks fetch/connect, image, script, style, font, media, and nested-frame network loads until the user approves an exact origin. The opaque origin isolates pi-web DOM and storage, but it is not a complete network boundary: self-navigation can send its destination URL before the parent detects the navigation and replaces the frame with a notice, and browser WebRTC is not governed by CSP where available.
 
 ```ts
 ctx.ui.web.contribute("gcode.viewer", {

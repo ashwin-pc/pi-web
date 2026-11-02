@@ -534,9 +534,10 @@ export function createMessageList(options: {
       void Promise.resolve(openCitation(reference));
       return;
     }
+    if (!href.startsWith("#panel:")) return;
+    event.preventDefault();
     const panelLink = panelDeepLinkEvent(anchor);
     if (!panelLink) return;
-    event.preventDefault();
     if (!isPanelRegistered?.(panelLink.key)) return;
     openPanel?.(panelLink.key, panelLink.event);
   });

@@ -12,7 +12,8 @@ import { createSettingsShell, type SettingsShellController } from "./settingsShe
 import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 import type { UiIntent } from "../sessions/sessionUiSync.js";
-import { applyContentPolicySettings, normalizedContentHost } from "../security/contentPolicy.js";
+import { applyContentPolicySettings } from "../security/contentPolicy.js";
+import { normalizeRemoteContentHost, normalizeRemoteContentHosts } from "../../server/shared/remoteContentHosts.js";
 
 export type SettingsController = {
   init: () => void;
@@ -68,9 +69,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
   if (typeof composer?.expanded === "boolean") settings.composer.expanded = composer.expanded;
   const security = isRecord(value.security) ? value.security : undefined;
-  settings.security.remoteContentHosts = Array.isArray(security?.remoteContentHosts)
-    ? security.remoteContentHosts.flatMap((host) => typeof host === "string" && normalizedContentHost(host) ? [normalizedContentHost(host)!] : []).slice(0, 64)
-    : [];
+  settings.security.remoteContentHosts = normalizeRemoteContentHosts(security?.remoteContentHosts);
 
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = isRecord(defaults?.model) ? defaults.model : undefined;
@@ -789,7 +788,7 @@ export function createSettings(options: {
     syncRemoteHosts();
     saveRemoteHosts.addEventListener("click", () => {
       const raw = remoteHosts.value.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
-      const invalid = raw.filter((value) => !normalizedContentHost(value));
+      const invalid = raw.filter((value) => !normalizeRemoteContentHost(value));
       if (invalid.length) {
         setSettingsStatus(`Invalid host: ${invalid[0]}`, true);
         remoteHosts.focus();

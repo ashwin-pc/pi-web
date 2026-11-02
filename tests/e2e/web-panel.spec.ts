@@ -5,6 +5,15 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("opens an extension panel from chat and the FAB, then submits its form", async ({ page }) => {
+  const webContributions = [
+    {
+      version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notepad", label: "Notepad", icon: "notebook-pen",
+      deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
+    },
+    { version: 1, key: "quiet", slot: "panel", kind: "rendered", title: "No launcher", label: "Quiet", icon: "notebook-pen" },
+    { version: 1, key: "notes-launcher", slot: "fab", kind: "static", title: "Global notepad", label: "Notepad", icon: "notebook-pen", opens: "notes" },
+    { version: 1, key: "open-notes", slot: "header-action", kind: "rendered", title: "Open notes", label: "Open notes", icon: "scroll-text" },
+  ];
   await page.route("**/api/messages**", (route) => route.fulfill({ json: {
     ok: true,
     messages: [
@@ -14,15 +23,7 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     ],
   } }));
   await page.request.post("/api/mock/state", { data: {
-    webContributions: [
-      {
-        version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notepad", label: "Notepad", icon: "notebook-pen",
-        deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
-      },
-      { version: 1, key: "quiet", slot: "panel", kind: "rendered", title: "No launcher", label: "Quiet", icon: "notebook-pen" },
-      { version: 1, key: "notes-launcher", slot: "fab", kind: "static", title: "Global notepad", label: "Notepad", icon: "notebook-pen", opens: "notes" },
-      { version: 1, key: "open-notes", slot: "header-action", kind: "rendered", title: "Open notes", label: "Open notes", icon: "scroll-text" },
-    ],
+    webContributions,
   } });
 
   const invocations: any[] = [];
@@ -74,13 +75,33 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     await dialog.dismiss();
   };
   page.on("dialog", dismissUnexpected);
-  await expect(page.getByRole("link", { name: "Missing panel" })).toHaveCount(0);
+  const missingPanel = page.getByRole("link", { name: "Missing panel" });
+  await expect(missingPanel).toBeVisible();
+  await missingPanel.click();
+  await expect(panel).toBeHidden();
   page.off("dialog", dismissUnexpected);
   expect(unexpectedDialogs).toBe(0);
   expect(invocations.filter((input) => input.event?.action !== "__pi_web_describe_deep_link")).toEqual([]);
 
   await expect(page.getByText("Invalid task", { exact: true })).not.toHaveAttribute("href");
-  const assistantLink = page.getByRole("link", { name: "Notepad › task › t-3f2a" });
+  let assistantLink = page.getByRole("link", { name: "Notepad › task › t-3f2a" });
+  await expect(assistantLink).toBeVisible();
+  expect(invocations.filter((input) => input.event?.action === "__pi_web_describe_deep_link")).toHaveLength(1);
+  const messagesReloaded = page.waitForResponse((response) => response.url().includes("/api/messages") && response.ok());
+  await page.request.post("/api/mock/state", { data: { webContributions } });
+  await messagesReloaded;
+  assistantLink = page.getByRole("link", { name: "Notepad › task › t-3f2a" });
+  await expect(assistantLink).toBeVisible();
+  expect(invocations.filter((input) => input.event?.action === "__pi_web_describe_deep_link")).toHaveLength(1);
+  const updatedContributions = webContributions.map((entry) => entry.key === "notes"
+    ? { ...entry, deepLinks: { allowedKeys: ["id", "view"], requiredKeys: ["id"], hasDescribe: true } }
+    : entry);
+  const changedMessagesReloaded = page.waitForResponse((response) => response.url().includes("/api/messages") && response.ok());
+  await page.request.post("/api/mock/state", { data: { webContributions: updatedContributions } });
+  await changedMessagesReloaded;
+  assistantLink = page.getByRole("link", { name: "Notepad › task › t-3f2a" });
+  await expect(assistantLink).toBeVisible();
+  expect(invocations.filter((input) => input.event?.action === "__pi_web_describe_deep_link")).toHaveLength(2);
   await assistantLink.click();
   await expect(panel).toBeVisible();
   await expect.poll(() => invocations.filter((input) => input.event?.action === "deep-link").length).toBe(1);

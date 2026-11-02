@@ -7,6 +7,7 @@ export type HtmlPreviewGateOptions = {
   frameClassName?: string;
   frameTitle?: string;
   from?: { sessionId: string; role: Role };
+  inertFrame?: boolean;
   onMount?: (frame: HTMLIFrameElement) => void;
 };
 
@@ -17,6 +18,7 @@ const baseDirectives = [
   "img-src data: blob:",
   "font-src data:",
   "media-src data: blob:",
+  "frame-src 'none'",
   "connect-src 'none'",
   "form-action 'none'",
   "base-uri 'none'",
@@ -28,8 +30,8 @@ export function previewContentSecurityPolicy(allowedOrigins: Iterable<string> = 
   const origins = [...allowed].sort().join(" ");
   return baseDirectives.map((directive) => {
     const name = directive.split(" ", 1)[0];
-    if (name === "connect-src") return `connect-src ${origins}`;
-    return ["img-src", "script-src", "style-src", "font-src"].includes(name)
+    if (name === "connect-src" || name === "frame-src") return `${name} ${origins}`;
+    return ["img-src", "script-src", "style-src", "font-src", "media-src"].includes(name)
       ? `${directive} ${origins}` : directive;
   }).join("; ");
 }
@@ -74,6 +76,9 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
   notices.setAttribute("aria-live", "polite");
 
   let navigationUrl = "";
+  let navigationNotice: HTMLDivElement | undefined;
+  let navigationText: HTMLSpanElement | undefined;
+  let navigationOpen: HTMLButtonElement | undefined;
   let frame: HTMLIFrameElement;
 
   const createFrame = () => {
@@ -82,6 +87,11 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
     next.title = options.frameTitle || "Interactive HTML preview";
     next.setAttribute("sandbox", "allow-scripts");
     next.referrerPolicy = "no-referrer";
+    if (options.inertFrame) {
+      next.inert = true;
+      next.tabIndex = -1;
+      next.setAttribute("aria-hidden", "true");
+    }
     next.hidden = showingSource;
     let loads = 0;
     next.addEventListener("load", () => {
@@ -134,8 +144,13 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
   };
 
   const showNavigation = () => {
-    if (!frame.isConnected) return;
     const parsed = safeRemoteOrigin(navigationUrl);
+    if (navigationNotice?.isConnected) {
+      navigationText!.textContent = `This preview tried to open ${parsed?.host || "another page"}`;
+      navigationOpen!.disabled = !parsed;
+      return;
+    }
+    if (!frame.isConnected) return;
     const notice = document.createElement("div");
     notice.className = "htmlPreviewNavigation";
     const text = document.createElement("span");
@@ -145,7 +160,8 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
     open.textContent = "Open in new tab";
     open.disabled = !parsed;
     open.addEventListener("click", async () => {
-      if (!parsed) return;
+      const destination = safeRemoteOrigin(navigationUrl);
+      if (!destination) return;
       const verdict = await decideContent({ kind: "preview-navigation", url: navigationUrl, from });
       if (verdict.action !== "block") window.open(navigationUrl, "_blank", "noopener,noreferrer");
     });
@@ -154,11 +170,17 @@ export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
     restore.textContent = "Reload preview";
     restore.addEventListener("click", () => {
       navigationUrl = "";
+      navigationNotice = undefined;
+      navigationText = undefined;
+      navigationOpen = undefined;
       frame = createFrame();
       notice.replaceWith(frame);
       options.onMount?.(frame);
     });
     notice.append(text, open, restore);
+    navigationNotice = notice;
+    navigationText = text;
+    navigationOpen = open;
     frame.replaceWith(notice);
   };
 

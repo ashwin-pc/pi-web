@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { classifyMarkdownImageSource } from "../src/markdown/imageTrust.js";
 import { parsePanelDeepLink, setPanelDeepLinkDescriptors, validatedPanelDeepLink } from "../src/messages/panelDeepLinks.js";
 import { previewContentSecurityPolicy } from "../src/markdown/htmlPreviewGate.js";
-import { applyContentPolicySettings, decideContent, normalizedContentHost, registerContentPolicy } from "../src/security/contentPolicy.js";
+import { applyContentPolicySettings, decideContent } from "../src/security/contentPolicy.js";
+import { normalizeRemoteContentHost } from "../server/shared/remoteContentHosts.js";
 
 describe("markdown image trust policy", () => {
   const origin = "https://pi.example.test";
@@ -80,120 +81,70 @@ describe("panel deep-link parsing", () => {
 
 describe("internal content policy", () => {
   it("normalizes host entries without accepting URLs or credentials", () => {
-    expect(normalizedContentHost(" Images.Example.COM. ")).toBe("images.example.com");
-    expect(normalizedContentHost("localhost:8787")).toBe("localhost:8787");
-    expect(normalizedContentHost("https://example.com/path")).toBeUndefined();
-    expect(normalizedContentHost("user@example.com")).toBeUndefined();
-    expect(normalizedContentHost("bad_host.example")).toBeUndefined();
-    expect(normalizedContentHost("empty..label.example")).toBeUndefined();
-    expect(normalizedContentHost("-leading.example")).toBeUndefined();
+    expect(normalizeRemoteContentHost(" Images.Example.COM. ")).toBe("images.example.com");
+    expect(normalizeRemoteContentHost("localhost:8787")).toBe("localhost:8787");
+    expect(normalizeRemoteContentHost("https://example.com/path")).toBeUndefined();
+    expect(normalizeRemoteContentHost("user@example.com")).toBeUndefined();
+    expect(normalizeRemoteContentHost("bad_host.example")).toBeUndefined();
+    expect(normalizeRemoteContentHost("empty..label.example")).toBeUndefined();
+    expect(normalizeRemoteContentHost("-leading.example")).toBeUndefined();
   });
 
-  it("uses the strictest internal verdict while allowing intrinsic resources", async () => {
-    const previousWindow = globalThis.window;
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: { location: { origin: "https://pi.example.test" }, setTimeout, clearTimeout },
-    });
-    const seen: unknown[] = [];
-    const removeAllow = registerContentPolicy((resource) => {
-      seen.push(resource);
-      return { action: "allow", by: "allow-test" };
-    });
-    const removeBlock = registerContentPolicy(() => ({ action: "block", reason: "blocked", by: "block-test" }));
-    try {
-      await expect(decideContent({
-        kind: "image",
-        url: "https://remote.example/image.png",
-        from: { sessionId: "s1", role: "assistant" },
-      })).resolves.toMatchObject({ action: "block", by: "block-test" });
-      await expect(decideContent({
-        kind: "image",
-        url: "https://remote.example/image.png",
-        from: { sessionId: "s1", role: "assistant" },
-      })).resolves.toMatchObject({ action: "block", by: "block-test" });
-      await expect(decideContent({
-        kind: "image",
-        url: "data:image/png;base64,AA==",
-        from: { sessionId: "s1", role: "assistant" },
-      })).resolves.toMatchObject({ action: "allow", by: "core" });
-      expect(seen).toEqual([{
-        kind: "image",
-        url: "https://remote.example/image.png",
-        from: { sessionId: "s1", role: "assistant" },
-      }]);
-    } finally {
-      removeAllow();
-      removeBlock();
-      Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
-    }
-  });
-
-  it("uses ask from a timed-out hook over a conflicting hook allow", async () => {
-    vi.useFakeTimers();
-    const previousWindow = globalThis.window;
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: { location: { origin: "https://pi.example.test" }, setTimeout, clearTimeout },
-    });
-    const removeAllow = registerContentPolicy(() => ({ action: "allow", by: "allow-test" }));
-    const removeTimeout = registerContentPolicy(() => new Promise(() => undefined));
-    const resource = {
-      kind: "image" as const,
-      url: "https://slow.example/image.png",
-      from: { sessionId: "s1", role: "assistant" as const },
-    };
-    try {
-      const pending = decideContent(resource);
-      await vi.advanceTimersByTimeAsync(1_500);
-      await expect(pending).resolves.toMatchObject({ action: "ask", by: "policy-timeout" });
-    } finally {
-      removeAllow();
-      removeTimeout();
-      vi.useRealTimers();
-      Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
-    }
-  });
-
-  it("stops at the built-in allowlist before consulting internal hooks", async () => {
+  it("uses the fixed intrinsic, user allowlist, and default policies in order", async () => {
     const previousWindow = globalThis.window;
     const previousDocument = globalThis.document;
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: { location: { origin: "https://pi.example.test" }, setTimeout, clearTimeout },
+      value: { location: { origin: "https://pi.example.test" } },
     });
     Object.defineProperty(globalThis, "document", {
       configurable: true,
-      value: { dispatchEvent: vi.fn() },
+      value: { dispatchEvent: () => undefined },
     });
-    const hook = vi.fn(() => ({ action: "block" as const, by: "block-test" }));
-    const remove = registerContentPolicy(hook);
     try {
       applyContentPolicySettings({ security: { remoteContentHosts: ["trusted.example.test"] } });
       await expect(decideContent({
         kind: "image",
+        url: "data:image/png;base64,AA==",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({ action: "allow", by: "core" });
+      await expect(decideContent({
+        kind: "preview-request",
+        url: "https://pi.example.test/api/artifacts/demo",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({ action: "allow", by: "core" });
+      await expect(decideContent({
+        kind: "image",
         url: "https://trusted.example.test/image.png",
         from: { sessionId: "s1", role: "assistant" },
-      })).resolves.toMatchObject({ action: "allow", by: "user-host-allowlist" });
-      expect(hook).not.toHaveBeenCalled();
+      })).resolves.toEqual({ action: "allow", by: "user-host-allowlist" });
+      await expect(decideContent({
+        kind: "image",
+        url: "https://remote.example/image.png",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toEqual({ action: "ask", by: "default" });
+      await expect(decideContent({
+        kind: "preview-navigation",
+        url: "javascript:alert(1)",
+        from: { sessionId: "s1", role: "assistant" },
+      })).resolves.toMatchObject({ action: "block", by: "core" });
     } finally {
       applyContentPolicySettings({ security: { remoteContentHosts: [] } });
-      remove();
       Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
       Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
     }
   });
 
-  it("invalidates cached host verdicts when persisted user settings change", async () => {
+  it("applies persisted host changes immediately without a verdict cache", async () => {
     const previousWindow = globalThis.window;
     const previousDocument = globalThis.document;
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: { location: { origin: "https://pi.example.test" }, setTimeout, clearTimeout },
+      value: { location: { origin: "https://pi.example.test" } },
     });
     Object.defineProperty(globalThis, "document", {
       configurable: true,
-      value: { dispatchEvent: vi.fn() },
+      value: { dispatchEvent: () => undefined },
     });
     const resource = {
       kind: "image" as const,
@@ -217,11 +168,13 @@ describe("internal content policy", () => {
 describe("preview containment policy", () => {
   it("keeps the base deny policy and adds only exact approved origins", () => {
     expect(previewContentSecurityPolicy()).toBe(
-      "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'",
+      "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'",
     );
     const approved = previewContentSecurityPolicy(["https://cdn.example:8443"]);
     expect(approved).toContain("connect-src https://cdn.example:8443");
     expect(approved).toContain("img-src data: blob: https://cdn.example:8443");
+    expect(approved).toContain("media-src data: blob: https://cdn.example:8443");
+    expect(approved).toContain("frame-src https://cdn.example:8443");
     expect(approved).not.toContain("*");
   });
 });

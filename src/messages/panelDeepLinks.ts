@@ -13,9 +13,16 @@ type PanelDescriptor = {
 
 const controlCharacters = /[\u0000-\u001F\u007F-\u009F]/;
 let panels = new Map<string, PanelDescriptor>();
-let registryReady = false;
+const descriptionCache = new Map<string, {
+  declaration: string;
+  values: Map<string, Promise<string | undefined>>;
+}>();
 let apiHeaders: () => HeadersInit = () => ({ "content-type": "application/json" });
 let sessionId = () => "";
+
+function panelDeclaration(panel: PanelDescriptor) {
+  return JSON.stringify(panel);
+}
 
 export function parsePanelDeepLink(href: string): PanelDeepLink | undefined {
   if (!href.startsWith("#panel:")) return;
@@ -43,9 +50,12 @@ export function configurePanelDeepLinks(options: {
 }
 
 export function setPanelDeepLinkDescriptors(value: PanelDescriptor[]) {
-  panels = new Map(value.map((panel) => [panel.key, panel]));
-  registryReady = true;
-  if (typeof document !== "undefined") queueMicrotask(() => enhancePanelDeepLinks(document));
+  const nextPanels = new Map(value.map((panel) => [panel.key, panel]));
+  for (const [key, cached] of descriptionCache) {
+    const panel = nextPanels.get(key);
+    if (!panel || panelDeclaration(panel) !== cached.declaration) descriptionCache.delete(key);
+  }
+  panels = nextPanels;
 }
 
 export function validatedPanelDeepLink(link: PanelDeepLink) {
@@ -60,30 +70,59 @@ export function validatedPanelDeepLink(link: PanelDeepLink) {
 
 async function describe(panel: PanelDescriptor, payload: Record<string, string>) {
   if (!panel.deepLinks?.hasDescribe) return;
-  const response = await fetch("/api/web-contributions/invoke", {
-    method: "POST",
-    headers: apiHeaders(),
-    body: JSON.stringify({
-      sessionId: sessionId(),
-      slot: "panel",
-      key: panel.key,
-      event: { action: "__pi_web_describe_deep_link", payload },
-    }),
-  });
-  const data = await response.json().catch(() => ({}));
-  return response.ok && data.ok !== false && typeof data.description === "string" ? data.description : undefined;
+  const stablePayload = Object.fromEntries(Object.entries(payload).sort(([left], [right]) => left.localeCompare(right)));
+  const payloadKey = `${sessionId()}\0${JSON.stringify(stablePayload)}`;
+  const declaration = panelDeclaration(panel);
+  let cached = descriptionCache.get(panel.key);
+  if (!cached || cached.declaration !== declaration) {
+    cached = { declaration, values: new Map() };
+    descriptionCache.set(panel.key, cached);
+  }
+  let result = cached.values.get(payloadKey);
+  if (!result) {
+    result = fetch("/api/web-contributions/invoke", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        sessionId: sessionId(),
+        slot: "panel",
+        key: panel.key,
+        event: { action: "__pi_web_describe_deep_link", payload },
+      }),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => ({}));
+      return response.ok && data.ok !== false && typeof data.description === "string" ? data.description : undefined;
+    }).catch(() => undefined);
+    cached.values.set(payloadKey, result);
+  }
+  return result;
+}
+
+function replaceWithInvalidText(anchor: HTMLAnchorElement) {
+  const text = document.createElement("span");
+  text.className = "panelDeepLinkInvalid";
+  text.textContent = anchor.textContent || "";
+  anchor.replaceWith(text);
 }
 
 export function enhancePanelDeepLinks(root: ParentNode) {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a[href^="#panel:"]')) {
+    if (anchor.dataset.panelDeepLinkEnhanced) continue;
+    anchor.dataset.panelDeepLinkEnhanced = "true";
     const parsed = parsePanelDeepLink(anchor.getAttribute("href") || "");
-    if (parsed && !panels.has(parsed.key) && !registryReady) continue;
+    if (!parsed) {
+      replaceWithInvalidText(anchor);
+      continue;
+    }
+    if (!panels.has(parsed.key)) {
+      anchor.removeAttribute("target");
+      anchor.removeAttribute("rel");
+      anchor.classList.add("panelDeepLinkPending");
+      continue;
+    }
     const valid = parsed && validatedPanelDeepLink(parsed);
     if (!valid) {
-      const text = document.createElement("span");
-      text.className = "panelDeepLinkInvalid";
-      text.textContent = anchor.textContent || "";
-      anchor.replaceWith(text);
+      replaceWithInvalidText(anchor);
       continue;
     }
     anchor.removeAttribute("target");
@@ -103,10 +142,13 @@ export function enhancePanelDeepLinks(root: ParentNode) {
 }
 
 export function panelDeepLinkEvent(anchor: HTMLAnchorElement): { key: string; event: PiWebPanelEvent } | undefined {
-  const key = anchor.dataset.panelDeepLink;
-  if (!key) return;
-  try {
-    const payload = JSON.parse(anchor.dataset.panelPayload || "{}") as Record<string, string>;
-    return { key, event: { action: "deep-link", payload, source: "message" } };
-  } catch { return; }
+  const parsed = parsePanelDeepLink(anchor.getAttribute("href") || "");
+  if (!parsed || !panels.has(parsed.key)) return;
+  const valid = validatedPanelDeepLink(parsed);
+  if (!valid) {
+    replaceWithInvalidText(anchor);
+    return;
+  }
+  anchor.classList.remove("panelDeepLinkPending");
+  return { key: valid.panel.key, event: { action: "deep-link", payload: valid.payload, source: "message" } };
 }
