@@ -1121,20 +1121,24 @@ describe("artifact serving", () => {
   let baseUrl: string;
   let artifactDir: string;
   let legacyArtifactDir: string;
+  let unrelatedCwd: string;
 
   beforeAll(async () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     legacyArtifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+    unrelatedCwd = await mkdtemp(join(tmpdir(), "pi-web-unrelated-artifacts-"));
     await mkdir(artifactDir, { recursive: true });
     await mkdir(legacyArtifactDir, { recursive: true });
+    await mkdir(join(unrelatedCwd, ".pi", "web", "artifacts"), { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
     await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
     await writeFile(join(artifactDir, "test.mp3"), Buffer.from("MP3"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
+    await writeFile(join(unrelatedCwd, ".pi", "web", "artifacts", "unrelated.txt"), "UNRELATED");
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_CWD: process.cwd() },
@@ -1152,6 +1156,7 @@ describe("artifact serving", () => {
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
+    await rm(unrelatedCwd, { recursive: true, force: true });
   });
 
   it("serves an artifact file without authentication", async () => {
@@ -1198,6 +1203,23 @@ describe("artifact serving", () => {
     expect(res.status).toBe(200);
     const body = await res.arrayBuffer();
     expect(Buffer.from(body).toString()).toBe("LEGACY");
+  });
+
+  it("does not resolve session-less artifacts from unrelated known workspaces", async () => {
+    const created = await fetch(`${baseUrl}/api/sessions/new`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: unrelatedCwd }),
+    });
+    expect(created.status).toBe(200);
+    await created.json();
+
+    const unscoped = await fetch(`${baseUrl}/api/artifacts/unrelated.txt`);
+    expect(unscoped.status).toBe(404);
+
+    const queried = await fetch(`${baseUrl}/api/artifacts/test.png?sessionId=mock-current`);
+    expect(queried.status).toBe(200);
+    expect(await queried.text()).toBe("PNG");
   });
 
   it("protects artifacts and diagnostics with the same stored API-token gate", async () => {
