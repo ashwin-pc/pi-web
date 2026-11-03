@@ -201,7 +201,9 @@ test.describe("new-session defaults", () => {
     const emptyId = await createNewSession(page);
     await page.locator("#prompt").fill("/help");
     await page.locator("#primaryButton").click();
-    await expect(page.locator("#messages")).toContainText("Available slash commands:");
+    // The command echo is synchronous, but help output arrives after the
+    // command response and model refresh. Reuse only after that output exists.
+    await expect(page.locator("#messages")).toContainText("Type / in the composer to browse available commands.");
     let newPosts = 0;
     page.on("request", (request) => {
       if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
