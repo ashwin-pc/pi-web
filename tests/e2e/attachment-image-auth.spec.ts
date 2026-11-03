@@ -64,6 +64,10 @@ test("authenticated transcript image previews stay same-origin", async ({ page, 
 });
 
 test("authenticated tool-result image previews stay same-origin", async ({ page }) => {
+  // Pin density so shared-server settings cannot change which controls expose images.
+  await page.route("**/api/settings", route => route.request().method() === "GET"
+    ? route.fulfill({ json: { settings: { appearance: { density: "minimal" } } } })
+    : route.continue());
   const externalRequests: string[] = [];
   const authenticatedPreviewRequests: string[] = [];
 
@@ -103,14 +107,15 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
 
   const card = page.locator('.toolCard[data-tool-name="read"]');
   await expect(card).toHaveCount(1);
-  // Compact and minimal density defer images behind visible tool controls.
+  // Minimal density defers images behind the summary and tool details controls.
+  // Card attachment alone does not mean the summary has been reconciled yet.
   const summary = page.getByRole("button", { name: "Show 1 tool", exact: true });
-  await expect(async () => {
-    if (await summary.isVisible()) await summary.click();
-    await expect(card).toBeVisible();
-  }).toPass();
+  await expect(summary).toBeVisible();
+  await summary.click();
+  await expect(card).toBeVisible();
   const details = card.locator(".toolCardExpandToggle");
-  if (await details.isVisible() && await details.getAttribute("aria-expanded") === "false") await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await details.click();
 
   const images = card.locator(".toolCardImage img");
   await expect(images).toHaveCount(3);
