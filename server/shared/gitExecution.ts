@@ -108,7 +108,6 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
     if (key.endsWith(".uploadpack")) return "git-upload-pack";
     if (key.endsWith(".receivepack")) return "git-receive-pack";
     if (key.endsWith(".proxy")) return "";
-    if (key.endsWith(".promisor")) return "false";
     if (key.startsWith("diff.") || key.startsWith("merge.")) return "false";
     if (key.startsWith("tar.") && key.endsWith(".command")) return "false";
     return "";
@@ -129,8 +128,6 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
   const repositoryConfigKeys = new Set(repository.map((entry) => entry.key));
   for (const key of repositoryConfigKeys) {
     const normalized = key.toLowerCase();
-    if (normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized)) resetToTrusted(key);
-    if ((normalized.startsWith("remote.") && /\.(?:promisor|partialclonefilter)$/.test(normalized)) || normalized === "extensions.partialclone") resetToTrusted(key, safeFallback(normalized));
     if (normalized.startsWith("tar.") && normalized.endsWith(".command")) resetToTrusted(key, "false");
   }
 
@@ -171,8 +168,6 @@ export function gitConfigEnv(
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
     GIT_TERMINAL_PROMPT: "0",
-    // Git 2.44+ honors this; older versions ignore the unknown environment variable.
-    GIT_NO_LAZY_FETCH: "1",
   };
   delete env.GIT_CONFIG_PARAMETERS;
   delete env.GIT_CONFIG_COUNT;
@@ -211,6 +206,10 @@ export async function loadGitExecution(cwd: string): Promise<GitExecution> {
     (entry) => (entry.scope === "local" || entry.scope === "worktree") && isUrlRewriteKey(entry.key),
   );
   const env = gitConfigEnv(gitConfigHardeningOverrides(entries), bootstrapEnv, inheritedCommandConfig);
+  if (hasRepositoryUrlRewrites) {
+    // Git 2.44+ honors this; older versions ignore the unknown environment variable.
+    env.GIT_NO_LAZY_FETCH = "1";
+  }
   return {
     entries,
     hasRepositoryUrlRewrites,

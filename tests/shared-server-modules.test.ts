@@ -269,14 +269,10 @@ describe("shared Git helpers", () => {
       { key: "core.editor", value: "true" },
       { key: "core.editor", value: "trusted-editor" },
       { key: "sequence.editor", value: "true" },
-      { key: "url.https://local.example/.insteadOf", value: "trusted-local:" },
-      { key: "url.ssh://push.example/.pushInsteadOf", value: "trusted-push:" },
-      { key: "remote.Origin.promisor", value: "false" },
-      { key: "remote.Origin.partialCloneFilter", value: "" },
-      { key: "extensions.partialClone", value: "" },
       { key: "tar.Custom.command", value: "false" },
     ]));
     expect(overrides.some(({ key }) => key.toLowerCase() === "remote.transport.vcs")).toBe(false);
+    expect(overrides.some(({ key }) => /\.(?:promisor|partialclonefilter)$/i.test(key) || key.toLowerCase() === "extensions.partialclone")).toBe(false);
     const serialized = JSON.stringify(overrides);
     for (const repositoryValue of [
       "repository-editor",
@@ -291,7 +287,7 @@ describe("shared Git helpers", () => {
     )).toEqual([]);
   });
 
-  it("blocks hidden promisor reads while allowing an explicit partial-clone sync", async () => {
+  it("allows partial-clone commit details unless a repository URL rewrite would hide the fetch", async () => {
     const root = await tempDir("pi-web-shared-git-promisor-");
     const source = join(root, "source");
     const origin = join(root, "origin.git");
@@ -331,15 +327,17 @@ exec git-upload-pack "$@"
 
     await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
       withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
-        expect(execFileSync("git", ["show", "HEAD:payload.txt"], {
-          cwd: baseline,
-          encoding: "utf8",
-          env: { ...process.env, GIT_NO_LAZY_FETCH: "0" },
-        })).toBe("promised content\n");
+        const commit = runGit(baseline, "rev-parse", "HEAD");
+        await expect(gitCommitDetails(commit, baseline)).resolves.toMatchObject({
+          ok: true,
+          commit: { hash: commit },
+          diff: expect.stringContaining("+promised content"),
+        });
         await expect(access(marker)).resolves.toBeUndefined();
         await rm(marker);
 
-        await expect(git(["show", "HEAD:payload.txt"], 15_000, hardened)).rejects.toThrow();
+        runGit(hardened, "config", "url.https://rewrite.example/.insteadOf", "rewrite:");
+        await expect(gitCommitDetails(commit, hardened)).rejects.toThrow();
         await expect(access(marker)).rejects.toThrow();
 
         await writeFile(join(source, "payload.txt"), "updated promised content\n");
@@ -407,7 +405,6 @@ exec git-upload-pack "$@"
     ]);
     expect(env).toMatchObject({
       PATH: "/trusted/bin",
-      GIT_NO_LAZY_FETCH: "1",
       GIT_CONFIG_COUNT: "4",
       GIT_CONFIG_KEY_0: "user.name",
       GIT_CONFIG_VALUE_0: "Parameters caller",
@@ -418,6 +415,7 @@ exec git-upload-pack "$@"
       GIT_CONFIG_KEY_3: "filter.a=b.required",
       GIT_CONFIG_VALUE_3: "false",
     });
+    expect(env.GIT_NO_LAZY_FETCH).toBeUndefined();
     expect(env.GIT_CONFIG_PARAMETERS).toBeUndefined();
     expect(env.GIT_CONFIG_KEY_9).toBeUndefined();
     expect(env.GIT_CONFIG_VALUE_9).toBeUndefined();

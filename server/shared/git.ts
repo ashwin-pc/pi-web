@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 import {
   gitConfigEnv,
   gitConfigHardeningOverrides,
-  isGitNetworkCommand,
   loadGitExecution,
   type GitConfigEntry,
   type GitExecution,
@@ -26,20 +25,13 @@ export interface GitFileStatus {
   staged: boolean;
 }
 
-function prepareGitExecution(execution: GitExecution, args: string[]): GitExecution {
-  if (!isGitNetworkCommand(args[0])) return execution;
-  const env = { ...execution.env };
-  delete env.GIT_NO_LAZY_FETCH;
-  return { ...execution, env };
-}
-
 export async function git(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  const execution = prepareGitExecution(await loadGitExecution(cwd), args);
+  const execution = await loadGitExecution(cwd);
   return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: execution.env });
 }
 
 export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  const execution = prepareGitExecution(await loadGitExecution(cwd), args);
+  const execution = await loadGitExecution(cwd);
   return new Promise<Buffer>((resolvePromise, reject) => {
     execFile("git", execution.args(args), {
       cwd,
@@ -59,7 +51,6 @@ export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.
 }
 
 function runGitExecution(execution: GitExecution, args: string[], cwd: string, timeout = 15_000, maxBuffer = 10 * 1024 * 1024) {
-  execution = prepareGitExecution(execution, args);
   return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer, env: execution.env });
 }
 
