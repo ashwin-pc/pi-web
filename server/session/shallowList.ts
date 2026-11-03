@@ -38,14 +38,14 @@ export interface ShallowListMetrics { files: number; bytesRead: number }
 const SCAN_CONCURRENCY = 16;
 
 /** Run `fn` over `items` with at most `limit` in-flight at once. */
-async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapConcurrent<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let index = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
     for (;;) {
       const i = index++;
       if (i >= items.length) break;
-      results[i] = await fn(items[i]);
+      results[i] = await fn(items[i], i);
     }
   }));
   return results;

@@ -16,8 +16,8 @@ import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
-import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
-import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
+import { createSessionUiStateStore, SessionUiStateBoundsError, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError, sessionUiStateMaxBytes } from "./server/sessionUiState.js";
+import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError, settingsFieldLimits } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
@@ -1097,12 +1097,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, sessionUiStateMaxBytes));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
           if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
           if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateBoundsError) return sendJson(res, error.status, { ok: false, error: error.message });
           if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
           throw error;
         }
@@ -1196,7 +1197,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const patch = await readBody(req);
+        const patch = await readBody(req, settingsFieldLimits.maxPatchBytes);
         const settings = await withAvatarMutation(async () => {
           const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
           // A stale settings form must not resurrect a reclaimed generation.
@@ -1485,7 +1486,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionUiStateUnavailableError || error instanceof AuthStoreBusyError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError || error instanceof AuthStoreBusyError ? 503
+      : error instanceof SessionUiStateBoundsError ? error.status
+      : error instanceof SessionServiceError || error instanceof HttpError ? error.status
+      : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
