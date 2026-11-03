@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import process from "node:process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const isWin = process.platform === "win32";
 const bin = (name) => `node_modules/.bin/${name}${isWin ? ".cmd" : ""}`;
@@ -66,7 +69,8 @@ const results = [];
 // Tests may be launched from a running instance. Do not pass its persistent
 // home or per-file overrides to child test processes; individual server fixtures
 // allocate their own temporary home (see tests/auth-isolation.ts).
-const testEnv = { ...process.env, PI_WEB_HOME: "" };
+// Explicit zero also prevents NODE_ENV=development from enabling the dev server.
+const testEnv = { ...process.env, PI_WEB_HOME: "", PI_WEB_DEV: "0" };
 for (const key of Object.keys(testEnv)) {
   if (key.startsWith("PI_WEB_") && key.endsWith("_FILE")) testEnv[key] = "";
 }
@@ -92,6 +96,18 @@ function prefixLines(stream, taskName, color) {
   stream.on("close", flush);
 }
 
+// Playwright's compilation cache writes are not atomic. Never share a cache
+// between tasks or runner invocations, even if the caller supplies one.
+const playwrightCacheRoot = await mkdtemp(join(tmpdir(), "pi-web-playwright-"));
+let nextCacheId = 0;
+function taskEnv(task) {
+  return {
+    ...testEnv,
+    ...task.env,
+    ...(task.kind === "e2e" ? { PWTEST_CACHE_DIR: join(playwrightCacheRoot, String(nextCacheId++)) } : {}),
+  };
+}
+
 async function runPhase(tasks, colorOffset = 0) {
   const phaseResultStart = results.length;
   const children = new Map();
@@ -109,7 +125,7 @@ async function runPhase(tasks, colorOffset = 0) {
     const color = colors[(index + colorOffset) % colors.length];
     const child = spawn(task.command, task.args, {
       cwd: process.cwd(),
-      env: { ...testEnv, ...task.env },
+      env: taskEnv(task),
       stdio: ["ignore", "pipe", "pipe"],
       shell: isWin,
     });
@@ -152,16 +168,21 @@ async function runE2eTasks() {
 
 }
 
-if (e2eOnly) {
-  const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
-  if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
-} else {
-  // Vite and tsc can starve mock API server startup in the unit suite: under
-  // concurrent preflight the server took >18s against a 15s readiness budget.
-  // Keep the static checks parallel, then run unit tests without that contention.
-  const staticTasks = preflightTasks.filter((task) => task.kind === "static");
-  const unitTasks = preflightTasks.filter((task) => task.kind === "unit");
-  if (await runPhase(staticTasks) && await runPhase(unitTasks) && await runPhase([packedStartupTask])) await runE2eTasks();
+try {
+  if (e2eOnly) {
+    const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
+    if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
+  } else {
+    // Vite and tsc can starve mock API server startup in the unit suite: under
+    // concurrent preflight the server took >18s against a 15s readiness budget.
+    // Keep the static checks parallel, then run unit tests without that contention.
+    const staticTasks = preflightTasks.filter((task) => task.kind === "static");
+    const unitTasks = preflightTasks.filter((task) => task.kind === "unit");
+    if (await runPhase(staticTasks) && await runPhase(unitTasks) && await runPhase([packedStartupTask])) await runE2eTasks();
+  }
+
+} finally {
+  await rm(playwrightCacheRoot, { recursive: true, force: true });
 }
 
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);

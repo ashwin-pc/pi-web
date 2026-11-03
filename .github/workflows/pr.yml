@@ -5,6 +5,11 @@ on:
     branches:
       - "**"
 
+# A newer revision supersedes checks for the same PR, not other PRs.
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   website:
     runs-on: ubuntu-latest

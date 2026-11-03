@@ -96,7 +96,9 @@ describe("DictationWorker lifecycle", () => {
 
   afterEach(async () => {
     for (const worker of workers) worker.stop();
-    await rm(root, { recursive: true, force: true });
+    // Windows can briefly retain handles after process termination (especially
+    // when a deadline test advances the exit fallback with fake timers).
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   function createWorker() {
