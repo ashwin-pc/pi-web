@@ -181,6 +181,22 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
+  it("prevents successful JSON API responses from being cached", async () => {
+    const response = await fetch(`${baseUrl}/api/state`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toMatchObject({ sessionId: "mock-current", model: { provider: "mock" } });
+  });
+
+  it("prevents JSON API errors from being cached without changing their status or body", async () => {
+    const response = await fetch(`${baseUrl}/api/unknown-route`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toEqual({ ok: false, error: "Unknown API route" });
+  });
+
   it("requires explicit same-origin browser intent for open-policy mutations", async () => {
     const body = JSON.stringify({ defaults: { thinkingLevel: "high" } });
     const missingOrigin = await nativeFetch(`${baseUrl}/api/settings`, {
@@ -371,10 +387,14 @@ describe("pi-web mock API", () => {
     const declared = await rawPost(port, "/api/mock/event", declaredBody, {
       "content-type": "application/json",
       "content-length": String(declaredBody.length),
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     const streamed = await rawPost(port, "/api/mock/event", streamedBody, {
       "content-type": "application/json",
       "transfer-encoding": "chunked",
+      origin: baseUrl,
+      "x-pi-web-client-id": "mock-event-bounds",
     });
     expect([declared.status, streamed.status]).toEqual([413, 413]);
     await new Promise((resolve) => setTimeout(resolve, 100));
