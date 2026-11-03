@@ -86,6 +86,10 @@ function isUrlRewriteKey(key: string) {
   return normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized);
 }
 
+export function isGitNetworkCommand(command: string | undefined) {
+  return command !== undefined && ["fetch", "pull", "push", "ls-remote"].includes(command);
+}
+
 export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfigOverride[] {
   assertSafeRemoteConfig(entries);
   const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
@@ -213,7 +217,7 @@ export async function loadGitExecution(cwd: string): Promise<GitExecution> {
     env,
     args(args) {
       const [command, ...commandArgs] = args;
-      if (hasRepositoryUrlRewrites && ["fetch", "pull", "push", "ls-remote"].includes(command)) {
+      if (hasRepositoryUrlRewrites && isGitNetworkCommand(command)) {
         throw new Error(`Git ${command} is disabled because this repository configures URL rewrites`);
       }
       const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];

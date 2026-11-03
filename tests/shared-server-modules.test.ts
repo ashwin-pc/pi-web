@@ -291,12 +291,13 @@ describe("shared Git helpers", () => {
     )).toEqual([]);
   });
 
-  it("prevents object reads from lazily contacting a promisor remote", async () => {
+  it("blocks hidden promisor reads while allowing an explicit partial-clone sync", async () => {
     const root = await tempDir("pi-web-shared-git-promisor-");
     const source = join(root, "source");
     const origin = join(root, "origin.git");
     const baseline = join(root, "baseline");
     const hardened = join(root, "hardened");
+    const syncClient = join(root, "sync");
     const marker = join(root, "upload-pack-called");
     const uploadPack = join(root, "upload-pack");
     const globalConfig = join(root, "global.gitconfig");
@@ -312,6 +313,7 @@ describe("shared Git helpers", () => {
     runGit(origin, "config", "uploadpack.allowFilter", "true");
     runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, baseline);
     runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, hardened);
+    runGit(root, "clone", "--filter=blob:none", "--no-local", origin, syncClient);
     await writeFile(uploadPack, `#!/bin/sh
 printf called >> ${JSON.stringify(marker)}
 exec git-upload-pack "$@"
@@ -339,6 +341,18 @@ exec git-upload-pack "$@"
 
         await expect(git(["show", "HEAD:payload.txt"], 15_000, hardened)).rejects.toThrow();
         await expect(access(marker)).rejects.toThrow();
+
+        await writeFile(join(source, "payload.txt"), "updated promised content\n");
+        runGit(source, "add", "payload.txt");
+        runGit(source, "commit", "-m", "update promised object");
+        runGit(source, "push", origin, "main");
+
+        await expect(gitSync(syncClient)).resolves.toMatchObject({
+          ok: true,
+          status: { isRepo: true, branch: "main" },
+        });
+        expect(await readFile(join(syncClient, "payload.txt"), "utf8")).toBe("updated promised content\n");
+        await expect(access(marker)).resolves.toBeUndefined();
       }));
   });
 
