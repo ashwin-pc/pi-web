@@ -2,6 +2,7 @@ import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
 import { gcodeContribution } from "./gcode.js";
 import { stlContribution } from "./stl.js";
 import { registerFusionTools } from "./fusion/tools.js";
+import { registerHunyuanTools } from "./hunyuan/tools.js";
 import { registerSlicingTools, slicingArtifactAction } from "./slicing/tools.js";
 
 const GCODE_KEY = "gcode-viewer.preview";
@@ -10,6 +11,7 @@ const SLICE_KEY = "3d-modeling.slice";
 
 export default function modelingViewers(pi: PiWebExtensionAPI) {
   registerFusionTools(pi);
+  registerHunyuanTools(pi);
   registerSlicingTools(pi);
   let cwd = "";
   const register = (ctx: any) => {
