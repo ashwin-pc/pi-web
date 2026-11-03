@@ -181,6 +181,41 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
+  it("rejects invalid and oversized push subscription requests", async () => {
+    const invalid = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-invalid",
+        subscription: {
+          endpoint: "https://push.invalid.example/collect",
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const malformed = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+
+    const oversized = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-oversized",
+        subscription: {
+          endpoint: `https://fcm.googleapis.com/fcm/send/${"x".repeat(17_000)}`,
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
   it("prevents successful JSON API responses from being cached", async () => {
     const response = await fetch(`${baseUrl}/api/state`);
     expect(response.status).toBe(200);
@@ -1586,10 +1621,10 @@ describe("Live session lifecycle", () => {
     let acknowledgedPings = 0;
     const ws = await mockWebSocket(baseUrl, "sessionId=mock-older&clientId=heartbeat-test", { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
-    ws.on("ping", () => {
+    ws.on("ping", (data) => {
       if (!replyToPings) return;
       acknowledgedPings += 1;
-      ws.pong();
+      ws.pong(data);
     });
     try {
       await new Promise<void>((resolve, reject) => {

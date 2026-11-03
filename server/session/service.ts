@@ -40,6 +40,10 @@ import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type Lo
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
 import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
 import {
+  ViewerLeaseController,
+  type ViewerPrincipal,
+} from "./viewerLeases.js";
+import {
   conversationTreeForSession,
   getSessionSlashCommands,
   isAssistantAbortedMessage,
@@ -102,13 +106,6 @@ type LiveSessionEntry = {
   workLeases: Map<symbol, WorkLease>;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
-};
-
-type ViewerLease = {
-  sessionKey: string;
-  lastAcceptedSeq?: number;
-  sockets: Set<symbol>;
-  releaseTimer?: ReturnType<typeof setTimeout>;
 };
 
 type RetrySessionTarget =
@@ -196,6 +193,7 @@ function textReference(entry: unknown, compact: boolean): SessionReadText | unde
   if (!record || record.type !== "message" || !isSessionReferenceId(record.id) || !record.message || typeof record.message !== "object") return undefined;
   const message = record.message as Record<string, unknown>;
   const role = typeof message.role === "string" ? message.role : "unknown";
+  if (role === "bashExecution" && message.excludeFromContext === true) return undefined;
   const text = textForTail(textFromContent(message.content), role === "assistant" ? 700 : role === "toolResult" ? 200 : 400, compact);
   if (role === "assistant") {
     const lines = text.text ? [`[assistant] ${text.text}`] : [];
@@ -295,8 +293,7 @@ export class LocalSessionService implements SessionService {
   private readonly sessionLocations = new Map<string, { path: string; cwd: string }>();
   private readonly openingById = new Map<string, Promise<PiWebSession | undefined>>();
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
-  private readonly viewerLeases = new Map<string, ViewerLease>();
-  private readonly viewerConnections = new Map<symbol, string>();
+  private readonly viewerLeases: ViewerLeaseController;
   private readonly productionFactory: PiSessionFactory;
   private readonly blockedModelIds = new Set<string>();
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
@@ -320,6 +317,26 @@ export class LocalSessionService implements SessionService {
       sessionCwd: (manager) => this.sessionCwd({ sessionManager: manager }),
       rememberCwd: (cwd) => this.knownSessionCwds.add(resolve(cwd)),
       readSession: (reference, tail) => this.readSession(reference, tail),
+    });
+    this.viewerLeases = new ViewerLeaseController(this.viewerGraceMs, {
+      sessionKey: (sessionId) => {
+        const value = this.liveById.get(sessionId);
+        if (!value) return undefined;
+        const key = sessionPathKey(value);
+        return this.liveSessions.has(key) ? key : undefined;
+      },
+      addViewer: (sessionKey, leaseKey) => {
+        const entry = this.liveSessions.get(sessionKey);
+        if (!entry) return;
+        entry.viewerClientIds.add(leaseKey);
+        this.cancelLiveSessionCleanup(entry);
+      },
+      removeViewer: (sessionKey, leaseKey) => {
+        const entry = this.liveSessions.get(sessionKey);
+        if (!entry) return;
+        entry.viewerClientIds.delete(leaseKey);
+        this.scheduleLiveSessionCleanup(sessionKey);
+      },
     });
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
@@ -835,10 +852,15 @@ export class LocalSessionService implements SessionService {
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
     if (this.noSession) throw new Error("Sessions are disabled.");
-    const info = await this.findSessionLocationById(sessionId, cwd);
+    if (this.protectedSessionIds.has(sessionId)) throw new SessionServiceError("This session is the server's default session and cannot be deleted while pi-web is running.", 409);
+    const liveValue = this.liveById.get(sessionId);
+    const liveKey = liveValue ? sessionPathKey(liveValue) : undefined;
+    const info = liveValue && liveKey
+      ? { id: sessionId, path: liveKey, cwd: this.sessionCwd(liveValue) }
+      : await this.findSessionLocationById(sessionId, cwd);
     if (!info) throw new SessionServiceError("Session not found", 404);
     const live = this.liveSessions.get(info.path);
-    if (live?.session.isStreaming || live?.session.isCompacting) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
+    if (live && this.isLiveSessionBusy(live)) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
     if (live) await this.disposeLiveSession(info.path, "delete", true);
     const disposition = this.deps.sessionFactory?.remove
       ? await this.deps.sessionFactory.remove(sessionId, info.path)
@@ -855,71 +877,26 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string, seq?: number) {
-    const value = this.liveById.get(sessionId);
-    if (!clientId || !value) return;
-    const key = sessionPathKey(value);
-    const entry = this.liveSessions.get(key);
-    if (!entry) return;
-    let lease = this.viewerLeases.get(clientId);
-    // Check before touching timers or either session's lease membership.
-    const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
-    if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
-    this.clearTimer(lease?.releaseTimer);
-    if (!lease) {
-      lease = { sessionKey: key, sockets: new Set() };
-      this.viewerLeases.set(clientId, lease);
-    } else if (lease.sessionKey !== key) {
-      const previousKey = lease.sessionKey;
-      this.liveSessions.get(previousKey)?.viewerClientIds.delete(clientId);
-      this.scheduleLiveSessionCleanup(previousKey);
-      lease.sessionKey = key;
-    }
-    if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
-    entry.viewerClientIds.add(clientId);
-    this.cancelLiveSessionCleanup(entry);
-    if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);
+  acquireViewer(sessionId: string, clientId: string, principal: ViewerPrincipal, seq?: number) {
+    return this.viewerLeases.acquire(sessionId, clientId, principal, seq);
   }
 
-  connectViewer(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease) return undefined;
-    this.clearTimer(lease.releaseTimer);
-    lease.releaseTimer = undefined;
-    const connection = Symbol(clientId);
-    lease.sockets.add(connection);
-    this.viewerConnections.set(connection, clientId);
-    return connection;
+  connectViewer(clientId: string, principal: ViewerPrincipal) {
+    return this.viewerLeases.connect(clientId, principal);
   }
 
   disconnectViewer(connection: symbol) {
-    const clientId = this.viewerConnections.get(connection);
-    if (!clientId) return;
-    this.viewerConnections.delete(connection);
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease || !lease.sockets.delete(connection) || lease.sockets.size > 0) return;
-    this.releaseViewer(clientId);
+    this.viewerLeases.disconnect(connection);
   }
 
-  releaseViewer(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease) return;
-    this.clearTimer(lease.releaseTimer);
-    this.viewerLeases.delete(clientId);
-    for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-    lease.sockets.clear();
-    const entry = this.liveSessions.get(lease.sessionKey);
-    if (entry) {
-      entry.viewerClientIds.delete(clientId);
-      this.scheduleLiveSessionCleanup(lease.sessionKey);
-    }
+  releaseViewer(clientId: string, principal: ViewerPrincipal) {
+    this.viewerLeases.release(clientId, principal);
   }
 
-  lifecycleSnapshot() {
+  lifecycleSnapshot(principal?: ViewerPrincipal) {
     return {
       liveSessions: Array.from(this.liveSessions.values()).map((entry) => ({
         sessionId: entry.session.sessionId,
-        sessionFile: entry.session.sessionFile,
         viewerLeases: entry.viewerClientIds.size,
         workLeases: entry.workLeases.size,
         retryLeases: Array.from(entry.workLeases.values()).filter((lease) => lease.kind === "retry").length,
@@ -934,12 +911,7 @@ export class LocalSessionService implements SessionService {
         isStreaming: Boolean(entry.session.isStreaming),
         isCompacting: Boolean(entry.session.isCompacting),
       })),
-      viewerLeases: Array.from(this.viewerLeases.entries()).map(([clientId, lease]) => ({
-        clientId,
-        sessionKey: lease.sessionKey,
-        sockets: lease.sockets.size,
-        hasReleaseTimer: Boolean(lease.releaseTimer),
-      })),
+      viewerLeases: this.viewerLeases.snapshot(principal),
     };
   }
 
@@ -1175,13 +1147,6 @@ export class LocalSessionService implements SessionService {
     }, this.idleGraceMs);
   }
 
-  private scheduleViewerLeaseRelease(clientId: string) {
-    const lease = this.viewerLeases.get(clientId);
-    if (!lease || lease.sockets.size > 0) return;
-    this.clearTimer(lease.releaseTimer);
-    lease.releaseTimer = setTimeout(() => this.releaseViewer(clientId), this.viewerGraceMs);
-  }
-
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
     if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
@@ -1192,13 +1157,7 @@ export class LocalSessionService implements SessionService {
     const value = entry.session;
     const sessionId = value.sessionId;
     const sessionFile = value.sessionFile || key;
-    for (const [clientId, lease] of this.viewerLeases) {
-      if (lease.sessionKey !== key) continue;
-      this.clearTimer(lease.releaseTimer);
-      this.viewerLeases.delete(clientId);
-      for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-      lease.sockets.clear();
-    }
+    this.viewerLeases.dropSession(key);
     await entry.handle.dispose(reason);
     this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
