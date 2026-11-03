@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
 import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, readAvatarBody, readAvatarPackageBody, storeAvatar, storeAvatarPackage } from "./server/appIdentity.js";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -50,8 +50,14 @@ import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.j
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
 import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
+import { attachmentBodyLimit, createJsonBodyReader, largeJsonBodyLimit, ordinaryJsonBodyLimit, pipeReadStream, promptJsonBodyLimit, readBytes } from "./server/httpTransport.js";
 
 initializeSupervisorPeerContext(process.env);
+const jsonBodyReader = createJsonBodyReader((req, requestedLimit) =>
+  hasExtensionCredential(req) ? Math.min(ordinaryJsonBodyLimit, requestedLimit) : requestedLimit);
+function readBody(req: IncomingMessage, maxBytes = ordinaryJsonBodyLimit): Promise<unknown> {
+  return jsonBodyReader(req, maxBytes);
+}
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();
@@ -71,7 +77,10 @@ const authOrigin = authUrl.origin;
 const reportOriginRejection = createOriginRejectionReporter(process.env.PI_WEB_AUTH_ORIGIN);
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
-const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
+const extensionHttp = new ExtensionHttpRegistry({
+  origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null),
+  readBody,
+});
 const authKernel = new AuthKernel(authMode, authStore, (req) => secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS, req?.headers.host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
@@ -131,41 +140,10 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
   res.end(body);
 }
 
-function pipeReadStream(res: ServerResponse, file: string, range?: { start: number; end: number }) {
-  const stream = createReadStream(file, range);
-  res.on("close", () => stream.destroy());
-  stream.pipe(res);
-}
-
 function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
 
-async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: (bytes: number) => void): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.from(chunk);
-    bytes += buffer.length;
-    onChunk?.(buffer.length);
-    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
-function readBody(req: IncomingMessage, maxBytes = hasExtensionCredential(req) ? 1_000_000 : 40_000_000): Promise<unknown> {
-  let body = jsonBodies.get(req);
-  if (!body) {
-    body = readBytes(req, maxBytes).then(bytes => {
-      const text = bytes.toString("utf-8");
-      return text ? JSON.parse(text) : {};
-    });
-    jsonBodies.set(req, body);
-  }
-  return body;
-}
 
 async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -232,7 +210,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const file = resolve(staticDir, reqPath);
   const relPath = relative(staticDir, file);
 
-  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
+  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file) || !statSync(file).isFile()) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
@@ -802,7 +780,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PUT" && url.pathname === "/api/files/write") {
-        const body = await readBody(req) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
+        const body = await readBody(req, largeJsonBodyLimit) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
         try {
           const cwd = await requestCwdFromSessionId(typeof body.sessionId === "string" ? body.sessionId : null);
           return sendJson(res, 200, await writeWorkspaceFile(cwd, body.path, body.content, body.expectedRevision));
@@ -1389,13 +1367,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const name = url.searchParams.get("name") || "attachment";
         const requestedMediaType = url.searchParams.get("mediaType") || "";
         const mediaType = requestedMediaType && requestedMediaType.length <= 160 ? requestedMediaType : "application/octet-stream";
-        const bytes = await readBytes(req);
+        const bytes = await readBytes(req, attachmentBodyLimit);
         const attachment = await storeAttachment(sessionService.cwdForSession(target), { name, mediaType, bytes });
         return sendJson(res, 201, { ok: true, attachment });
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const body = await readBody(req, promptJsonBodyLimit) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
@@ -1512,13 +1490,15 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   }
 }));
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: ordinaryJsonBodyLimit });
 const webSocketRevocation = new WebSocketRevocation(authStore, authKernel);
 // Vite owns this non-listening server and may replace its upgrade listener on
 // restart. The public server always keeps the stable authenticated listener.
 const viteHmrServer = createServer();
 const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, authOrigin, viteHmrServer);
 const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
+  const destroyOnError = () => socket.destroy();
+  socket.on("error", destroyOnError);
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1546,6 +1526,7 @@ const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:n
     if (isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { reportOriginRejection(req); socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity; viewerPrincipal?: ViewerPrincipal }).authIdentity = identity;
     (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal = viewerPrincipal({ identity });
+    socket.off("error", destroyOnError);
     wss.handleUpgrade(req, socket, head, (ws) => { webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 };

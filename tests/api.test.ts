@@ -1621,10 +1621,10 @@ describe("Live session lifecycle", () => {
     let acknowledgedPings = 0;
     const ws = await mockWebSocket(baseUrl, "sessionId=mock-older&clientId=heartbeat-test", { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
-    ws.on("ping", () => {
+    ws.on("ping", (data) => {
       if (!replyToPings) return;
       acknowledgedPings += 1;
-      ws.pong();
+      ws.pong(data);
     });
     try {
       await new Promise<void>((resolve, reject) => {
