@@ -119,6 +119,9 @@ export class ExtensionHttpRegistry {
         if (method === "GET") {
           if (input?.body !== undefined) throw new TypeError("GET requests cannot have a body");
           if (!url.searchParams.has("sessionId")) url.searchParams.set("sessionId", ownerSessionId);
+          if (url.pathname === "/api/state" && client.targets !== "all") {
+            url.searchParams.set("includeSessionUiState", "false");
+          }
         } else if (body.sessionId === undefined) body.sessionId = ownerSessionId;
         this.validateTarget(client, method, url, body);
         if (!credential || credential.expiresAt - this.now() < 30_000) {
@@ -141,15 +144,25 @@ export class ExtensionHttpRegistry {
 
   private validateTarget(client: ClientRecord, method: string, url: URL, body: unknown) {
     // Each read route explicitly permits only its own bounded selectors.
-    const selectors: Record<string, string> = {
-      "/api/session/reference": "entryId",
-      "/api/messages/image": "imageId",
-      "/api/messages": "images",
+    const selectors: Record<string, ReadonlySet<string>> = {
+      "/api/state": new Set(["includeSessionUiState"]),
+      "/api/session/reference": new Set(["entryId"]),
+      "/api/messages/image": new Set(["imageId"]),
+      "/api/messages": new Set(["images"]),
     };
     for (const key of url.searchParams.keys()) {
-      if (method !== "GET" || (key !== "sessionId" && key !== selectors[url.pathname])) {
+      if (method !== "GET" || (key !== "sessionId" && !selectors[url.pathname]?.has(key))) {
         throw new Error("Extension API query parameter is not permitted");
       }
+    }
+    const includeSessionUiState = url.searchParams.getAll("includeSessionUiState");
+    if (includeSessionUiState.length && (
+      includeSessionUiState.length !== 1
+      || !["true", "false"].includes(includeSessionUiState[0])
+    )) throw new Error("Unambiguous includeSessionUiState is required");
+    if (url.pathname === "/api/state" && client.targets !== "all"
+      && (includeSessionUiState.length !== 1 || includeSessionUiState[0] !== "false")) {
+      throw new Error("Scoped extension clients cannot read instance-wide session UI state");
     }
     const imageIds = url.searchParams.getAll("imageId");
     if (url.pathname === "/api/messages/image" && (imageIds.length !== 1 || !/^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([a-f0-9]{64})$/.test(imageIds[0]))) throw new Error("Unambiguous imageId is required");
