@@ -32,6 +32,7 @@ import { SessionSettlementTracker } from "./server/session/settlement.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
+import { viewerPrincipal, type ViewerPrincipal } from "./server/session/viewerLeases.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import {
@@ -394,14 +395,9 @@ function parseViewerSeq(value: unknown): number | undefined {
   return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
 }
 
-function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, principal: ViewerPrincipal, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
-  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
-}
-
-function bindViewerSocket(clientId: string, ws: WebSocket) {
-  const connection = sessionService.connectViewer(clientId);
-  if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
+  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, principal, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
 }
 
 const createdSessionUiWarnings = new Map<string, string>();
@@ -685,6 +681,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
+      const requestViewerPrincipal = viewerPrincipal(auth);
       if (auth.via === "external" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
@@ -754,7 +751,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
-        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(), lifecycle: getMockLifecycle() });
+        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(requestViewerPrincipal), lifecycle: getMockLifecycle() });
       }
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
@@ -934,7 +931,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
-        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), requestViewerPrincipal, url.searchParams.get("clientId"));
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
@@ -1035,7 +1032,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "GET" && url.pathname === "/api/session/lifecycle") {
-        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot() });
+        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(requestViewerPrincipal) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
@@ -1348,7 +1345,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
             console.warn(`Could not transfer session UI metadata for ${decorated.sessionId}:`, error);
           }
         }
-        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), requestViewerPrincipal);
         return sendJson(res, 200, { ok: true, message: result.message, state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
@@ -1448,7 +1445,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
         extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
-        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), requestViewerPrincipal);
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
         let originWarning: string | undefined;
         if (origin && typeof origin.sessionId === "string" && origin.sessionId.trim() && state.sessionId) {
@@ -1480,7 +1477,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const previousSessionId = resolveSessionId(body.sessionId);
           const baseState = await sessionService.switchCwd(previousSessionId, cwd);
           const state = await decorateServiceState(baseState);
-          noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+          noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), requestViewerPrincipal);
           broadcast({ type: "state_changed", ...state });
           const sessionUiStateWarning = state.sessionId !== previousSessionId ? takeCreatedSessionUiWarning(state.sessionId) : undefined;
           return sendJson(res, 200, { ok: true, ...state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
@@ -1496,7 +1493,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
         const state = await decorateServiceState(await sessionService.open(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined));
-        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), body.clientId);
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), requestViewerPrincipal, body.clientId);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -1547,7 +1544,8 @@ const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:n
     const identity = ticket.identity;
     if (!(await webSocketRevocation.validForUpgrade(ticket))) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { reportOriginRejection(req); socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
-    (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    (req as IncomingMessage & { authIdentity?: typeof identity; viewerPrincipal?: ViewerPrincipal }).authIdentity = identity;
+    (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal = viewerPrincipal({ identity });
     wss.handleUpgrade(req, socket, head, (ws) => { webSocketRevocation.enroll(ws, ticket); wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 };
@@ -1563,6 +1561,9 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+  const clientId = cleanClientId(url.searchParams.get("clientId") || "");
+  const principal = (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal;
+  const viewerSeq = parseViewerSeq(url.searchParams.get("viewerSeq"));
   let targetSession: PiWebSession | undefined;
   try {
     targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
@@ -1570,10 +1571,11 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
     realtimeWs.close(1011, "Could not open requested session");
     return;
   }
-  const clientId = cleanClientId(url.searchParams.get("clientId") || "");
-  if (clientId) {
-    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")));
-    bindViewerSocket(clientId, realtimeWs);
+  if (realtimeWs.readyState !== realtimeWs.OPEN) return;
+  if (clientId && principal) {
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, principal, viewerSeq);
+    const connection = sessionService.connectViewer(clientId, principal);
+    if (connection) realtimeWs.once("close", () => sessionService.disconnectViewer(connection));
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();
   realtimeWs.send(JSON.stringify({
