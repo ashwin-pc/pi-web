@@ -14,6 +14,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
+import { panelDeepLinkEvent } from "./panelDeepLinks.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -533,15 +534,9 @@ export function createMessageList(options: {
     }
     if (!href.startsWith("#panel:")) return;
     event.preventDefault();
-    const target = href.slice("#panel:".length);
-    const separator = target.indexOf(":");
-    const key = (separator < 0 ? target : target.slice(0, separator)).trim();
-    const query = separator < 0 ? "" : target.slice(separator + 1);
-    if (!key || key.length > 80 || query.length > 8_192) return;
-    const params = new URLSearchParams(query);
-    if (Array.from(params).length > 64) return;
-    const payload = Object.fromEntries(params);
-    openPanel?.(key, { action: "deep-link", payload });
+    const panelLink = panelDeepLinkEvent(anchor);
+    if (!panelLink) return;
+    openPanel?.(panelLink.key, panelLink.event);
   });
   function settlePointerIntent() {
     if (!pendingUserScrollIntent || Math.abs(messagesEl.scrollTop - pendingUserScrollTop) > 1) return;

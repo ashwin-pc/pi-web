@@ -422,14 +422,12 @@ describe("pi-web mock API", () => {
     const declared = await rawPost(port, "/api/mock/event", declaredBody, {
       "content-type": "application/json",
       "content-length": String(declaredBody.length),
-      origin: baseUrl,
-      "x-pi-web-client-id": "mock-event-bounds",
+      "x-pi-web-test-client-intent": "api-test",
     });
     const streamed = await rawPost(port, "/api/mock/event", streamedBody, {
       "content-type": "application/json",
       "transfer-encoding": "chunked",
-      origin: baseUrl,
-      "x-pi-web-client-id": "mock-event-bounds",
+      "x-pi-web-test-client-intent": "api-test",
     });
     expect([declared.status, streamed.status]).toEqual([413, 413]);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -569,6 +567,16 @@ describe("pi-web mock API", () => {
     expect(current.settings.composer.queueMode).toBe("followUp");
     expect(current.settings.appearance.accentColor).toBe("#ff00aa");
     expect(current.settings.appearance.loadingAnimation).toBe("pulse");
+  });
+
+  it("rejects invalid remote-content host settings", async () => {
+    const invalid = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ security: { remoteContentHosts: ["https://example.test/path"] } }),
+    });
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error).toContain("valid hosts");
   });
 
   it("keeps chat reads and prompts available without fabricating UI state when its storage is unreadable", async () => {

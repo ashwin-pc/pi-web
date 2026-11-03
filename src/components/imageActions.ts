@@ -46,7 +46,11 @@ export function attachImageActions(img: HTMLImageElement, presentation: "full" |
   fullScreen.title = "Preview";
   fullScreen.setAttribute("aria-label", "Preview image");
   fullScreen.append(createElement(Maximize2, { "aria-hidden": "true" }));
-  fullScreen.addEventListener("click", () => openImagePreview(img, fullScreen));
+  fullScreen.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openImagePreview(img, fullScreen);
+  });
 
   const download = document.createElement("a");
   download.className = "imageAction";

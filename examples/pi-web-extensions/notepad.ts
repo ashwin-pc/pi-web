@@ -564,6 +564,14 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
       title: "Global notepad",
       label: "Notepad",
       icon: "notebook-pen",
+      deepLinks: {
+        allowedKeys: ["id"],
+        requiredKeys: ["id"],
+        async describe(payload) {
+          const entry = (await loadStore()).entries.find((candidate) => candidate.id === payload.id);
+          return entry ? `Notepad › ${entry.kind} › ${entry.id}` : `Notepad › ${payload.id}`;
+        },
+      },
       async render(event) {
         try {
           return await withNoteQueue(async () => {
@@ -598,6 +606,7 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
             if (action === "filter") return renderPanel(store, { query: firstField(event, "query") });
 
             if (action === "deep-link") {
+              if (event?.source !== "message") return renderPanel(store);
               const payload = event?.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : undefined;
               const id = typeof payload?.id === "string" ? payload.id : "";
               const target = store.entries.find((entry) => entry.id === id);

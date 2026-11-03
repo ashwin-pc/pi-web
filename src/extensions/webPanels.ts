@@ -1,6 +1,7 @@
 import { iconElement, isIconName } from "../app/icons.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { configurePanelDeepLinks, setPanelDeepLinkDescriptors } from "../messages/panelDeepLinks.js";
 import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
 
 type WebPanelEntry = {
@@ -8,6 +9,7 @@ type WebPanelEntry = {
   title: string;
   label: string;
   icon: string;
+  deepLinks?: { allowedKeys: string[]; requiredKeys?: string[]; hasDescribe?: boolean };
 };
 
 type WebPanelView = {
@@ -35,7 +37,21 @@ function normalizePanels(value: unknown): WebPanelEntry[] {
     const title = typeof entry.title === "string" && entry.title.trim() ? entry.title.trim() : key;
     const label = typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : title;
     const icon = typeof entry.icon === "string" && isIconName(entry.icon) ? entry.icon : "square-pen";
-    return [{ key, title, label, icon }];
+    const rawDeepLinks = entry.deepLinks && typeof entry.deepLinks === "object"
+      ? entry.deepLinks as Record<string, unknown>
+      : undefined;
+    const allowedKeys = Array.isArray(rawDeepLinks?.allowedKeys)
+      ? rawDeepLinks.allowedKeys.filter((key): key is string => typeof key === "string").slice(0, 32)
+      : [];
+    const requiredKeys = Array.isArray(rawDeepLinks?.requiredKeys)
+      ? rawDeepLinks.requiredKeys.filter((key): key is string => typeof key === "string" && allowedKeys.includes(key)).slice(0, allowedKeys.length)
+      : [];
+    const deepLinks = allowedKeys.length ? {
+      allowedKeys,
+      ...(requiredKeys.length ? { requiredKeys } : {}),
+      ...(rawDeepLinks?.hasDescribe === true ? { hasDescribe: true } : {}),
+    } : undefined;
+    return [{ key, title, label, icon, ...(deepLinks ? { deepLinks } : {}) }];
   });
 }
 
@@ -63,6 +79,7 @@ export function createWebPanels(options: {
   getSessionId: () => string;
 }): WebPanelsController {
   const { rightPanels, apiHeaders, getSessionId } = options;
+  configurePanelDeepLinks({ headers: apiHeaders, getSessionId });
   const panel = document.createElement("section");
   panel.className = "webPanel";
   panel.id = "webExtensionPanel";
@@ -213,6 +230,7 @@ export function createWebPanels(options: {
       const changedSession = sessionId !== nextSessionId;
       sessionId = nextSessionId;
       panels = normalizePanels(value);
+      setPanelDeepLinkDescriptors(panels);
       if (changedSession || (activeKey && !activePanel())) {
         requestGeneration += 1;
         updatePending = false;

@@ -4,6 +4,8 @@ import { dirname } from "node:path";
 import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 import { readUtf8FileBounded } from "./shared/boundedFile.js";
 import { HttpError } from "./shared/httpError.js";
+import { normalizeRemoteContentHosts } from "./shared/remoteContentHosts.js";
+export { normalizeRemoteContentHost, remoteContentHostLimit } from "./shared/remoteContentHosts.js";
 
 export type PiWebModelSetting = {
   provider: string;
@@ -84,6 +86,9 @@ export type PiWebSettings = {
     queueMode: "steer" | "followUp";
     expanded: boolean;
   };
+  security: {
+    remoteContentHosts: string[];
+  };
   defaults: {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
@@ -111,6 +116,7 @@ export type PiWebSettingsPatch = Partial<{
     queueMode: unknown;
     expanded: unknown;
   }>;
+  security: Partial<{ remoteContentHosts: unknown }>;
   defaults: Partial<{
     model: unknown;
     thinkingLevel: unknown;
@@ -130,6 +136,9 @@ export const defaultPiWebSettings: PiWebSettings = {
   composer: {
     queueMode: "steer",
     expanded: false,
+  },
+  security: {
+    remoteContentHosts: [],
   },
   defaults: {},
 };
@@ -343,6 +352,9 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   }
   if (typeof composer?.expanded === "boolean") settings.composer.expanded = composer.expanded;
 
+  const security = isRecord(value.security) ? value.security : undefined;
+  settings.security.remoteContentHosts = normalizeRemoteContentHosts(security?.remoteContentHosts);
+
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = normalizeModel(defaults?.model);
   if (model) settings.defaults.model = model;
@@ -389,6 +401,10 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       next.composer.queueMode = patch.composer.queueMode;
     }
     if (typeof patch.composer.expanded === "boolean") next.composer.expanded = patch.composer.expanded;
+  }
+
+  if (isRecord(patch.security) && "remoteContentHosts" in patch.security) {
+    next.security.remoteContentHosts = normalizeRemoteContentHosts(patch.security.remoteContentHosts);
   }
 
   if (isRecord(patch.defaults)) {

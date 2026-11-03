@@ -184,48 +184,6 @@ body.artifactPreviewDocument {
   background: transparent;
   padding: 0;
 }
-.htmlPreview {
-  position: relative;
-  width: 100%;
-  max-width: 100%;
-  margin: 0 0 .8em;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 5px 18px rgba(0,0,0,.12);
-}
-.htmlPreviewFrame {
-  display: block;
-  width: 100%;
-  height: 160px;
-  max-height: min(70vh, 720px);
-  border: 0;
-  background: #fff;
-}
-.htmlPreviewToggle {
-  position: absolute;
-  z-index: 1;
-  top: 7px;
-  right: 7px;
-  min-height: 26px;
-  padding: 3px 8px;
-  border: 1px solid rgba(0,0,0,.18);
-  border-radius: 6px;
-  background: rgba(255,255,255,.92);
-  color: #27272a;
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity .15s ease;
-}
-.htmlPreview:hover .htmlPreviewToggle,
-.htmlPreview:focus-within .htmlPreviewToggle { opacity: 1; }
-.htmlPreview > pre[hidden], .htmlPreviewFrame[hidden] { display: none; }
-.htmlPreview--source { width: 100% !important; overflow: visible; border: 0; background: transparent; box-shadow: none; }
-.htmlPreview--source > pre { margin: 0; padding-right: 72px; }
-.htmlPreview--compact { margin-right: .5em; border-color: color-mix(in srgb, var(--border) 72%, transparent); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-.htmlPreview--compact .htmlPreviewToggle { top: 4px; right: 4px; }
-
 .mermaidDiagram {
   position: relative;
   margin: 0 0 .8em;
@@ -381,10 +339,6 @@ body.artifactPreviewDocument {
   box-shadow: 0 8px 28px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025);
   overflow: clip;
 }
-.artifactPreview--interactive {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  box-shadow: 0 8px 28px rgba(0,0,0,.22), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
-}
 .artifactPreviewHeader {
   position: sticky;
   top: 0;
@@ -475,7 +429,19 @@ body.artifactPreviewDocument {
 .artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }
 .artifactPreview--expanded > .artifactPreviewContent { max-height: none; }
 .artifactPreview--html .artifactPreviewContent { position: relative; padding: 0; }
-.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; pointer-events: none; }
+.artifactPreview--interactive {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.artifactPreviewFrame {
+  display: block;
+  width: 100%;
+  height: min(70vh, 720px);
+  border: 0;
+  background: #fff;
+  border-radius: 0;
+  pointer-events: none;
+}
 .artifactPreview--interactive .artifactPreviewFrame { pointer-events: auto; }
 .artifactPreviewShield {
   position: absolute;
@@ -505,6 +471,7 @@ body.artifactPreviewDocument {
 .artifactPreviewShield:hover span,
 .artifactPreviewShield:focus-visible span { opacity: 1; }
 .artifactPreview--interactive .artifactPreviewShield { pointer-events: none; }
+.artifactPreview--html .htmlPreview { margin: 0; overflow: clip; border: 0; border-radius: 0; box-shadow: none; }
 .artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
 .artifactPreviewAudio { display: block; width: calc(100% - 24px); height: 42px; margin: 12px; }
 .artifactPreview--video .artifactPreviewContent { padding: 0; }

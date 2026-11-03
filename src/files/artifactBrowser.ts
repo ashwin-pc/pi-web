@@ -1,5 +1,6 @@
 import { renderStandaloneMarkdown } from "../markdown/render.js";
 import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { artifactPreviewBaseUrl, createHtmlPreviewGate } from "../markdown/htmlPreviewGate.js";
 import { mountImagePreview } from "./imagePreview.js";
 
 type ArtifactEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number; url?: string };
@@ -306,8 +307,22 @@ export function initArtifactBrowser(options: {
       return;
     }
     if (kind === "html") {
-      const frame = document.createElement("iframe"); frame.title = `Thumbnail of ${entry.name}`; frame.tabIndex = -1; frame.inert = true; frame.loading = "lazy"; frame.setAttribute("aria-hidden", "true"); frame.setAttribute("sandbox", "allow-scripts"); host.append(frame);
-      deferPreview(frame, () => { frame.src = url; });
+      deferPreview(host, () => {
+        void fetch(url, { headers: apiHeaders(), credentials: "same-origin" })
+          .then(async (response) => {
+            if (!response.ok) return;
+            const source = await response.text();
+            if (generation !== loadGeneration || !host.isConnected) return;
+            host.replaceChildren(createHtmlPreviewGate({
+              source,
+              frameTitle: `Live contained thumbnail of ${entry.name}`,
+              from: { sessionId: "", role: "assistant" },
+              inertFrame: true,
+              artifactBaseUrl: artifactPreviewBaseUrl(url),
+            }));
+          })
+          .catch(() => { /* Keep the designed HTML placeholder. */ });
+      });
       return;
     }
     if (kind === "markdown") {
@@ -439,7 +454,20 @@ export function initArtifactBrowser(options: {
     }
     if (kind === "html") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html"; previewBody.textContent = "";
-      const frame = document.createElement("iframe"); frame.src = url; frame.title = `Interactive preview of ${entry.name}`; frame.setAttribute("sandbox", "allow-scripts"); previewBody.append(frame); return;
+      void fetch(url, { headers: apiHeaders(), credentials: "same-origin" }).then(async (response) => {
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        const source = await response.text();
+        if (generation !== previewGeneration) return;
+        previewBody.replaceChildren(createHtmlPreviewGate({
+          source,
+          frameTitle: `Interactive preview of ${entry.name}`,
+          from: { sessionId: "", role: "assistant" },
+          artifactBaseUrl: artifactPreviewBaseUrl(url),
+        }));
+      }).catch((error) => {
+        if (generation === previewGeneration) renderPreviewError(error instanceof Error ? error.message : String(error));
+      });
+      return;
     }
     if (kind === "video" || kind === "audio") {
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`; previewBody.textContent = "";

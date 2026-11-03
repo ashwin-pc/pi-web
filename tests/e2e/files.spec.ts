@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { previewContentSecurityPolicy } from "../../src/markdown/htmlPreviewGate.js";
 
 const artifactRoot = ".pi/web/artifacts";
 const files = {
@@ -177,17 +178,100 @@ test("artifact preview history returns to its owning gallery directory", async (
 });
 
 test("large artifact preview renders interactive HTML, Markdown, and video", async ({ page }) => {
+  let htmlMarkers = 0;
+  const siblingRequests = { image: 0, style: 0, script: 0 };
+  await page.route("https://markers.example.test/thumbnail", (route) => {
+    htmlMarkers += 1;
+    return route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+  });
+  await page.route("**/api/session-artifacts/mock-current/assets/sibling.png", (route) => {
+    siblingRequests.image += 1;
+    return route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="green"/></svg>',
+    });
+  });
+  await page.route("**/api/session-artifacts/mock-current/assets/sibling.css", (route) => {
+    siblingRequests.style += 1;
+    return route.fulfill({ contentType: "text/css", body: "#interactive { color: rgb(12, 34, 56); }" });
+  });
+  await page.route("**/api/session-artifacts/mock-current/assets/sibling.js", (route) => {
+    siblingRequests.script += 1;
+    return route.fulfill({
+      contentType: "text/javascript",
+      body: "document.documentElement.dataset.siblingScript='loaded';document.getElementById('interactive').dataset.sibling='yes';",
+    });
+  });
+  await page.route(/\/api\/(?:session-)?artifacts\/.*concept\.html$/, (route) => route.fulfill({
+    contentType: "text/html",
+    body: [
+      "<!doctype html>",
+      '<link rel="stylesheet" href="assets/sibling.css">',
+      '<img id="sibling-image" src="assets/sibling.png">',
+      '<img src="https://markers.example.test/thumbnail">',
+      '<button id="interactive">Ready</button>',
+      '<script src="assets/sibling.js"></script>',
+      "<script>document.getElementById('interactive').onclick=()=>document.getElementById('interactive').textContent='Clicked'</script>",
+    ].join(""),
+  }));
+  await page.request.patch("/api/settings", { data: { security: { remoteContentHosts: ["markers.example.test"] } } });
   await page.goto("/");
   await openLauncherAction(page, "File explorer");
   await page.locator("#filesArtifactsScope").click();
 
   const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] iframe`);
+  await expect(thumbnail).toHaveAttribute("sandbox", "allow-scripts");
   await expect(thumbnail).toHaveAttribute("inert", "");
+  await expect(thumbnail).toHaveAttribute("tabindex", "-1");
   await expect(thumbnail).toHaveAttribute("aria-hidden", "true");
+  await expect(thumbnail.contentFrame().locator("#interactive")).toHaveText("Ready");
+  await expect(thumbnail.contentFrame().locator("html")).toHaveAttribute("data-sibling-script", "loaded");
+  await expect(thumbnail.contentFrame().locator("#interactive")).toHaveAttribute("data-sibling", "yes");
+  await expect(thumbnail.contentFrame().locator("#interactive")).toHaveCSS("color", "rgb(12, 34, 56)");
+  await expect(thumbnail.contentFrame().locator("#sibling-image")).toBeVisible();
+  await expect.poll(() => htmlMarkers).toBeGreaterThanOrEqual(1);
+  const thumbnailContainment = await thumbnail.evaluate((element: HTMLIFrameElement) => {
+    const parsed = new DOMParser().parseFromString(element.srcdoc, "text/html");
+    const first = parsed.head.firstElementChild;
+    const second = first?.nextElementSibling;
+    return {
+      tag: first?.tagName,
+      httpEquiv: first?.getAttribute("http-equiv"),
+      content: first?.getAttribute("content"),
+      secondTag: second?.tagName,
+      baseHref: second?.getAttribute("href"),
+    };
+  });
+  const appOrigin = new URL(page.url()).origin;
+  const artifactBase = `${appOrigin}/api/session-artifacts/mock-current/`;
+  expect(thumbnailContainment).toEqual({
+    tag: "META",
+    httpEquiv: "Content-Security-Policy",
+    content: previewContentSecurityPolicy(["https://markers.example.test"], artifactBase),
+    secondTag: "BASE",
+    baseHref: artifactBase,
+  });
+  const thumbnailGeometry = await thumbnail.evaluate((iframe) => {
+    const visual = iframe.closest<HTMLElement>(".artifactGalleryCardVisual")!.getBoundingClientRect();
+    const frame = iframe.getBoundingClientRect();
+    return {
+      widthDifference: Math.abs(visual.width - frame.width),
+      heightDifference: Math.abs(visual.height - frame.height),
+    };
+  });
+  expect(thumbnailGeometry.widthDifference).toBeLessThan(2);
+  expect(thumbnailGeometry.heightDifference).toBeLessThan(2);
+  expect(siblingRequests.image).toBeGreaterThanOrEqual(1);
+  expect(siblingRequests.style).toBeGreaterThanOrEqual(1);
+  expect(siblingRequests.script).toBeGreaterThanOrEqual(1);
   await page.getByRole("button", { name: "Preview concept.html" }).click();
   const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
   await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Ready");
+  await expect(htmlFrame.contentFrame().locator("html")).toHaveAttribute("data-sibling-script", "loaded");
+  await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveCSS("color", "rgb(12, 34, 56)");
+  await expect(htmlFrame.contentFrame().locator("#sibling-image")).toBeVisible();
+  await expect.poll(() => htmlMarkers).toBeGreaterThanOrEqual(1);
   await htmlFrame.contentFrame().locator("#interactive").click();
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Clicked");
   await page.goBack();

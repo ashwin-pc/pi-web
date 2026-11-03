@@ -121,6 +121,17 @@ remain trusted.
 
 ## Contribution API
 
+Panel contributions may declare an optional `deepLinks` descriptor with
+`allowedKeys`, optional `requiredKeys`, and an optional server-side
+`describe(payload)` function. Message links use
+`#panel:<panel-key>:<URLSearchParams>`. pi-web validates the bounded string
+payload, drops undeclared keys, and sends `{ action: "deep-link", source:
+"message", payload }`. Panels without a schema remain compatible.
+
+Message deep links only navigate to panel content. A panel MUST NOT mutate
+state in response to a message deep link without another explicit click inside
+the panel.
+
 `ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key. Keys are identities across slots, so prefix them with your extension name (for example, `acme-notes.panel`) to avoid collisions with other extensions and convenience wrappers.
 
 ```ts
@@ -272,7 +283,15 @@ ctx.ui.web.setPanel("notes", {
   title: "Notes",
   label: "Notepad",
   icon: "notebook-pen",
+  deepLinks: {
+    allowedKeys: ["id"],
+    requiredKeys: ["id"],
+    describe: ({ id }) => `Notepad › ${id}`,
+  },
   render: async (event) => {
+    if (event?.action === "deep-link" && event.source === "message") {
+      // Navigate/highlight only; require another in-panel click before mutation.
+    }
     if (event?.action === "save") {
       const content = event.fields?.content;
       // Persist content here.
@@ -288,13 +307,16 @@ ctx.ui.web.setPanel("notes", {
 ```
 
 Assistant and user messages can deep-link into a panel with Markdown such as
-`[Open task](#panel:global-notepad:note=oncall%2Fw34&task=t-3f2a)`. Clicking it
+`[Open task](#panel:global-notepad:id=t-3f2a)`. Clicking it
 opens the registered panel and calls `render()` with
-`{ action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } }`.
-Core treats the query as opaque strings; duplicate names use their final value.
+`{ action: "deep-link", source: "message", payload: { id: "t-3f2a" } }`.
+Declared schemas drop undeclared keys and reject links missing required keys.
+Panels without a schema retain opaque-string compatibility. Duplicate names use their final value.
 Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
-The extension owns scrolling, highlighting, and fallback behavior; unknown or
-malformed panel links are a quiet no-op.
+Panel keys retain the contribution API's existing punctuation support; deep links
+reject only empty or overlong keys and keys containing control characters.
+The extension owns scrolling, highlighting, and fallback behavior. Unknown,
+malformed, or schema-invalid panel links render as plain text.
 
 Panel HTML crosses an untrusted browser boundary and uses the same sanitizer as
 custom footer, Git-tab, and system-info HTML. Use action attributes for
@@ -322,7 +344,7 @@ ctx.ui.web.setHeaderAction("open-notes", {
 
 ## Artifact preview renderer API
 
-`artifact-preview` contributions render otherwise-generic artifact formats inside a sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files.
+`artifact-preview` contributions render otherwise-generic artifact formats inside an automatically running, sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files. pi-web injects a CSP that blocks fetch/connect, image, script, style, font, media, and nested-frame network loads until the user approves an exact origin. The opaque origin isolates pi-web DOM and storage, but it is not a complete network boundary: self-navigation can send its destination URL before the parent detects the navigation and replaces the frame with a notice, and browser WebRTC is not governed by CSP where available.
 
 ```ts
 ctx.ui.web.contribute("gcode.viewer", {

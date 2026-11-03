@@ -53,6 +53,7 @@ export type PiWebContributionEvent = {
   action?: string;
   payload?: unknown;
   fields?: Record<string, string | string[]>;
+  source?: "message";
   context?: Record<string, unknown>;
   /** Present only for server-side capture contributions; core validates and owns this temporary file. */
   capture?: PiWebCaptureResult;
@@ -89,12 +90,23 @@ export type PiWebContribution =
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
     }
   | {
-      slot: "header-action" | "artifact-action" | "git-tab" | "panel" | "system-info";
+      slot: "header-action" | "artifact-action" | "git-tab" | "system-info";
       kind: "rendered";
       title: string;
       label?: string;
       icon?: string;
       match?: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      render: (event?: PiWebContributionEvent) => PiWebContributionView | Promise<PiWebContributionView>;
+    }
+  | {
+      slot: "panel";
+      kind: "rendered";
+      title: string;
+      label?: string;
+      icon?: string;
+      deepLinks?: PiWebPanelDeepLinks & {
+        describe?: (payload: Record<string, string>) => string | Promise<string>;
+      };
       render: (event?: PiWebContributionEvent) => PiWebContributionView | Promise<PiWebContributionView>;
     };
 
@@ -197,6 +209,13 @@ export type PiWebPanelEvent = {
   payload?: unknown;
   /** Successful form controls, grouped by name. */
   fields?: Record<string, string | string[]>;
+  /** Origin of a navigation event. Message deep links are navigation-only. */
+  source?: "message";
+};
+
+export type PiWebPanelDeepLinks = {
+  allowedKeys: string[];
+  requiredKeys?: string[];
 };
 
 export type PiWebPanelView = {
@@ -210,6 +229,10 @@ export type PiWebPanel = {
   label?: string;
   /** lucide icon name; unsupported names fall back to square-pen. */
   icon?: string;
+  /** Optional validation and presentation for #panel links in messages. */
+  deepLinks?: PiWebPanelDeepLinks & {
+    describe?: (payload: Record<string, string>) => string | Promise<string>;
+  };
   render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
 };
 

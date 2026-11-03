@@ -5,9 +5,16 @@ import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
 import { artifactSessionId, scopeArtifactUrl } from "../artifacts/url.js";
+import { artifactPreviewBaseUrl, createHtmlPreviewGate } from "./htmlPreviewGate.js";
+import {
+  classifyMarkdownImageSource,
+  enhanceRemoteMarkdownImages,
+  remoteMarkdownImagePlaceholder,
+} from "./imageTrust.js";
 import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
 import { createStreamingReveal } from "./streamingReveal.js";
 import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
+import { enhancePanelDeepLinks } from "../messages/panelDeepLinks.js";
 
 marked.setOptions({
   async: false,
@@ -96,19 +103,34 @@ function sanitizeMarkdownHtml(html: string) {
 
       if (name === "src") {
         const src = attribute.value.trim();
-        if (!/^(https?:|data:image\/(png|jpeg|jpg|gif|webp);base64,|\/api\/(?:artifacts|session-artifacts)\/)/i.test(src)) {
+        const classified = classifyMarkdownImageSource(src);
+        if (classified.kind === "rejected") {
           element.removeAttribute(attribute.name);
+        } else if (classified.kind === "remote" && tagName === "img") {
+          element.replaceWith(remoteMarkdownImagePlaceholder(
+            classified,
+            element.getAttribute("alt") || "",
+            element.getAttribute("title") || "",
+          ));
+          break;
+        } else {
+          element.setAttribute(attribute.name, classified.src);
         }
       }
     }
 
+    if (!element.parentNode) continue;
     if (tagName === "a") {
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noopener noreferrer");
     }
 
-    if (tagName === "img" && !element.getAttribute("src")) {
-      element.remove();
+    if (tagName === "img") {
+      if (!element.getAttribute("src")) element.remove();
+      else {
+        element.setAttribute("referrerpolicy", "no-referrer");
+        element.setAttribute("loading", "lazy");
+      }
     }
   }
 
@@ -378,10 +400,6 @@ function ensureInlineHtmlResizeListener() {
   });
 }
 
-function inlineHtmlReporter() {
-  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0,measured=false;for(const n of b.childNodes){let r;if(n.nodeType===1)r=n.getBoundingClientRect();else if(n.nodeType===3&&n.textContent.trim()){const range=document.createRange();range.selectNodeContents(n);r=range.getBoundingClientRect()}if(!r)continue;measured=true;right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=measured?Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0')):e.clientWidth;parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
-}
-
 function enhanceInlineHtmlPreviews(root: ParentNode) {
   for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-html-preview"))) {
     const pre = code.closest<HTMLPreElement>("pre");
@@ -391,34 +409,18 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
     pre.dataset.htmlPreviewEnhanced = "true";
     code.classList.remove("language-html-preview");
     code.classList.add("language-html");
-    pre.hidden = true;
-
-    const container = document.createElement("div");
-    container.className = "htmlPreview";
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "htmlPreviewToggle";
-    toggle.textContent = "Source";
-    toggle.title = "Show HTML source";
-    toggle.setAttribute("aria-label", toggle.title);
-    const frame = document.createElement("iframe");
-    frame.className = "htmlPreviewFrame";
-    frame.title = "Interactive HTML preview";
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.srcdoc = source + inlineHtmlReporter();
-    toggle.addEventListener("click", () => {
-      const showingSource = pre.hidden;
-      pre.hidden = !showingSource;
-      frame.hidden = showingSource;
-      container.classList.toggle("htmlPreview--source", showingSource);
-      toggle.textContent = showingSource ? "Preview" : "Source";
-      toggle.title = showingSource ? "Show interactive preview" : "Show HTML source";
-      toggle.setAttribute("aria-label", toggle.title);
+    const marker = document.createComment("html-preview");
+    pre.replaceWith(marker);
+    const container = createHtmlPreviewGate({
+      source,
+      sourceElement: pre,
+      from: { sessionId: artifactActionSessionId(), role: "assistant" },
+      onMount: (frame) => {
+        inlineHtmlFrames.add(frame);
+        ensureInlineHtmlResizeListener();
+      },
     });
-    pre.replaceWith(container);
-    container.append(frame, pre, toggle);
-    inlineHtmlFrames.add(frame);
-    ensureInlineHtmlResizeListener();
+    marker.replaceWith(container);
   }
 }
 
@@ -455,6 +457,11 @@ function enhanceCodeBlocks(root: ParentNode) {
 }
 
 function enhanceImages(root: ParentNode, sessionId = artifactActionSessionId()) {
+  const message = root instanceof Element ? root.closest(".message") : null;
+  const role = message?.classList.contains("user") ? "user"
+    : message?.classList.contains("system") ? "system"
+      : message?.classList.contains("tool") ? "tool" : "assistant";
+  enhanceRemoteMarkdownImages(root, attachImageActions, { sessionId, role });
   for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) {
     const src = img.getAttribute("src");
     if (src) {
@@ -585,6 +592,23 @@ function ensureArtifactInteractionListener() {
       if (!card.contains(event.target as Node)) setArtifactFrameInteraction(card, false);
     }
   }, true);
+}
+
+function attachArtifactInteractionShield(card: HTMLElement, content: HTMLElement, label: string) {
+  const shield = document.createElement("button");
+  shield.type = "button";
+  shield.className = "artifactPreviewShield";
+  shield.setAttribute("aria-label", `Click to interact with ${label}`);
+  const hint = document.createElement("span");
+  hint.textContent = "Click to interact";
+  shield.append(hint);
+  shield.addEventListener("click", () => {
+    setArtifactFrameInteraction(card, true);
+    content.querySelector<HTMLIFrameElement>("iframe")?.focus();
+  });
+  card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+  content.append(shield);
+  ensureArtifactInteractionListener();
 }
 
 function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {
@@ -728,32 +752,14 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
     container.insertAdjacentElement("afterend", card);
 
     if (customPreview) {
-      // Custom previews are sandboxed HTML too. Give their content the same
-      // positioning context as built-in HTML so the interaction shield covers
-      // only the iframe instead of resolving against the larger artifact card.
       card.classList.add("artifactPreview--html");
       void mountArtifactPreview(content, { name: fileName, path: artifactPath, kind: "file" }, {
         title: `Interactive preview of ${title.textContent}`,
-        className: "artifactPreviewFrame",
+        className: "htmlPreviewFrame artifactPreviewFrame",
         isCurrent: () => card.isConnected,
       }).then((mounted) => {
         if (!mounted || !card.isConnected) return;
-        const iframe = content.querySelector<HTMLIFrameElement>("iframe");
-        if (!iframe) return;
-        const shield = document.createElement("button");
-        shield.type = "button";
-        shield.className = "artifactPreviewShield";
-        shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-        const shieldHint = document.createElement("span");
-        shieldHint.textContent = "Click to interact";
-        shield.append(shieldHint);
-        shield.addEventListener("click", () => {
-          setArtifactFrameInteraction(card, true);
-          iframe.focus();
-        });
-        card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-        content.append(shield);
-        ensureArtifactInteractionListener();
+        attachArtifactInteractionShield(card, content, title.textContent || fileName);
         refreshOverflow();
       }).catch((error) => {
         if (!card.isConnected) return;
@@ -765,31 +771,34 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
     }
 
     if (kind === "html") {
-      content.textContent = "";
-      const iframe = document.createElement("iframe");
-      iframe.className = "artifactPreviewFrame";
-      iframe.title = `Preview of ${title.textContent}`;
-      void fetch(artifactUrl, { headers: artifactActionHeaders(), credentials: "same-origin" })
-        .then(async response => { if (!response.ok) throw new Error(`Preview failed (${response.status})`); iframe.srcdoc = await response.text(); })
-        .catch(error => { content.textContent = error instanceof Error ? error.message : "Preview failed"; });
-      // Allow artifact scripts (for diagrams and interactive previews) while omitting
-      // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
-      iframe.setAttribute("sandbox", "allow-scripts");
-      const shield = document.createElement("button");
-      shield.type = "button";
-      shield.className = "artifactPreviewShield";
-      shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-      const shieldHint = document.createElement("span");
-      shieldHint.textContent = "Click to interact";
-      shield.append(shieldHint);
-      shield.addEventListener("click", () => {
-        setArtifactFrameInteraction(card, true);
-        iframe.focus();
-      });
-      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-      content.append(iframe, shield);
-      ensureArtifactInteractionListener();
+      const loadingFrame = document.createElement("div");
+      loadingFrame.className = "artifactPreviewFrame artifactPreviewFrame--loading";
+      loadingFrame.setAttribute("role", "status");
+      loadingFrame.setAttribute("aria-label", "Loading HTML preview");
+      content.replaceChildren(loadingFrame);
       refreshOverflow();
+      void fetch(artifactUrl, { headers: artifactActionHeaders(), credentials: "same-origin" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+          const source = await response.text();
+          if (!card.isConnected) return;
+          const gate = createHtmlPreviewGate({
+            source,
+            frameClassName: "htmlPreviewFrame artifactPreviewFrame",
+            frameTitle: `Preview of ${title.textContent}`,
+            from: { sessionId: artifactSessionId(artifactUrl) || sessionId, role: "assistant" },
+            artifactBaseUrl: artifactPreviewBaseUrl(url.pathname),
+          });
+          content.replaceChildren(gate);
+          attachArtifactInteractionShield(card, content, title.textContent || fileName);
+          refreshOverflow();
+        })
+        .catch((error) => {
+          if (!card.isConnected) return;
+          content.textContent = error instanceof Error ? error.message : "Preview failed";
+          card.classList.add("artifactPreview--error");
+          refreshOverflow();
+        });
       continue;
     }
 
@@ -840,6 +849,7 @@ export function renderStandaloneMarkdown(
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceSessionCitationLinks(body);
+  enhancePanelDeepLinks(body);
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
@@ -879,6 +889,7 @@ export function createMarkdownRenderer(
   const finalizeStreaming = (body: HTMLElement, text: string) => {
     renderStreaming(body, text);
     enhanceSessionCitationLinks(body);
+    enhancePanelDeepLinks(body);
     enhanceMermaid(body);
     enhanceInlineHtmlPreviews(body);
     enhanceCodeBlocks(body);

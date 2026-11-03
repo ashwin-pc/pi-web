@@ -658,6 +658,11 @@ describe("bundled extension path discovery", () => {
     let lastPanelEvent: any;
     ui.web.setPanel("notes", {
       title: "Global notes", label: "Notepad", icon: "notebook-pen",
+      deepLinks: {
+        allowedKeys: ["id", "id"],
+        requiredKeys: ["id"],
+        describe: (payload: Record<string, string>) => `Notepad\u0000 › ${payload.id}`,
+      },
       render: (event: any) => {
         lastPanelEvent = event;
         return { title: event?.action === "save" ? "Saved notes" : undefined, html: `<p>${event?.fields?.content || "empty"}</p>` };
@@ -666,7 +671,10 @@ describe("bundled extension path discovery", () => {
 
     // Panels are pure surfaces: registering one contributes no FAB entry.
     expect(bridge.entries(session).webContributions).toEqual([
-      { version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notes", label: "Notepad", icon: "notebook-pen" },
+      {
+        version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notes", label: "Notepad", icon: "notebook-pen",
+        deepLinks: { allowedKeys: ["id"], requiredKeys: ["id"], hasDescribe: true },
+      },
     ]);
     expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
 
@@ -685,6 +693,18 @@ describe("bundled extension path discovery", () => {
     })).resolves.toEqual({ title: "Saved notes", html: "<p>remember me\n</p>" });
     expect(lastPanelEvent.fields.content).toBe("remember me\n");
     expect(Object.keys(lastPanelEvent.fields)).toHaveLength(128);
+    await expect(bridge.invokeContribution(session, {
+      slot: "panel", key: "notes", event: { action: "__pi_web_describe_deep_link", payload: { id: "n-1" } },
+    })).resolves.toEqual({ description: "Notepad › n-1" });
+    await expect(bridge.invokeContribution(session, {
+      slot: "panel", key: "notes", event: { action: "deep-link", source: "message", payload: { id: "n-1" } },
+    })).resolves.toEqual({ title: undefined, html: "<p>empty</p>" });
+    expect(lastPanelEvent).toMatchObject({ action: "deep-link", source: "message", payload: { id: "n-1" } });
+    expect(() => ui.web.setPanel("invalid-links", {
+      title: "Invalid",
+      deepLinks: { allowedKeys: ["bad key"] },
+      render: () => ({ html: "<p>invalid</p>" }),
+    })).toThrow("letters, numbers");
     await expect(bridge.invokePanel(session, { key: "missing" })).rejects.toThrow("Panel not found");
 
     // Launchers are decoupled from panels: a header action can open one.

@@ -55,6 +55,7 @@ import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/art
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureContentPolicy } from "./security/contentPolicy.js";
 import { configureImagePreviewOpener } from "./components/imageActions.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
@@ -99,6 +100,7 @@ const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
+configureContentPolicy({ headers: api.headers });
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
 configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
 

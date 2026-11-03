@@ -1,3 +1,5 @@
+import { createHtmlPreviewGate } from "../markdown/htmlPreviewGate.js";
+
 export type ArtifactPreviewKind = "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
 
 type ArtifactPreviewDescriptor = {
@@ -15,6 +17,7 @@ export type ArtifactPreviewMountOptions = {
   title: string;
   className?: string;
   isCurrent?: () => boolean;
+  onMount?: (frame: HTMLIFrameElement) => void;
 };
 
 let descriptors: ArtifactPreviewDescriptor[] = [];
@@ -73,11 +76,13 @@ export async function mountArtifactPreview(
   if (!descriptor) return false;
   const { html } = await renderArtifactPreview(descriptor, artifact);
   if (options.isCurrent && !options.isCurrent()) return true;
-  const frame = document.createElement("iframe");
-  if (options.className) frame.className = options.className;
-  frame.srcdoc = html;
-  frame.title = options.title;
-  frame.setAttribute("sandbox", "allow-scripts");
-  host.replaceChildren(frame);
+  const gate = createHtmlPreviewGate({
+    source: html,
+    frameClassName: options.className,
+    frameTitle: options.title,
+    from: { sessionId: sessionId(), role: "assistant" },
+    onMount: options.onMount,
+  });
+  host.replaceChildren(gate);
   return true;
 }

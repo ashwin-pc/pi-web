@@ -38,6 +38,7 @@ describe("pi-web settings", () => {
       identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
+      security: { remoteContentHosts: [] },
       defaults: {},
     });
   });
@@ -80,8 +81,36 @@ describe("pi-web settings", () => {
       identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "compact", accentColor: "#ff00aa", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
+      security: { remoteContentHosts: [] },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
     });
+  });
+
+  it("normalizes and bounds the remote-content host allowlist", () => {
+    const raw = [
+      " Images.Example.COM. ",
+      "images.example.com",
+      "localhost:8787",
+      "https://not-a-host.example/path",
+      "user@example.com",
+      "bad_host.example",
+      "empty..label.example",
+      "trailing-.example",
+      ...Array.from({ length: 80 }, (_, index) => `cdn-${index}.example.com`),
+    ];
+    const normalized = normalizeSettings({ security: { remoteContentHosts: raw } });
+    expect(normalized.security.remoteContentHosts).toContain("images.example.com");
+    expect(normalized.security.remoteContentHosts).toContain("localhost:8787");
+    expect(normalized.security.remoteContentHosts).not.toContain("https://not-a-host.example/path");
+    expect(normalized.security.remoteContentHosts).not.toContain("bad_host.example");
+    expect(normalized.security.remoteContentHosts).not.toContain("empty..label.example");
+    expect(normalized.security.remoteContentHosts).not.toContain("trailing-.example");
+    expect(normalized.security.remoteContentHosts).toHaveLength(64);
+
+    const patched = applySettingsPatch(normalizeSettings(undefined), {
+      security: { remoteContentHosts: ["STATIC.EXAMPLE.COM.", "static.example.com"] },
+    });
+    expect(patched.security.remoteContentHosts).toEqual(["static.example.com"]);
   });
 
   it("retains long model identifiers and thinking levels", async () => {
