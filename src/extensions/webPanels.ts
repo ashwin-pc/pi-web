@@ -1,6 +1,7 @@
 import { iconElement, isIconName } from "../app/icons.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { sanitizeExtensionHtml } from "./sanitizeExtensionHtml.js";
 
 type WebPanelEntry = {
   key: string;
@@ -138,7 +139,7 @@ export function createWebPanels(options: {
       if (generation !== requestGeneration || activeKey !== entry.key) return;
       if (typeof data.html !== "string") throw new Error("Panel returned no content");
       renderHeading(entry, data.title);
-      body.innerHTML = data.html;
+      body.replaceChildren(sanitizeExtensionHtml(data.html));
       const autofocus = body.querySelector<HTMLElement>("[autofocus]");
       autofocus?.focus({ preventScroll: event?.action !== "deep-link" });
     } catch (error) {

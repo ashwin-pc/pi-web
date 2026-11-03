@@ -4,6 +4,7 @@ import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
+import { sanitizeExtensionHtml } from "../extensions/sanitizeExtensionHtml.js";
 import type { ComposerContextAttachment } from "../app/types.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
@@ -426,7 +427,7 @@ export function initGitPanel(options: {
       } else if (extensionTabView.error) {
         primaryContent.innerHTML = `<div class="gitExtensionError">${escapeHtml(extensionTabView.error)}</div>`;
       } else {
-        primaryContent.innerHTML = extensionTabView.html || "";
+        primaryContent.replaceChildren(sanitizeExtensionHtml(extensionTabView.html || ""));
       }
       return;
     }

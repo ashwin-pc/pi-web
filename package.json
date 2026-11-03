@@ -79,6 +79,7 @@
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@simplewebauthn/server": "^13.3.3",
     "@uiw/codemirror-theme-vscode": "^4.25.11",
+    "dompurify": "^3.4.8",
     "fflate": "^0.8.3",
     "highlight.js": "^11.11.1",
     "lucide": "^1.14.0",

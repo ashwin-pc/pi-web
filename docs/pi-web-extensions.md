@@ -221,7 +221,15 @@ ctx.ui.web.setFooter("git", {
 });
 ```
 
-HTML is rendered as trusted extension-provided markup. pi-web extensions run with the same local trust model as regular pi extensions, so only install extensions from sources you trust.
+HTML is sanitized before it enters pi-web's privileged app document. Form controls,
+`data-*` action/payload attributes, accessibility attributes, inline styles,
+global `<style>` blocks, and static SVG are preserved. Scripts, event-handler
+attributes, active scripting URLs, embedded frames, and form navigation outside
+the pi-web origin are removed. Global style blocks can affect the host UI, so
+extension authors should prefix selectors with an extension-specific class.
+Styles and media may load remote resources. Extensions still run server-side
+with the user's permissions, so only install extensions from sources you trust;
+browser contribution HTML is a separate, untrusted boundary.
 
 ## Header action API
 
@@ -246,8 +254,8 @@ The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../
 
 ## FAB and right-panel API
 
-`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**: trusted
-extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
+`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**:
+sanitized extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
 implicit entry point** — registering one contributes nothing to the FAB. Entry points
 are explicit and may be anything that references the panel:
 
@@ -288,9 +296,9 @@ Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
 The extension owns scrolling, highlighting, and fallback behavior; unknown or
 malformed panel links are a quiet no-op.
 
-Panel HTML is trusted and uses the same local extension trust model as custom
-footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
-use action attributes for interaction. Clear the contribution with:
+Panel HTML crosses an untrusted browser boundary and uses the same sanitizer as
+custom footer, Git-tab, and system-info HTML. Use action attributes for
+interaction. Clear the contribution with:
 
 ```ts
 ctx.ui.web.setPanel("notes", undefined);
@@ -387,7 +395,7 @@ ctx.ui.web.setArtifactAction("publish", undefined);
 
 ## Git panel tab API
 
-`ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
+`ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer and sanitizes returned HTML; extensions own provider detection and data fetching.
 
 Elements inside the HTML can call back into the extension by using `data-web-action` and optional JSON in `data-web-payload` (the legacy Git-tab names remain accepted). An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
 
