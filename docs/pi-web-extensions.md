@@ -338,7 +338,9 @@ The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. 
 
 ### Example: 3D modeling workflow
 
-[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.
+[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) provides a CLI-backed modeling interface with sandboxed interactive STL and G-code previews and a **Slice** action for STL artifacts. One `modeling` tool shares the CLI's discovery/execution implementation rather than registering separate Fusion, image-to-3D and slicing tools. The backend adapters retain their distinct permissions and lifecycle guarantees; the CLI is not a sandbox for runtime scripts. See the example README for command help, local configuration, migration from legacy tools and the supported execution contracts.
+
+The companion [`3d-modeling` skill](../examples/pi-web-skills/3d-modeling/SKILL.md) teaches incremental modeling, representation selection, evidence-based validation and CAD reverse engineering without prescribing a backend or machine-specific installation path. Install it separately in a Pi skill location and reload resources to advertise it.
 
 Install it globally from a checkout with a symlink so edits remain canonical in the example directory:
 
