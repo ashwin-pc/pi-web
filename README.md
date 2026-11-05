@@ -116,7 +116,7 @@ This starts a stable TypeScript supervisor on `8787` and a restartable child ser
 
 The supervisor also exposes:
 
-- `POST /api/restart` - restart the child server safely
+- `POST /api/restart` - restart the child server after checking supervisor-dependency identity (may interrupt active work; not a full application restart); supervisor updates require [manual stop/start](docs/runtime-restart.md)
 - `GET /__supervisor/status` - inspect child PID/generation
 
 Open:

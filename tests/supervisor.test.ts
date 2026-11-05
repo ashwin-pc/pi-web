@@ -1,7 +1,10 @@
 import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
-import { writeFile } from "node:fs/promises";
+import { writeFile, mkdtemp, mkdir, copyFile, symlink, rm, appendFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { supervisorDependencyFiles } from "../server/runtimePreflight.js";
 import { AuthStore } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -165,6 +168,71 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it.each(["server.ts", "supervisor.ts", "package.json"])("recovers after an on-disk %s update; guards only supervisor manual restart", async changedFile => {
+    const root = await mkdtemp(join(tmpdir(), "supervisor-update-"));
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const token = await mintStoredApiToken(new AuthStore(authEnv.PI_WEB_AUTH_STORE!), "update recovery");
+    let supervisor: ChildProcess | undefined;
+    try {
+      for (const file of [...supervisorDependencyFiles, "package.json"]) {
+        await mkdir(dirname(join(root, file)), { recursive: true });
+        await copyFile(join(projectRoot, file), join(root, file));
+      }
+      await symlink(join(projectRoot, "node_modules"), join(root, "node_modules"), "dir");
+      await writeFile(join(root, "server.ts"), `import { createServer } from 'node:http'; createServer((req,res) => { res.setHeader('content-type','application/json'); res.end('{}'); }).listen(Number(process.env.PORT), process.env.HOST);`);
+      supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+        cwd: root,
+        env: { ...authEnv, HOST: "127.0.0.1", PORT: String(publicPort), PI_WEB_CHILD_PORT: String(childPort), PI_WEB_AUTH_POLICY: "authenticated", PI_WEB_DEV: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      supervisors.add(supervisor);
+      await apiReady(publicPort, supervisor, token.secret);
+      const initial = await status(publicPort, supervisor, token.secret);
+      expect(initial).toMatchObject({ runtimeProtocol: 1 });
+      for (const scope of ["full", "unknown", ""]) {
+        const unsupported = await fetch(`http://127.0.0.1:${publicPort}/api/restart?scope=${scope}`, {
+          method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+        });
+        expect(unsupported.status).toBe(400);
+        expect(await unsupported.json()).toMatchObject({ error: expect.stringContaining("nothing has been stopped") });
+        expect(await status(publicPort, supervisor, token.secret)).toMatchObject({ childPid: initial.childPid, childGeneration: initial.childGeneration });
+      }
+      for (const field of ["lifecycle", "lifecycleError", "automaticFullRestartAvailable"]) expect(initial).not.toHaveProperty(field);
+      if (changedFile === "package.json") {
+        await writeFile(join(root, changedFile), JSON.stringify({ type: "module", version: "999.0.0" }));
+      } else await appendFile(join(root, changedFile), "\n// updated on disk\n");
+      const response = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+        method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+      });
+      expect(response.status).toBe(changedFile === "supervisor.ts" ? 409 : 202);
+      if (response.status === 409) {
+        expect(await response.json()).toMatchObject({ code: "FULL_RUNTIME_RESTART_REQUIRED" });
+        expect((await status(publicPort, supervisor, token.secret)).childPid).toBe(initial.childPid);
+      } else {
+        await waitFor(async () => {
+          const current = await status(publicPort, supervisor!, token.secret);
+          return current.childPid && current.childPid !== initial.childPid ? current : undefined;
+        }, supervisor);
+        await apiReady(publicPort, supervisor, token.secret);
+      }
+      const beforeCrash = await status(publicPort, supervisor, token.secret);
+      process.kill(beforeCrash.childPid!, "SIGKILL");
+      const recovered = await waitFor(async () => {
+        const current = await status(publicPort, supervisor!, token.secret);
+        return current.childPid && current.childGeneration > beforeCrash.childGeneration ? current : undefined;
+      }, supervisor);
+      expect(recovered.childGeneration).toBe(beforeCrash.childGeneration + 1);
+      await apiReady(publicPort, supervisor, token.secret);
+      await new Promise(resolve => setTimeout(resolve, 1_200));
+      expect((await status(publicPort, supervisor, token.secret)).childGeneration).toBe(recovered.childGeneration);
+    } finally {
+      if (supervisor) await stopSupervisor(supervisor);
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("retries transient fixture polling errors but surfaces permanent bind errors", async () => {
     const runningSupervisor = { exitCode: null, signalCode: null } as ChildProcess;
     let transientAttempts = 0;
@@ -411,6 +479,10 @@ describe("pi-web supervisor", () => {
       headers: { authorization: `Bearer ${token.secret}` },
     });
     expect(restartResponse.status).toBe(202);
+    const concurrent = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+      method: "POST", headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(concurrent.status).toBe(409);
 
     const intentionallyRestarted = await waitFor(async () => {
       const current = await status(publicPort, supervisor, token.secret);
