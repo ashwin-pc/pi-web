@@ -34,18 +34,27 @@ async function responseBytes(response: Response, maxBytes: number) {
   return Buffer.concat(chunks, size);
 }
 
-async function readLimited(response: Response, maxBytes = MAX_TEXT_RESPONSE_BYTES) {
+function decodePayloads(text: string, sse: boolean): any[] {
+  const payloads = sse
+    ? text.split(/\r?\n\r?\n/).map(event => event.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).replace(/^ /, "")).join("\n")).filter(data => data.trim() && data.trim() !== "[DONE]")
+    : [text];
+  try { return payloads.map(payload => JSON.parse(payload)); }
+  catch { throw new Error("Fusion MCP returned malformed JSON or SSE data."); }
+}
+
+async function readLimited(response: Response, maxBytes = MAX_TEXT_RESPONSE_BYTES, expectedId: number) {
   const declared = Number(response.headers.get("content-length") || 0);
   if (declared > maxBytes) throw new Error("Fusion MCP response exceeds the size limit.");
   const bytes = await responseBytes(response, maxBytes);
   if (bytes.byteLength > maxBytes) throw new Error("Fusion MCP response exceeds the size limit.");
   const text = new TextDecoder().decode(bytes);
-  const payload = response.headers.get("content-type")?.includes("text/event-stream")
-    ? text.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).find(line => line && line !== "[DONE]")
-    : text;
-  if (!response.ok) throw new Error(`Fusion MCP HTTP ${response.status}: ${(payload || text).slice(0, 500)}`);
-  if (!payload) throw new Error("Fusion MCP returned an empty response.");
-  return JSON.parse(payload);
+  if (!response.ok) throw new Error(`Fusion MCP HTTP ${response.status}: ${text.slice(0, 500)}`);
+  if (!text.trim()) throw new Error("Fusion MCP returned an empty response.");
+  const sse = !!response.headers.get("content-type")?.includes("text/event-stream");
+  const payloads = decodePayloads(text, sse);
+  const payload = payloads.find(item => item && typeof item === "object" && (Object.hasOwn(item, "result") || Object.hasOwn(item, "error")) && item.id === expectedId);
+  if (!payload) throw new Error(`Fusion MCP returned no JSON-RPC response matching request id ${expectedId}.`);
+  return payload;
 }
 
 async function drainInitialized(response: Response, maxBytes: number) {
@@ -56,11 +65,7 @@ async function drainInitialized(response: Response, maxBytes: number) {
   const text = new TextDecoder().decode(bytes).trim();
   if (!response.ok) throw new Error(`Fusion MCP initialized notification failed with HTTP ${response.status}: ${text.slice(0, 500)}`);
   if (text) {
-    const payload = response.headers.get("content-type")?.includes("text/event-stream")
-      ? text.split(/\r?\n/).find(line => line.startsWith("data:"))?.slice(5).trim()
-      : text;
-    if (payload) {
-      const parsed = JSON.parse(payload);
+    for (const parsed of decodePayloads(text, !!response.headers.get("content-type")?.includes("text/event-stream"))) {
       if (parsed?.error) throw new Error(`Fusion MCP initialized notification failed: ${JSON.stringify(parsed.error).slice(0, 500)}`);
     }
   }
@@ -84,7 +89,7 @@ export async function requestFusionMcp(method: "tools/call" | "tools/list" | "re
   const signal = abortSignal(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream" };
   let response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "pi-web-3d-modeling", version: "1" } } }) });
-  const initialized = await readLimited(response, options.maxResponseBytes);
+  const initialized = await readLimited(response, options.maxResponseBytes, 1);
   if (initialized.error) throw new Error("Fusion MCP initialization failed.");
   const sessionId = response.headers.get("mcp-session-id");
   if (!sessionId) throw new Error("Fusion MCP did not return a session id.");
@@ -93,7 +98,7 @@ export async function requestFusionMcp(method: "tools/call" | "tools/list" | "re
     response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
     await drainInitialized(response, Math.min(options.maxResponseBytes ?? MAX_TEXT_RESPONSE_BYTES, 512 * 1024));
     response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }) });
-    const result = await readLimited(response, options.maxResponseBytes);
+    const result = await readLimited(response, options.maxResponseBytes, 2);
     if (result.error) throw new Error(`Fusion MCP error: ${JSON.stringify(result.error).slice(0, 1000)}`);
     const structuredFailure = structuredToolFailure(result.result);
     if (result.result?.isError || result.result?.error || structuredFailure) throw new Error(`Fusion MCP tool error: ${String(result.result.error || structuredFailure || JSON.stringify(result.result.content)).slice(0, 1000)}`);

@@ -20,17 +20,17 @@ function fusion(result: unknown, list?: any) {
   const fetch = vi.fn(async (_url: string, options: RequestInit) => {
     if (options.method === "DELETE") return new Response(null, { status: 202 });
     const body = JSON.parse(String(options.body)); requests.push(body);
-    if (body.method === "initialize") return new Response(JSON.stringify({ result: {} }), { headers: { "mcp-session-id": "fake-session" } });
+    if (body.method === "initialize") return new Response(JSON.stringify({ id: 1, result: {} }), { headers: { "mcp-session-id": "fake-session" } });
     if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
-    return new Response(JSON.stringify({ result: body.method === "tools/list" ? list ?? { tools: [] } : result }));
+    return new Response(JSON.stringify({ id: 2, result: body.method === "tools/list" ? list ?? { tools: [] } : result }));
   });
   vi.stubGlobal("fetch", fetch);
   return { fetch, requests };
 }
 const entry = resolve("examples/pi-web-extensions/3d-modeling/cad/cli.ts");
-async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
+async function cli(args: string[], cwd?: string, signalAfterMs?: number, launcher = false) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
-    const child = spawn(process.execPath, ["--import", resolve("node_modules/tsx/dist/loader.mjs"), entry, ...args], { cwd, env: { ...process.env, PI_MODELING_CONFIG: process.env.PI_MODELING_CONFIG ?? join(tmpdir(), "cad-no-config.json") }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, launcher ? [resolve("examples/pi-web-extensions/3d-modeling/cad.mjs"), ...args] : ["--import", resolve("node_modules/tsx/dist/loader.mjs"), entry, ...args], { cwd, env: { ...process.env, PI_MODELING_CONFIG: process.env.PI_MODELING_CONFIG ?? join(tmpdir(), "cad-no-config.json") }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
     child.once("error", reject); child.once("close", code => done({ code, stdout, stderr }));
@@ -53,6 +53,13 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     const bad = await cli(["fusion", "undo"], cwd);
     expect(bad.code).toBe(2); expect(bad.stdout).toBe(""); expect(JSON.parse(bad.stderr)).toMatchObject({ ok: false, exitCode: 2 });
   });
+  it("runs the extension-local mjs launcher from an unrelated working directory", async () => {
+    const { cwd } = await workspace();
+    for (const command of ["help", "discover"]) {
+      const result = await cli([command], cwd, undefined, true);
+      expect(result.code).toBe(0); expect(result.stderr).toBe(""); expect(JSON.parse(result.stdout).ok).toBe(true);
+    }
+  });
   it.each(["http://example.com/mcp", "https://127.0.0.1/mcp", "http://127.0.0.1@evil.example/mcp", "http://secret@localhost/mcp", "http://localhost/mcp?token=secret"])("rejects nonloopback or credentialed endpoint %s", url => {
     expect(() => fusionMcpUrl(url)).toThrow(/HTTP loopback/);
   });
@@ -64,6 +71,28 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     expect(fetch.mock.calls.every(call => call[1].redirect === "error")).toBe(true);
     expect(fetch.mock.calls.filter(call => call[1].method === "DELETE")).toHaveLength(1);
     await expect(runCad(["fusion", "rpc", "--json", '{}'], { cwd })).rejects.toMatchObject({ exitCode: 2 });
+  });
+  it("selects matching SSE responses after progress and unrelated ids, joining multiline data", async () => {
+    const { cwd } = await workspace();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "DELETE") return new Response(null, { status: 202 });
+      const body = JSON.parse(String(options.body));
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const id = body.method === "initialize" ? 1 : 2;
+      const text = ': heartbeat\r\ndata: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\r\n\r\ndata: {"jsonrpc":"2.0","id":999,"result":{"wrong":true}}\r\n\r\nevent: message\r\ndata: {"jsonrpc":"2.0",\r\ndata: "id":' + id + ',"result":{"selected":' + id + '}}\r\n\r\n';
+      return new Response(text, { headers: { "content-type": "text/event-stream", "mcp-session-id": "sse-test" } });
+    }));
+    expect(await runCad(["fusion", "status"], { cwd })).toEqual({ selected: 2 });
+  });
+  it.each([
+    ['data: {"jsonrpc":"2.0","method":"notifications/progress"}\\n\\n', /no JSON-RPC response matching/],
+    ['data: {"jsonrpc":"2.0","id":999,"result":{}}\\n\\n', /no JSON-RPC response matching/],
+    ['data: {invalid}\\n\\n', /malformed JSON or SSE/],
+    ['data: ' + "x".repeat(2 * 1024 * 1024 + 1), /size limit/],
+  ])("rejects missing, unrelated, malformed or oversized SSE response %#", async (text, expected) => {
+    const { cwd } = await workspace();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(String(text).replaceAll("\\n", "\n"), { headers: { "content-type": "text/event-stream" } })));
+    await expect(runCad(["fusion", "capabilities"], { cwd })).rejects.toThrow(expected as RegExp);
   });
   it("forwards bounded read-only MCP resource catalog, resource reads and generic electronics queries", async () => {
     const { cwd } = await workspace(); const payload = { contents: [{ uri: "fusion://schema/Board", text: "schema" }] };
@@ -186,7 +215,7 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     mock.fetch.mockImplementation(async (_url: string, options: RequestInit) => {
       if (options.method === "DELETE") return new Response(null, { status: 202 });
       const body = JSON.parse(String(options.body));
-      if (body.method === "initialize") return new Response('{"result":{}}', { headers: { "mcp-session-id": "test" } });
+      if (body.method === "initialize") return new Response('{"id":1,"result":{}}', { headers: { "mcp-session-id": "test" } });
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
       return new Promise((_resolve, reject) => { options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }); });
     });
@@ -218,9 +247,9 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
   });
   it("propagates MCP initialization and initialized-notification errors", async () => {
     const { cwd } = await workspace();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "bad init" } }))));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ id: 1, error: { message: "bad init" } }))));
     await expect(runCad(["fusion", "status"], { cwd })).rejects.toThrow(/initialization failed/);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response('{"result":{}}', { headers: { "mcp-session-id": "test" } })).mockResolvedValueOnce(new Response('{"error":{"message":"not initialized"}}')));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response('{"id":1,"result":{}}', { headers: { "mcp-session-id": "test" } })).mockResolvedValueOnce(new Response('{"error":{"message":"not initialized"}}')));
     await expect(runCad(["fusion", "status"], { cwd })).rejects.toThrow(/initialized notification failed/);
   });
   it("redacts ambient secrets in shared backend diagnostics", async () => {
@@ -255,6 +284,27 @@ describe("configured local runtime and CLI lifecycle", () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
     const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation"], cwd, 1000);
     expect(result.code).toBe(130); expect(result.stdout).toBe(""); expect(JSON.parse(result.stderr).exitCode).toBe(130);
+  });
+  it("preserves retained runtime evidence when global timeout translates cancellation", async () => {
+    const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
+    const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation", "--timeout-ms", "100"], cwd);
+    const response = JSON.parse(result.stderr);
+    expect(result.code).toBe(124); expect(response.result.status).toBe("cancelled");
+    expect(response.result.log).toContain("execution.log");
+    expect(JSON.parse(await readFile(join(root, "modeling-runs", response.result.id, "result.json"), "utf8")).status).toBe("cancelled");
+  });
+  it("preserves retained runtime evidence when caller cancellation is translated", async () => {
+    const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 100);
+    try {
+      await runCad(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation"], { cwd, signal: controller.signal });
+      throw new Error("expected cancellation");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CadError); expect((error as CadError).exitCode).toBe(130);
+      const result: any = (error as CadError).result;
+      expect(result.status).toBe("cancelled"); expect(result.log).toContain("execution.log");
+      expect(JSON.parse(await readFile(join(root, "modeling-runs", result.id, "result.json"), "utf8")).status).toBe("cancelled");
+    } finally { clearTimeout(timer); }
   });
   it("rejects escaping run-directory symlinks without writing outside artifacts", async () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "script.mjs"), "console.log('no');\n");
