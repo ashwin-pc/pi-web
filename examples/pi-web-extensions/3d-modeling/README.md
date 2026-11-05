@@ -7,14 +7,14 @@ A shared modeling CLI with **one optional agent tool**, interactive `.stl` and `
 From this repository (Node >=24 and installed dependencies):
 
 ```sh
-node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts help
-node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts discover
-node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts fusion capabilities
-node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts fusion docs --json '{"searchPattern":"LoftSections.add","apiCategory":"member"}'
-node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts fusion read --json '{"queryType":"activeCommand"}'
+node examples/pi-web-extensions/3d-modeling/cad.mjs help
+node examples/pi-web-extensions/3d-modeling/cad.mjs discover
+node examples/pi-web-extensions/3d-modeling/cad.mjs fusion capabilities
+node examples/pi-web-extensions/3d-modeling/cad.mjs fusion docs --json '{"searchPattern":"LoftSections.add","apiCategory":"member"}'
+node examples/pi-web-extensions/3d-modeling/cad.mjs fusion read --json '{"queryType":"activeCommand"}'
 ```
 
-For another working directory, use the absolute path to this checkout's `cad/cli.ts` and `node --import /absolute/path/to/node_modules/tsx/dist/loader.mjs`. The current directory determines the artifact root. No global command installation or PATH changes are required.
+For another working directory, use `node /absolute/path/to/3d-modeling/cad.mjs help`. The launcher resolves its own installed `tsx` dependency; no caller-side `--import` flags are required. The current directory determines the artifact root. No global command installation or PATH changes are required. The TypeScript entry point also supports `node --import tsx .../cad/cli.ts` from this repository.
 
 The extension registers only `modeling`, taking `{ "args": ["help"] }` or any identical CLI argument vector. `help [command]` is the complete current command and parameter reference. Successful standalone commands emit JSON to stdout; failed commands emit JSON to stderr and exit nonzero. Exit codes: 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation. `--timeout-ms` bounds an invocation. The CLI never asks for interactive input.
 
