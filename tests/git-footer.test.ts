@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGitFooterExtension } from "../examples/pi-web-extensions/git-footer.js";
+import { createGitFooterExtension, runFetchGit, runFetchProcess } from "../examples/pi-web-extensions/git-footer.js";
 
 type Result = { ok: boolean; output: string; notRepo?: boolean };
 type Runner = (args: string[], cwd: string) => Promise<Result>;
@@ -60,7 +60,8 @@ describe("git footer porcelain v2 regression and command budget", () => {
     expect(visible).not.toContain("up to date");
     expect(html).toContain("upstream/main");
     expect(html).toMatch(/last fetched|locally fetched/i);
-    expect(html).toMatch(/no network|never fetch/);
+    expect(html).toContain("Automatic fetch disabled; no network fetching");
+    expect(html).toContain("Never pulls");
     expect(html).toContain("aria-label=");
   });
 
@@ -228,6 +229,7 @@ describe("git footer subprocess bounds", () => {
         : upstream(2, 1)),
       stderr: "",
     })).mockRejectedValueOnce(failure);
+    const statusCalls = () => execute.mock.calls.filter(([, args]) => args.includes("status"));
     const mockedExecFile = Object.assign(vi.fn(), { [promisify.custom]: execute });
     vi.resetModules();
     vi.doMock("node:child_process", () => ({ execFile: mockedExecFile }));
@@ -236,26 +238,26 @@ describe("git footer subprocess bounds", () => {
       const firstModule = await import("../examples/pi-web-extensions/git-footer.js");
       const first = mount(undefined, cwd, firstModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(1); // No immediate second subprocess.
+      expect(statusCalls()).toHaveLength(1); // No immediate second subprocess.
       expect(first.html()).toBeUndefined();
       vi.resetModules();
       const secondModule = await import("../examples/pi-web-extensions/git-footer.js");
       const second = mount(undefined, cwd, secondModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(2);
-      expect(execute.mock.calls[1][1]).toContain("--no-ahead-behind");
+      expect(statusCalls()).toHaveLength(2);
+      expect(statusCalls()[1][1]).toContain("--no-ahead-behind");
       expect(second.html()).toContain("main");
       expect(second.html()).toContain("⇅?");
       expect(second.html()).toContain("dirty (?1)");
       first.emit("turn_end"); await flush();
-      expect(execute).toHaveBeenCalledTimes(2); // Shared fallback result cache.
+      expect(statusCalls()).toHaveLength(2); // Shared fallback result cache.
       expect(first.html()).toContain("⇅?");
       first.stop(); second.stop();
       await vi.advanceTimersByTimeAsync(30_001);
       const recovered = mount(undefined, cwd, firstModule.createGitFooterExtension);
       await flush();
-      expect(execute).toHaveBeenCalledTimes(3);
-      expect(execute.mock.calls[2][1]).not.toContain("--no-ahead-behind");
+      expect(statusCalls()).toHaveLength(3);
+      expect(statusCalls()[2][1]).not.toContain("--no-ahead-behind");
       expect(recovered.html()).toContain("↑2 ↓1");
     } finally {
       vi.doUnmock("node:child_process");
@@ -280,6 +282,35 @@ describe("git footer subprocess bounds", () => {
       vi.doUnmock("node:child_process");
       vi.resetModules();
     }
+  });
+});
+
+describe("git footer fetch policy", () => {
+  it("explicit opt-out overrides fetch injection and does no discovery across refreshes", async () => {
+    vi.useFakeTimers();
+    const git = vi.fn(async () => ok(status(upstream())));
+    const fetchGit = vi.fn(async () => ok());
+    const footer = mount(git, "/opt-out", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: false }));
+    await flush();
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(fetchGit).not.toHaveBeenCalled();
+    expect(git.mock.calls.length).toBeGreaterThan(1);
+    expect(footer.html()).toContain("Automatic fetch disabled; no network fetching");
+  });
+
+  it("does not reuse opt-in cached HTML or schedule work for opt-out instances", async () => {
+    vi.useFakeTimers();
+    const git = async () => ok(status(upstream()));
+    const fetchGit = vi.fn(async () => ok());
+    const enabled = mount(git, "/policy", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: true }));
+    await flush();
+    expect(enabled.html()).toContain("counts may be stale");
+    expect(enabled.html()).toContain("Automatic fetch attempts");
+    fetchGit.mockClear();
+    const disabled = mount(git, "/policy", options => createGitFooterExtension({ ...options, fetchGit, autoFetch: false }));
+    await flush();
+    expect(disabled.html()).toContain("Automatic fetch disabled");
+    expect(fetchGit).not.toHaveBeenCalled();
   });
 });
 
@@ -308,6 +339,62 @@ describe("git footer real local refs", () => {
     expect(gitCommand(cwd, "rev-parse", "refs/remotes/upstream/main")).not.toBe(gitCommand(cwd, "rev-parse", "HEAD"));
   });
 
+  it.each(["refs/remotes/origin/main", "refs/remotes/custom/main"])("refreshes %s without applying configured mappings to local branches", async tracking => {
+    const remote = temp(), cwd = temp();
+    gitCommand(remote, "init", "-b", "main");
+    gitCommand(remote, "config", "user.name", "Footer Test");
+    gitCommand(remote, "config", "user.email", "footer@example.test");
+    writeFileSync(join(remote, "base"), "base");
+    gitCommand(remote, "add", "."); gitCommand(remote, "commit", "-m", "base");
+    gitCommand(cwd, "clone", remote, ".");
+    gitCommand(cwd, "branch", "victim");
+    const original = gitCommand(cwd, "rev-parse", "victim");
+    gitCommand(cwd, "update-ref", tracking, original);
+    gitCommand(cwd, "config", "remote.origin.fetch", `+refs/heads/main:${tracking}`);
+    gitCommand(cwd, "config", "--add", "remote.origin.fetch", "+refs/heads/main:refs/heads/victim");
+    writeFileSync(join(remote, "base"), "advanced");
+    gitCommand(remote, "commit", "-am", "advance");
+    const advanced = gitCommand(remote, "rev-parse", "HEAD");
+    mount(undefined, cwd, options => createGitFooterExtension({ ...options, autoFetch: true }));
+    await vi.waitFor(() => expect(gitCommand(cwd, "rev-parse", tracking)).toBe(advanced));
+    expect(gitCommand(cwd, "rev-parse", "victim")).toBe(original);
+    // Let fetch completion invalidate its cache before the next cache-only test.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
+  it("preserves core.sshCommand instead of overriding its trusted transport", async () => {
+    const cwd = temp();
+    gitCommand(cwd, "init", "-b", "main");
+    gitCommand(cwd, "config", "user.name", "Footer Test");
+    gitCommand(cwd, "config", "user.email", "footer@example.test");
+    writeFileSync(join(cwd, "base"), "base");
+    gitCommand(cwd, "add", "."); gitCommand(cwd, "commit", "-m", "base");
+    gitCommand(cwd, "remote", "add", "origin", "ssh://example.invalid/repository");
+    gitCommand(cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+    gitCommand(cwd, "branch", "--set-upstream-to", "origin/main");
+    const marker = join(cwd, "ssh-invoked");
+    const wrapper = join(cwd, "ssh-wrapper.sh");
+    writeFileSync(wrapper, `#!/bin/sh\n{
+  printf 'agent=%s\\naskpass=%s\\nrequire=%s\\ndisplay=%s\\n' "$SSH_AUTH_SOCK" "$SSH_ASKPASS" "$SSH_ASKPASS_REQUIRE" "$DISPLAY"
+  if test -t 0; then echo stdin=tty; else echo stdin=closed; fi
+  if (exec </dev/tty) 2>/dev/null; then echo controlling=tty; else echo controlling=none; fi
+  git config --get-all credential.helper
+} > '${marker}'\nexit 1\n`);
+    gitCommand(cwd, "config", "core.sshCommand", `sh '${wrapper}'`);
+    const localOnly = mount(undefined, cwd);
+    await vi.waitFor(() => expect(localOnly.html()).toContain("Automatic fetch disabled"));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(existsSync(marker)).toBe(false);
+    localOnly.stop();
+    mount(undefined, cwd, options => createGitFooterExtension({ ...options, autoFetch: true }));
+    await vi.waitFor(() => expect(existsSync(marker)).toBe(true));
+    await vi.waitFor(() => expect(readFileSync(marker, "utf8")).toContain("controlling=none"));
+    const environment = readFileSync(marker, "utf8");
+    expect(environment).toContain("agent=\naskpass=\nrequire=never\ndisplay=\n");
+    expect(environment).toContain("stdin=closed");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
   it("uses the process-wide default cache across independent module loads", async () => {
     const cwd = temp();
     gitCommand(cwd, "init", "-b", "first");
@@ -333,5 +420,187 @@ describe("git footer real local refs", () => {
   it("recognizes a real nonrepo directory", async () => {
     const footer = mount(undefined, temp());
     await vi.waitFor(() => expect(footer.html()).toContain("no git repo"));
+  });
+});
+
+
+describe("automatic upstream fetch", () => {
+  function setup(fetch: Runner, cwd = "/repo", upstreamText = upstream()) {
+    const runner = vi.fn(async () => ok(status(upstreamText)));
+    const factory = (options: Parameters<typeof createGitFooterExtension>[0]) => createGitFooterExtension({ ...options, fetchGit: fetch });
+    return { footer: mount(runner, cwd, factory), runner, factory };
+  }
+  function fetchRunner(result: Result = ok()) {
+    return vi.fn(async (args: string[]) => args[0] === "rev-parse" ? ok("/shared/.git")
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main\n") : result);
+  }
+  it("fetches only the configured remote, deduplicates worktrees and polls every minute", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    setup(fetch, "/repo/one"); setup(fetch, "/repo/two");
+    await flush();
+    const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0][0]).toEqual(["-c", "credential.helper=", "-c", "credential.interactive=false", "-c", "core.askPass=", "fetch",
+      "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", "origin",
+      "+refs/heads/main:refs/remotes/origin/main"]);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_501);
+    expect(calls()).toHaveLength(2);
+  });
+  it("aligns cwd retries with fetch completion instead of adding another minute", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    fetch.mockImplementation(async (args) => {
+      if (args[0] === "rev-parse") return ok("/shared/.git");
+      if (args[0] === "for-each-ref") return ok("origin\0refs/heads/main\0refs/remotes/origin/main");
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      return ok();
+    });
+    setup(fetch, "/repo/one"); setup(fetch, "/repo/two"); await flush();
+    const calls = () => fetch.mock.calls.filter(([args]) => args.includes("fetch"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls()).toHaveLength(2);
+  });
+  it("does no metadata or network work without an upstream", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner();
+    setup(fetch, "/repo", "");
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("backs failures off while status continues refreshing", async () => {
+    vi.useFakeTimers();
+    const fetch = fetchRunner({ ok: false, output: "" });
+    const { runner } = setup(fetch);
+    await flush();
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    expect(runner.mock.calls.length).toBeGreaterThan(30);
+    await vi.advanceTimersByTimeAsync(2_501);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(2);
+  });
+  it("discovers a new branch upstream without inheriting the old branch backoff", async () => {
+    vi.useFakeTimers();
+    let branch = "first";
+    const git = vi.fn(async () => ok(status(upstream(0, 0, `origin/${branch}`), branch)));
+    const fetch = vi.fn(async (args: string[]) => {
+      if (args[0] === "rev-parse") return ok("/shared/.git");
+      if (args[0] === "for-each-ref") return ok(`origin\0refs/heads/${branch}\0refs/remotes/origin/${branch}`);
+      return args.at(-1)?.includes("first") ? { ok: false, output: "" } : ok();
+    });
+    const footer = mount(git, "/repo", options => createGitFooterExtension({ ...options, fetchGit: fetch }));
+    await flush();
+    await vi.advanceTimersByTimeAsync(850_000);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(4);
+    branch = "second";
+    footer.emit("input");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetch.mock.calls.some(([args]) => args.at(-1) === "+refs/heads/second:refs/remotes/origin/second")).toBe(true);
+  });
+  it("retains failure backoff when another repository reserves expired entries", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async (args: string[], cwd: string) => args[0] === "rev-parse" ? ok(`${cwd}/.git`)
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main") : { ok: false, output: "" });
+    const first = setup(fetch, "/a"); await flush(); first.footer.stop();
+    await vi.advanceTimersByTimeAsync(120_000);
+    const second = setup(fetch, "/b"); await flush(); second.footer.stop();
+    const retry = setup(fetch, "/a"); await flush();
+    const calls = () => fetch.mock.calls.filter(([args, cwd]) => args.includes("fetch") && cwd === "/a");
+    expect(calls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(calls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(calls()).toHaveLength(3);
+    retry.footer.stop();
+  });
+  it("caps discovery concurrency across many repositories without blocking initialization", async () => {
+    vi.useFakeTimers();
+    const release: Array<(result: Result) => void> = [];
+    const fetch = vi.fn(() => new Promise<Result>((resolve) => { release.push(resolve); }));
+    const mounted = Array.from({ length: 20 }, (_, index) => setup(fetch, `/repository-${index}`));
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const { footer } of mounted) expect(footer.html()).toContain("main");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // Release discovery with an empty remote; neither admitted job fetches.
+    release.splice(0).forEach((resolve) => resolve(ok("/shared/.git")));
+    await flush();
+    release.splice(0).forEach((resolve) => resolve(ok("")));
+    await flush();
+  });
+  it("never overlaps a slow fetch, keeps status responsive, and retains dedupe after shutdown", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: Result) => void;
+    const fetch = fetchRunner();
+    fetch.mockImplementation(async (args) => args[0] === "rev-parse" ? ok("/shared/.git")
+      : args[0] === "for-each-ref" ? ok("origin\0refs/heads/main\0refs/remotes/origin/main") : new Promise<Result>((resolve) => { finish = resolve; }));
+    const { footer, runner } = setup(fetch);
+    await flush();
+    expect(footer.html()).toContain("main");
+    await vi.advanceTimersByTimeAsync(125_000);
+    expect(runner.mock.calls.length).toBeGreaterThan(40);
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    footer.stop();
+    setup(fetch, "/repo/other"); await flush();
+    expect(fetch.mock.calls.filter(([args]) => args.includes("fetch"))).toHaveLength(1);
+    finish(ok()); await flush();
+  });
+});
+
+
+describe("real background fetch safety", () => {
+  it("rejects existing symrefs and non-remote destinations; fetches only the explicit remote ref", async () => {
+    const cwd = temp();
+    gitCommand(cwd, "init", "-b", "main");
+    gitCommand(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
+    gitCommand(cwd, "branch", "victim");
+    const before = gitCommand(cwd, "rev-parse", "victim");
+    gitCommand(cwd, "symbolic-ref", "refs/remotes/origin/main", "refs/heads/victim");
+    const fetch = (destination: string) => runFetchGit(["fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--", ".", `+refs/heads/main:${destination}`], cwd);
+    expect((await fetch("refs/remotes/origin/main")).ok).toBe(false);
+    expect((await fetch("refs/heads/victim")).ok).toBe(false);
+    expect(gitCommand(cwd, "rev-parse", "victim")).toBe(before);
+    expect((await fetch("refs/remotes/origin/new")).ok).toBe(true);
+    expect(gitCommand(cwd, "rev-parse", "refs/remotes/origin/new")).toBe(before);
+    expect(existsSync(join(cwd, ".git/FETCH_HEAD"))).toBe(false);
+    expect(gitCommand(cwd, "for-each-ref", "--format=%(refname)")).toBe([
+      "refs/heads/main", "refs/heads/victim", "refs/remotes/origin/main", "refs/remotes/origin/new",
+    ].join("\n"));
+  });
+
+  it.skipIf(process.platform === "win32").each(["timeout", "output"])("kills a real transport descendant on %s", async mode => {
+    const cwd = temp();
+    gitCommand(cwd, "init");
+    const pidFile = join(cwd, "child.pid");
+    const wrapper = join(cwd, "transport.sh");
+    // Ignore Git's SSH variant probe; the actual transport leaves an independent
+    // child alive even if its parent Git is killed. No network is contacted.
+    writeFileSync(wrapper, `#!/bin/sh
+case " $* " in *" -G "*) exit 0;; esac
+sleep 60 &
+echo $! > '${pidFile}'
+${mode === "output" ? 'while :; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; done' : 'wait'}
+`, { mode: 0o755 });
+    gitCommand(cwd, "config", "core.sshCommand", wrapper);
+    const args = mode === "output" ? ["-c", `alias.footer-test=!${wrapper}`, "footer-test"]
+      : ["fetch", "--", "ssh://invalid.example/repo", "main"];
+    const result = await runFetchProcess(args, cwd, mode === "timeout" ? 500 : 3000, 4096);
+    expect(result.ok).toBe(false);
+    expect(existsSync(pidFile)).toBe(true);
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    // On Linux an unreaped zombie may still answer signal 0; it is not running.
+    await vi.waitFor(() => {
+      let alive = true;
+      try {
+        process.kill(pid, 0);
+        if (existsSync(`/proc/${pid}/stat`)) alive = !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z ");
+      } catch { alive = false; }
+      expect(alive).toBe(false);
+    });
   });
 });

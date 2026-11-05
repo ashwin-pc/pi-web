@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
@@ -8,6 +8,8 @@ const GIT_TIMEOUT_MS = 1_000;
 const CACHE_TTL_MS = 1_000;
 const COMPARISON_COOLDOWN_MS = 30_000;
 const MAX_CACHE_ENTRIES = 128;
+const FETCH_INTERVAL_MS = 60_000;
+const FETCH_TIMEOUT_MS = 15_000;
 const execFileAsync = promisify(execFile);
 
 type GitResult = {
@@ -88,6 +90,167 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
   }
 }
 
+// Separate from status: network work must never block a footer refresh or enter
+// the status timeout/comparison fallback path. Symbol state survives /reload.
+type FetchEntry = { pending?: Promise<void>; next: number; failures: number };
+type FetchState = { cwd: Map<string, FetchEntry>; repositories: Map<string, FetchEntry>; active?: number };
+const fetchKey = Symbol.for("pi-web.git-footer.fetch.v1");
+const fetchGlobal = globalThis as typeof globalThis & {
+  [fetchKey]?: { default: FetchState; custom: WeakMap<GitRunner, FetchState> };
+};
+const fetchStates: { default: FetchState; custom: WeakMap<GitRunner, FetchState> } = fetchGlobal[fetchKey] ??= {
+  default: { cwd: new Map(), repositories: new Map() }, custom: new WeakMap(),
+};
+
+// Assume cooperating local repository writers. This initial guard rejects existing
+// symrefs; subsequent updates use standard Git fetch transaction semantics, not
+// a footer-owned pre-network snapshot or protection against concurrent symref swaps.
+export async function runFetchGit(args: string[], cwd: string): Promise<GitResult> {
+  if (args.includes("fetch")) {
+    const destination = args.at(-1)?.split(":")[1];
+    if (!destination?.startsWith("refs/remotes/")) return { ok: false, output: "" };
+    try {
+      await execFileAsync("git", ["symbolic-ref", "-q", destination], { cwd, timeout: GIT_TIMEOUT_MS });
+      return { ok: false, output: "" };
+    } catch (error) {
+      if ((error as { code?: number }).code !== 1) return { ok: false, output: "" };
+    }
+  }
+  return runFetchProcess(args, cwd);
+}
+
+export async function runFetchProcess(args: string[], cwd: string, timeoutMs = FETCH_TIMEOUT_MS, maxBuffer = 1024 * 1024): Promise<GitResult> {
+  try {
+    let defaultSsh = false;
+    if (args.includes("fetch") && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+      try {
+        const configured = await execFileAsync("git", ["config", "--get", "core.sshCommand"], {
+          cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 65536,
+        });
+        defaultSsh = !configured.stdout.trim();
+      } catch (error) {
+        // Exit 1 means no configured value; other failures abort this attempt.
+        if ((error as { code?: number }).code !== 1) throw error;
+        defaultSsh = true;
+      }
+    }
+    return await new Promise<GitResult>((resolve) => {
+      const child = spawn("git", args, {
+        cwd, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never",
+        GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never",
+        // No agent confirmations/pinentry or display-based authentication.
+        SSH_AUTH_SOCK: "", DISPLAY: "", WAYLAND_DISPLAY: "",
+        // Respect trusted custom identities/proxies/wrappers. Default OpenSSH
+        // is bounded and batch-only; custom transports retain the process timeout.
+        ...(defaultSsh ? { GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oConnectTimeout=10 -oIdentityAgent=none -oSecurityKeyProvider=/dev/null -oIgnoreUnknown=UseKeychain -oUseKeychain=no" } : {}) },
+      });
+      let output = "";
+      let bytes = 0;
+      let failed = false;
+      let killing: Promise<void> | undefined;
+      const terminate = () => {
+        failed = true;
+        if (killing) return;
+        killing = new Promise<void>(done => {
+          if (!child.pid) { done(); return; }
+          if (process.platform === "win32") {
+            // Windows has no POSIX process groups; taskkill is the tree fallback.
+            const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+            killer.once("error", () => { child.kill("SIGKILL"); done(); });
+            killer.once("close", () => done());
+          } else {
+            try { process.kill(-child.pid, "SIGKILL"); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL"); }
+            done();
+          }
+        });
+      };
+      const timer = setTimeout(terminate, timeoutMs);
+      child.stdout.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > maxBuffer) { terminate(); return; }
+        output += chunk.toString("utf8");
+      });
+      child.on("error", () => { clearTimeout(timer); resolve({ ok: false, output: "" }); });
+      child.on("close", async code => {
+        clearTimeout(timer);
+        const ok = !failed && code === 0;
+        // A transport can close inherited pipes before its leader exits. Clean
+        // the owned group even on ordinary completion, not just timeout.
+        terminate();
+        await killing;
+        resolve({ ok, output });
+      });
+    });
+  } catch { return { ok: false, output: "" }; }
+}
+
+function scheduleFetch(cwd: string, branch: string, upstream: string, git: GitRunner, statusGit: GitRunner) {
+  let state = git === runFetchGit ? fetchStates.default : fetchStates.custom.get(git);
+  if (!state) fetchStates.custom.set(git, state = { cwd: new Map(), repositories: new Map() });
+  const reserve = (map: Map<string, FetchEntry>, key: string) => {
+    const existing = map.get(key);
+    if (existing?.pending || (existing && existing.next > Date.now())) return;
+    // Preserve consecutive failure history across cooldown expiry. Evict only
+    // when full, and never evict active requests or unexpired cooldowns.
+    if (!existing && map.size >= MAX_CACHE_ENTRIES) {
+      const candidate = [...map].find(([, entry]) => !entry.pending && entry.next <= Date.now());
+      if (!candidate) return;
+      map.delete(candidate[0]);
+    }
+    const entry = existing ?? { next: 0, failures: 0 };
+    map.set(key, entry);
+    return entry;
+  };
+  // At most two discovery/fetch jobs process-wide; skip rather than queue work
+  // from inactive sessions. A later ordinary refresh will retry admission.
+  if ((state.active ?? 0) >= 2) return;
+  const entry = reserve(state.cwd, `${cwd}\0${branch}\0${upstream}`);
+  if (!entry) return;
+  const repositories = state.repositories;
+  state.active = (state.active ?? 0) + 1;
+  const fetchState = state;
+  entry.next = Date.now() + FETCH_INTERVAL_MS;
+  entry.pending = (async () => {
+    const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd);
+    const remote = await git(["for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)", `refs/heads/${branch}`], cwd);
+    const [name, source, destination] = remote.output.trim().split("\0");
+    if (!common.ok || !common.output.trim() || !remote.ok || !name || name === "." || /[\s\0]/.test(name)
+      || !source?.startsWith("refs/heads/") || !destination?.startsWith("refs/remotes/")
+      || /[\s:*?\[\\]/.test(source + destination)) return;
+    const repositoryKey = `${common.output.trim()}\0${name}\0${source}\0${destination}`;
+    const repository = reserve(repositories, repositoryKey);
+    if (!repository) {
+      // A sibling cwd may arrive just before fetch-completion's cooldown ends.
+      // Recheck when it expires rather than imposing another full minute.
+      entry.next = Math.max(Date.now() + REFRESH_MS, repositories.get(repositoryKey)?.next ?? 0);
+      return;
+    }
+    repository.pending = (async () => {
+      let success = false;
+      try {
+        // No pull, tags, submodules, pruning, maintenance, or configured refspecs
+        // targeting local branches. Reject existing destination symrefs before Git fetch.
+        const result = await git(["-c", "credential.helper=", "-c", "credential.interactive=false", "-c", "core.askPass=",
+          "fetch", "--refmap=", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
+          "--", name, `+${source}:${destination}`], cwd);
+        success = result.ok;
+        if (success) cacheFor(statusGit).clear(); // Includes sibling cwd/worktree caches.
+      } finally {
+        repository.failures = success ? 0 : Math.min(repository.failures + 1, 4);
+        repository.next = Date.now() + FETCH_INTERVAL_MS * 2 ** repository.failures;
+      }
+    })().catch(() => undefined).finally(() => { repository.pending = undefined; });
+    await repository.pending;
+    // Align discovery admission with completion-based success/failure cooldown.
+    entry.next = repository.next;
+  })().catch(() => undefined).finally(() => {
+    entry.pending = undefined;
+    fetchState.active = Math.max(0, (fetchState.active ?? 1) - 1);
+  });
+}
+
 function sessionKey(ctx: PiWebExtensionContext) {
   return ctx.sessionManager.getSessionId?.() || ctx.sessionManager.getSessionFile?.() || ctx.cwd;
 }
@@ -153,7 +316,7 @@ function formatDetails(snapshot: GitSnapshot) {
   return parts.length ? ` (${parts.join(" ")})` : "";
 }
 
-async function renderFooter(cwd: string, git: GitRunner) {
+async function renderFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
   const snapshot = await readSnapshot(cwd, git);
   if (snapshot === undefined) return undefined;
   if (snapshot === null) {
@@ -161,6 +324,8 @@ async function renderFooter(cwd: string, git: GitRunner) {
       <span>🌿 <strong style="color:#e7edf5">no git repo</strong></span>
     </div>`;
   }
+
+  if (snapshot.upstream && fetchGit) scheduleFetch(cwd, snapshot.branch, snapshot.upstream, fetchGit, git);
 
   const status = snapshot.dirty ? `dirty${formatDetails(snapshot)}` : "clean";
   const dirtyColor = snapshot.dirty ? "#facc15" : "#86efac";
@@ -172,7 +337,9 @@ async function renderFooter(cwd: string, git: GitRunner) {
       : [snapshot.ahead ? `↑${snapshot.ahead}` : "", snapshot.behind ? `↓${snapshot.behind}` : ""].filter(Boolean).join(" ");
   const upstreamDetails = escapeHtml(`${snapshot.upstream}: ${comparisonKnown
     ? `${snapshot.ahead} ahead, ${snapshot.behind} behind`
-    : "comparison unavailable"}. Last fetched local ref; no network fetching.`);
+    : "comparison unavailable"}. Last fetched local ref; counts may be stale. ${fetchGit
+      ? "Automatic fetch attempts about every 60 seconds; failures back off up to 16 minutes."
+      : "Automatic fetch disabled; no network fetching."} Never pulls or changes working files.`);
   const upstream = snapshot.upstream
     ? ` <span title="${upstreamDetails}" aria-label="${upstreamDetails}">${divergence}</span>`
     : "";
@@ -183,10 +350,12 @@ async function renderFooter(cwd: string, git: GitRunner) {
   </div>`;
 }
 
-function cachedFooter(cwd: string, git: GitRunner) {
+function cachedFooter(cwd: string, git: GitRunner, fetchGit?: GitRunner) {
   const cache = cacheFor(git);
   const now = Date.now();
-  const existing = cache.get(cwd);
+  // Rendering/scheduling policy must not leak between opt-in and opt-out instances.
+  const cacheKey = `${cwd}\0${fetchGit ? "fetch" : "local"}`;
+  const existing = cache.get(cacheKey);
   if (existing?.pending) return existing.pending;
   if (existing && existing.expires > now) return Promise.resolve(existing.html);
   // Bound retained cwd entries without evicting work still in flight.
@@ -194,10 +363,10 @@ function cachedFooter(cwd: string, git: GitRunner) {
     if (!entry.pending && (entry.expires <= now || cache.size >= MAX_CACHE_ENTRIES)) cache.delete(key);
   }
   const entry: CacheEntry = { expires: 0 };
-  cache.set(cwd, entry);
-  entry.pending = renderFooter(cwd, git).catch(() => undefined).then((html) => {
+  cache.set(cacheKey, entry);
+  entry.pending = renderFooter(cwd, git, fetchGit).catch(() => undefined).then((html) => {
     entry.pending = undefined;
-    if (html === undefined) cache.delete(cwd); // Failures retry on the next refresh.
+    if (html === undefined) cache.delete(cacheKey); // Failures retry on the next refresh.
     else { entry.html = html; entry.expires = Date.now() + CACHE_TTL_MS; }
     return html;
   });
@@ -207,8 +376,13 @@ function cachedFooter(cwd: string, git: GitRunner) {
 export function createGitFooterExtension(options: {
   git?: GitRunner;
   refreshMs?: number;
+  fetchGit?: GitRunner;
+  /** Network access is opt-in. False overrides even an injected fetch runner. */
+  autoFetch?: boolean;
 } = {}) {
   const git = options.git || runGit;
+  const fetchGit = options.autoFetch === false ? undefined
+    : options.fetchGit ?? (options.autoFetch === true ? runFetchGit : undefined);
   const refreshMs = options.refreshMs ?? REFRESH_MS;
 
   function refresh(state: SessionState) {
@@ -216,7 +390,7 @@ export function createGitFooterExtension(options: {
     const revision = state.revision;
     const ctx = state.ctx;
     const key = sessionKey(ctx);
-    state.refreshing = cachedFooter(sessionCwd(ctx), git)
+    state.refreshing = cachedFooter(sessionCwd(ctx), git, fetchGit)
       .catch(() => undefined)
       .then((html) => {
         if (html === undefined
