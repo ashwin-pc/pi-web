@@ -3,7 +3,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { resolveArtifactRead, resolveArtifactWrite } from "../shared.js";
 import { callFusionMcp, requestFusionMcp } from "./client.js";
 
-export const SCRIPT_CONTRACT = "Source is forwarded unchanged. Define a fresh top-level def run(context): with exactly one argument on every call; put operations inside it, never overwrite run, and let exceptions propagate. Fusion may retain globals. Python is unsandboxed; --read-only is an upstream intent flag, not a filesystem/security sandbox. Never blindly retry mutation after an error.";
+export const SCRIPT_CONTRACT = "Source is forwarded unchanged: the CLI does not parse Python, enforce the callback, reset retained globals, or wrap source. Caller responsibility: define a fresh top-level def run(context): with exactly one argument on every call; put operations inside it, never overwrite run, and let exceptions propagate. Fusion may retain globals. Python is unsandboxed; --read-only is an upstream intent flag, not a filesystem/security sandbox. Never blindly retry mutation after an error.";
 export async function fusionCapabilities(signal?: AbortSignal, cursor?: string) {
   return (await requestFusionMcp("tools/list", cursor ? { cursor } : {}, { signal, timeoutMs: 8000 })).result;
 }
@@ -11,8 +11,9 @@ export async function fusionCapabilities(signal?: AbortSignal, cursor?: string) 
 export async function fusionScript(cwd: string, scriptPath: string, mode: "read-only" | "mutate", signal?: AbortSignal) {
   const source = await resolveArtifactRead(cwd, scriptPath, ".py", 256 * 1024, "Fusion script");
   const script = await readFile(source.path, "utf8");
-  // Conservative contract guard, not a Python parser or a sandbox.
-  if (!/^def run\(\s*[A-Za-z_]\w*\s*\)\s*(?:->[^:\n]+)?\s*:/m.test(script)) throw new Error(`Script must define a fresh top-level def run(context):. ${SCRIPT_CONTRACT}`);
+  // Do not regex-parse Python or wrap source: annotations, multiline signatures,
+  // strings and rebinding cannot be interpreted reliably here. The caller must
+  // supply a fresh callback; Fusion reports Python syntax/runtime diagnostics.
   const args: any = { featureType: "script", object: { script } };
   if (mode === "read-only") {
     // Fail closed on old bridges: an ignored intent flag would falsely promise read-only execution.

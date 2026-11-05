@@ -82,8 +82,20 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     expect(fetch).not.toHaveBeenCalled();
     await runCad(["fusion", "exec", "--script", "script.py", "--allow-mutation"], { cwd });
     expect(requests[2].params).toEqual({ name: "fusion_mcp_execute", arguments: { featureType: "script", object: { script: source } } });
-    await writeFile(join(root, "bad.py"), "print('top-level only')\n");
-    await expect(runCad(["fusion", "exec", "--script", "bad.py", "--allow-mutation"], { cwd })).rejects.toThrow(/fresh top-level def run/);
+  });
+  it.each([
+    "def run(_context: str):\n    print('typed')\n",
+    "def run(\n    context: str,\n) -> None:\n    print('multiline')\n",
+    '"""def run(context): is documentation only"""\nprint("no callback")\n',
+    "def run(context):\n    pass\nrun = 1\n",
+  ])("forwards Python unchanged without pretending to parse or enforce its callback: %s", async source => {
+    const { cwd, root } = await workspace(); await writeFile(join(root, "source.py"), source);
+    const { requests } = fusion({ content: [] });
+    await runCad(["fusion", "exec", "--script", "source.py", "--allow-mutation"], { cwd });
+    expect(requests[2].params.arguments.object.script).toBe(source);
+    const reference: any = await runCad(["help", "fusion", "exec"], { cwd });
+    expect(reference.commands[0].description).toContain("fresh top-level def run(context)");
+    expect(reference.commands[0].description).toContain("never overwrite run");
   });
   it.each(["top", "object"])("forwards advertised readOnly flag at the actual %s schema location", async location => {
     const { cwd, root } = await workspace(); await writeFile(join(root, "read.py"), "def run(context):\n    print(1)\n");
