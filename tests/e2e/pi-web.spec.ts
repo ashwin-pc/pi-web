@@ -154,56 +154,85 @@ test.describe("composer layout", () => {
     await page.clock.runFor(2501);
     await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(3);
     await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(0);
-    await expect(page.locator("#connectionStatus")).toHaveText("Live updates reconnecting…");
+    await expect(page.locator('[data-toast-id="connection"] .toastMessage')).toHaveText("Live updates reconnecting…");
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
 
     await page.clock.runFor(12_500);
-    await expect(page.locator("#connectionStatus")).toHaveText("Live updates unavailable");
+    await expect(page.locator('[data-toast-id="connection"]')).toContainText("Live updates unavailable");
+    await expect(page.getByRole("button", { name: "Sync only", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Live updates", exact: true })).toBeVisible();
+    await page.clock.runFor(60_000);
+    await expect(page.locator('[data-toast-id="connection"]')).toBeVisible();
+    await expect(page.locator("#statusBar .toast")).toHaveCount(0);
 
     await page.evaluate(() => {
       (window as any).__piWebSocketAutoOpen = true;
       (window as any).__piWebSockets.at(-1).emitOpen();
     });
-    await expect(page.locator("#connectionStatus")).toHaveText("Reconnected");
+    await expect(page.locator('[data-toast-id="connection"] .toastMessage')).toHaveText("Reconnected");
     expect(messagesRequestCount).toBe(1);
+    await page.getByRole("button", { name: "Dismiss", exact: true }).focus();
+    await page.clock.runFor(5_000);
+    await expect(page.locator('[data-toast-id="connection"]')).toBeVisible();
+    await page.locator("#prompt").focus();
+    await page.mouse.move(0, 0);
     await page.clock.runFor(1_500);
-    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator('[data-toast-id="connection"]')).toHaveCount(0);
   });
 
-  test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+  test("persistent recovery actions sync without reload or reload with keyboard", async ({ page }) => {
     await page.addInitScript(() => {
       const Native = window.WebSocket;
       (window as any).__connectionReady = new Promise<void>(resolve => {
         window.WebSocket = class extends Native {
           constructor(url: string | URL, protocols?: string | string[]) {
             super(url, protocols);
-            if (new URL(String(url), location.href).pathname === "/ws") this.addEventListener("open", () => queueMicrotask(resolve));
+            if (new URL(String(url), location.href).pathname === "/ws") {
+              (window as any).__recoverySocket = this;
+              this.addEventListener("open", () => queueMicrotask(resolve));
+            }
           }
         };
       });
     });
     await page.goto("/");
 
-    const showWarning = async (kind: "offline" | "syncRequired", text: string) => {
-      // Initial WS open clears warning UI; wait for it instead of racing DOM injection.
+    const showWarning = async () => {
       await page.evaluate(() => (window as any).__connectionReady);
-      await page.evaluate(({ kind, text }) => {
-        const badge = document.querySelector<HTMLElement>("#connectionStatus")!;
-        badge.className = `connectionStatus ${kind}`;
-        badge.textContent = text;
-        badge.hidden = false;
-      }, { kind, text });
+      await page.evaluate(() => (window as any).__recoverySocket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ type: "sync_required" }),
+      })));
     };
+    await page.locator("#prompt").fill("Draft stays safe");
+    await showWarning();
+    await showWarning();
+    const notice = page.locator('[data-toast-id="connection"]');
+    await expect(notice).toHaveCount(1);
+    await page.evaluate(() => (window as any).__recoverySocket.dispatchEvent(new Event("open")));
+    await expect(notice).toContainText("Some live updates were missed");
+    const layout = await notice.evaluate(el => {
+      const rect = el.getBoundingClientRect();
+      const composer = document.querySelector("#promptForm")!.getBoundingClientRect();
+      return { right: rect.right, width: innerWidth, bottom: rect.bottom, composerTop: composer.top,
+        actions: [...el.querySelectorAll("button")].map(button => button.getBoundingClientRect().height) };
+    });
+    expect(layout.right).toBeLessThanOrEqual(layout.width);
+    expect(layout.bottom).toBeLessThanOrEqual(layout.composerTop);
+    expect(layout.actions.every(height => height >= 44)).toBe(true);
+    await page.route("**/api/state?*", route => route.fulfill({ status: 503, body: "Unavailable" }));
+    await page.getByRole("button", { name: "Sync only", exact: true }).click();
+    await expect(page.locator('[data-toast-id="connection:action-error"]')).toContainText("Sync only failed");
+    await expect(notice).toBeVisible();
+    await page.unroute("**/api/state?*");
+    const syncResponse = page.waitForResponse(response => response.url().includes("/api/messages"));
+    await page.getByRole("button", { name: "Sync only", exact: true }).click();
+    await syncResponse;
+    await expect(notice).toHaveCount(0);
+    await expect(page.locator("#prompt")).toHaveValue("Draft stays safe");
 
-    await showWarning("offline", "Live updates unavailable");
-    const clickReload = page.waitForEvent("framenavigated");
-    await page.locator("#connectionStatus").click();
-    await clickReload;
-    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-
-    await showWarning("syncRequired", "Sync needed");
+    await showWarning();
     const keyboardReload = page.waitForEvent("framenavigated");
-    await page.locator("#connectionStatus").press("Enter");
+    await page.getByRole("button", { name: "Live updates", exact: true }).press("Enter");
     await keyboardReload;
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
   });

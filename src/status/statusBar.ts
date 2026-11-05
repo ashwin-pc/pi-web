@@ -1,3 +1,4 @@
+import type { ToastCenter } from "../components/toasts.js";
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
@@ -44,6 +45,7 @@ function parseActivityTimestamp(value: string | number | Date | undefined) {
 export function createStatusBar(options: {
   state: AppState;
   elements: AppElements;
+  toasts: ToastCenter;
   api: ApiClient;
   sessionState: SessionStateController;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
@@ -51,9 +53,32 @@ export function createStatusBar(options: {
   refreshState: () => Promise<void>;
   copySessionLink?: () => Promise<boolean>;
 }): StatusBar {
-  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState, copySessionLink } = options;
+  const { state, elements, toasts, api, sessionState, addMessage, refreshSessions, refreshState, copySessionLink } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
+  let connectionKind: "reconnecting" | "offline" | "reconnected" | "syncRequired" | undefined;
+  let syncRequired = false;
+  let syncRevision = 0;
+  let syncPending: Promise<void> | undefined;
+
+  function syncOnly(): Promise<void> {
+    if (syncPending) return syncPending;
+    const revision = syncRevision;
+    const sessionId = state.currentSessionId;
+    syncPending = (async () => {
+      // Wait for both requests even on failure: a retry must not overlap an
+      // earlier state/history refresh that is still applying its response.
+      const results = await Promise.allSettled([refreshSessions(), refreshState()]);
+      if (revision !== syncRevision || sessionId !== state.currentSessionId) return;
+      const failed = results.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+      if (!state.initialSyncComplete) throw new Error("Session sync incomplete");
+      syncRequired = false;
+      if (!state.wsDisconnected) hideConnectionStatus();
+      else setConnectionStatus("offline", "Live updates unavailable", "Messages may still send, but live updates are unavailable.");
+    })().finally(() => { syncPending = undefined; });
+    return syncPending;
+  }
 
   function setStatusTitle(title: string) {
     const value = title.trim() || "New session";
@@ -131,32 +156,23 @@ export function createStatusBar(options: {
     state.connectionLostTimer = undefined;
   }
 
-  function clearReconnectedTimer() {
-    if (state.reconnectedClearTimer !== undefined) window.clearTimeout(state.reconnectedClearTimer);
-    state.reconnectedClearTimer = undefined;
-  }
-
   function setConnectionStatus(kind: "reconnecting" | "offline" | "reconnected" | "syncRequired", text: string, title = text) {
-    clearReconnectedTimer();
-    elements.connectionStatusEl.className = `connectionStatus ${kind}`;
-    elements.connectionStatusEl.textContent = text;
-    elements.connectionStatusEl.title = title;
-    const reloadable = kind === "offline" || kind === "syncRequired";
-    elements.connectionStatusEl.toggleAttribute("role", reloadable);
-    elements.connectionStatusEl.tabIndex = reloadable ? 0 : -1;
-    elements.connectionStatusEl.setAttribute("aria-label", reloadable ? `${text}. Refresh page.` : text);
-    elements.connectionStatusEl.hidden = false;
+    connectionKind = kind;
+    const actions = [
+      { label: "Live updates", run: () => window.location.reload() },
+      { label: "Sync only", run: syncOnly },
+    ];
+    const message = kind === "offline"
+      ? `${text}. ${title} Live updates reloads the page; Sync only refreshes this session without reloading.`
+      : kind === "syncRequired" ? "Some live updates were missed. Sync only refreshes this session; Live updates reloads the page."
+      : text;
+    if (kind === "reconnected") toasts.show({ id: "connection", message, tone: "success", durationMs: reconnectDelayMs });
+    else toasts.show({ id: "connection", message, tone: "warning", persistent: true, actions });
   }
 
   function hideConnectionStatus() {
-    clearReconnectedTimer();
-    elements.connectionStatusEl.hidden = true;
-    elements.connectionStatusEl.textContent = "";
-    elements.connectionStatusEl.title = "";
-    elements.connectionStatusEl.className = "connectionStatus";
-    elements.connectionStatusEl.removeAttribute("role");
-    elements.connectionStatusEl.removeAttribute("aria-label");
-    elements.connectionStatusEl.tabIndex = -1;
+    connectionKind = undefined;
+    toasts.dismiss("connection");
   }
 
   function activityKey() {
@@ -249,7 +265,7 @@ export function createStatusBar(options: {
     if (state.reconnectNoticeTimer === undefined) {
       state.reconnectNoticeTimer = window.setTimeout(() => {
         state.reconnectNoticeTimer = undefined;
-        if (state.wsDisconnected && !elements.connectionStatusEl.classList.contains("offline")) {
+        if (state.wsDisconnected && connectionKind !== "offline" && !syncRequired) {
           setConnectionStatus("reconnecting", "Live updates reconnecting…");
         }
       }, reconnectNoticeDelayMs);
@@ -257,7 +273,7 @@ export function createStatusBar(options: {
     if (state.connectionLostTimer === undefined) {
       state.connectionLostTimer = window.setTimeout(() => {
         state.connectionLostTimer = undefined;
-        if (state.wsDisconnected) {
+        if (state.wsDisconnected && !syncRequired) {
           setConnectionStatus("offline", "Live updates unavailable", "Connection lost. Messages may still send, but live updates are unavailable.");
         }
       }, connectionLostDelayMs);
@@ -266,10 +282,15 @@ export function createStatusBar(options: {
 
   function markWebSocketOpen() {
     const isReconnect = state.wsHasOpened && state.wsDisconnected;
-    const hadVisibleStatus = !elements.connectionStatusEl.hidden;
+    const hadVisibleStatus = toasts.has("connection");
     state.wsHasOpened = true;
     state.wsDisconnected = false;
     clearConnectionTimers();
+
+    if (syncRequired) {
+      setConnectionStatus("syncRequired", "Sync needed");
+      return;
+    }
 
     if (!isReconnect) {
       hideConnectionStatus();
@@ -282,19 +303,19 @@ export function createStatusBar(options: {
     }
 
     setConnectionStatus("reconnected", "Reconnected");
-    state.reconnectedClearTimer = window.setTimeout(() => {
-      state.reconnectedClearTimer = undefined;
-      if (!state.wsDisconnected) hideConnectionStatus();
-    }, reconnectDelayMs);
   }
 
   function markWebSocketClosed() {
+    syncRevision += 1;
     state.wsDisconnected = true;
-    clearReconnectedTimer();
+    if (connectionKind === "reconnected") hideConnectionStatus();
     scheduleConnectionStatus();
   }
 
   function markSyncRequired() {
+    clearConnectionTimers();
+    syncRequired = true;
+    syncRevision += 1;
     setConnectionStatus("syncRequired", "Sync needed", "Some live updates were missed. Click to refresh the page.");
   }
 
@@ -331,16 +352,6 @@ export function createStatusBar(options: {
           elements.copySessionLinkButton.setAttribute("aria-label", elements.copySessionLinkButton.title);
         }, 1_200);
       });
-    });
-    const reloadForConnectionStatus = () => {
-      if (!elements.connectionStatusEl.classList.contains("syncRequired") && !elements.connectionStatusEl.classList.contains("offline")) return;
-      window.location.reload();
-    };
-    elements.connectionStatusEl.addEventListener("click", reloadForConnectionStatus);
-    elements.connectionStatusEl.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      reloadForConnectionStatus();
     });
   }
 
