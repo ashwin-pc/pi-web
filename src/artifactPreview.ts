@@ -1,27 +1,29 @@
 import "./style.css";
 import "highlight.js/styles/github-dark.css";
 import { renderStandaloneMarkdown } from "./markdown/render.js";
+import { artifactSessionId, scopeArtifactUrl } from "./artifacts/url.js";
 
 function allowedArtifactPath(value: string | null) {
   if (!value) return "";
   try {
     const url = new URL(value, window.location.origin);
     if (url.origin !== window.location.origin) return "";
-    if (!url.pathname.startsWith("/api/artifacts/")) return "";
+    if (!/^\/api\/(?:artifacts|session-artifacts)\//.test(url.pathname)) return "";
     const lower = url.pathname.toLowerCase();
     if (!lower.endsWith(".md") && !lower.endsWith(".markdown")) return "";
-    return url.pathname;
+    return `${url.pathname}${url.search}`;
   } catch {
     return "";
   }
 }
 
-function artifactName(pathname: string) {
+function artifactName(path: string) {
+  const pathname = new URL(path, window.location.origin).pathname;
   try { return decodeURIComponent(pathname.split("/").pop() || "artifact"); } catch { return pathname.split("/").pop() || "artifact"; }
 }
 
 const params = new URLSearchParams(window.location.search);
-const src = allowedArtifactPath(params.get("src"));
+const src = scopeArtifactUrl(allowedArtifactPath(params.get("src")), "");
 const title = document.querySelector<HTMLHeadingElement>("#artifactPreviewTitle");
 const raw = document.querySelector<HTMLAnchorElement>("#artifactPreviewRaw");
 const body = document.querySelector<HTMLElement>("#artifactPreviewBody");
@@ -47,7 +49,7 @@ async function loadPreview() {
   try {
     const res = await fetch(src);
     if (!res.ok) throw new Error(`Preview failed (${res.status})`);
-    renderStandaloneMarkdown(body, await res.text());
+    renderStandaloneMarkdown(body, await res.text(), { sessionId: artifactSessionId(src) });
   } catch (error) {
     body.textContent = error instanceof Error ? error.message : String(error);
   }
