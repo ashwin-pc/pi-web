@@ -42,6 +42,7 @@ export function resolveAvatarBundle(identity: AppIdentity): AvatarBundle {
 }
 
 export const maxAvatarAnimationBytes = 8 * 1024 * 1024;
+export const maxAvatarAnimationDecodedBytes = 32 * 1024 * 1024;
 export const maxAvatarPackageBytes = 3 * Math.ceil((2 * 1024 * 1024) / 3) * 4 + Math.ceil(maxAvatarAnimationBytes / 3) * 4 + 4096;
 
 export function isAvatarAssetId(value: unknown): value is string {
