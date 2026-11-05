@@ -65,6 +65,27 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     expect(fetch.mock.calls.filter(call => call[1].method === "DELETE")).toHaveLength(1);
     await expect(runCad(["fusion", "rpc", "--json", '{}'], { cwd })).rejects.toMatchObject({ exitCode: 2 });
   });
+  it("forwards bounded read-only MCP resource catalog, resource reads and generic electronics queries", async () => {
+    const { cwd } = await workspace(); const payload = { contents: [{ uri: "fusion://schema/Board", text: "schema" }] };
+    const { requests } = fusion(payload);
+    expect(await runCad(["fusion", "resources", "--cursor", "page-two"], { cwd })).toEqual(payload);
+    expect(requests[2]).toMatchObject({ method: "resources/list", params: { cursor: "page-two" } });
+    expect(await runCad(["fusion", "resource", "--json", '{"uri":"fusion://schema/Board"}'], { cwd })).toEqual(payload);
+    expect(requests[5]).toMatchObject({ method: "resources/read", params: { uri: "fusion://schema/Board" } });
+    const query = { entity_type: "Board", object: { fields: ["name"], filters: { name: "main" }, pagination: { offset: 0, limit: 10 } } };
+    await runCad(["fusion", "electronics", "--json", JSON.stringify(query)], { cwd });
+    expect(requests[8].params).toEqual({ name: "fusion_mcp_electronics_read", arguments: query });
+    await expect(runCad(["fusion", "resource", "--json", '{"uri":"fusion://schema","method":"tools/call"}'], { cwd })).rejects.toMatchObject({ exitCode: 2 });
+    await expect(runCad(["fusion", "resource", "--json", '{"uri":""}'], { cwd })).rejects.toMatchObject({ exitCode: 2 });
+    await expect(runCad(["fusion", "electronics", "--json", '{}', "--allow-mutation"], { cwd })).rejects.toMatchObject({ exitCode: 2 });
+  });
+  it("does not mislabel an upstream success-only docs response as retrieved documentation", async () => {
+    const { cwd } = await workspace(); const result = { content: [{ type: "text", text: '{"success":true}' }] }; fusion(result);
+    expect(await runCad(["fusion", "docs", "--json", '{"searchPattern":"Body"}'], { cwd })).toEqual(result);
+    const reference: any = await runCad(["help", "fusion", "docs"], { cwd });
+    expect(reference.commands[0].description).toContain("backend limitation");
+    expect(reference.commands[0].description).toContain("not evidence");
+  });
   it("forwards generic read and docs queries without narrow command duplication", async () => {
     const { cwd } = await workspace(); const { requests } = fusion({ content: [] });
     const query = { queryType: "document", operation: "search", name: "part", project: "hub" };

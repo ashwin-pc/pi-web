@@ -1,5 +1,5 @@
 import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
-import { callFusionMcp, fusionMcpUrl } from "../fusion/client.js";
+import { callFusionMcp, fusionMcpUrl, requestFusionMcp } from "../fusion/client.js";
 import { fusionCapabilities, fusionScreenshot, fusionScript, SCRIPT_CONTRACT } from "../fusion/adapter.js";
 import { generateHunyuan } from "../hunyuan/tools.js";
 import { sliceStl } from "../slicing/prusa.js";
@@ -15,9 +15,12 @@ const COMMANDS = [
   { command: "help [command]", description: "Offline complete command/parameter reference; same arguments in CLI and modeling tool." },
   { command: "discover", description: "Offline configured runtime filesystem evidence and backend setup; no MCP connection or model startup." },
   { command: "fusion capabilities [--cursor STRING]", description: "Live bounded MCP tools/list including full schemas; use returned nextCursor to page explicitly." },
+  { command: "fusion resources [--cursor STRING]", description: "Live bounded MCP resources/list catalog. Page explicitly with returned nextCursor; catalog presence does not guarantee useful resource content." },
+  { command: "fusion resource --json OBJECT", description: "Read-only MCP resources/read; JSON: uri (required string). Content and schemas depend on the installed bridge; no arbitrary RPC passthrough." },
+  { command: "fusion electronics --json OBJECT", description: "Generic read-only fusion_mcp_electronics_read arguments forwarded unchanged. Discover installed entity/schema support using fusion capabilities and fusion resources; no hardcoded entity list." },
   { command: "fusion status", description: "Live read activeCommand probe." },
   { command: "fusion read --json OBJECT", description: "Generic fusion_mcp_read query forwarded unchanged. queryType: projects, document (operation search/open/recent), activeCommand, apiDocumentation, screenshot. Use capabilities for the installed schema. No execute or update RPC passthrough." },
-  { command: "fusion docs --json OBJECT", description: "API documentation read. JSON fields searchPattern (required), apiCategory class/member/description/all, filter (optional); queryType forced to apiDocumentation." },
+  { command: "fusion docs --json OBJECT", description: "API documentation read. JSON fields searchPattern (required), apiCategory class/member/description/all, filter (optional); queryType forced to apiDocumentation. Some bridges return success without documentation payload; that is not evidence that class/member docs were retrieved. Inspect returned content and resource catalogs; missing upstream docs remain a backend limitation." },
   { command: "fusion screenshot --json OBJECT", description: "Save bounded PNG artifact. JSON: output (required .png), width/height (32–4096, default 1024/768), direction (current/front/back/top/bottom/left/right/iso-top-left/iso-top-right/iso-bottom-left/iso-bottom-right), transparent (boolean default false)." },
   { command: "fusion exec --script ARTIFACT.py (--read-only | --allow-mutation)", description: SCRIPT_CONTRACT + " Read-only requires advertised upstream boolean readOnly support and otherwise fails closed." },
   { command: "fusion undo --allow-mutation", description: "Explicit document mutation via fusion_mcp_update featureType undo; no automatic retry." },
@@ -29,7 +32,7 @@ const COMMANDS = [
 ];
 
 function help(topic = "") {
-  return { name: "modeling", version: 1, invocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3600000, default 1800000); bounds the complete invocation, propagates cancellation. Aborting Fusion transport does NOT cancel remote execution: document state is unknown and mutation must not be automatically retried. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
+  return { name: "modeling", version: 1, invocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3600000, default 1800000); bounds the complete invocation, propagates cancellation. Aborting Fusion transport does NOT cancel remote execution: document state is unknown and mutation must not be automatically retried. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", scope: "CAD modeling and read-only MCP introspection. Optional marketing, purchase and media services are excluded; no arbitrary MCP RPC invocation is exposed.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
 }
 
 function parse(args: string[]) {
@@ -59,7 +62,7 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
   if (!words.length || words[0] === "help" || flags.help) return redactValue(help(words[0] === "help" ? words.slice(1).join(" ") : words.join(" ")));
   const command = words.join(" ");
   const allowed: Record<string, string[]> = {
-    discover: [], "fusion capabilities": ["cursor"], "fusion status": [], "fusion read": ["json"], "fusion docs": ["json"], "fusion screenshot": ["json"], "fusion exec": ["script", "read-only", "allow-mutation"], "fusion undo": ["allow-mutation"], "fusion redo": ["allow-mutation"], slice: ["json"], "hunyuan generate": ["json"], "runtime discover": [], "runtime exec": ["json", "allow-mutation"],
+    discover: [], "fusion capabilities": ["cursor"], "fusion resources": ["cursor"], "fusion resource": ["json"], "fusion electronics": ["json"], "fusion status": [], "fusion read": ["json"], "fusion docs": ["json"], "fusion screenshot": ["json"], "fusion exec": ["script", "read-only", "allow-mutation"], "fusion undo": ["allow-mutation"], "fusion redo": ["allow-mutation"], slice: ["json"], "hunyuan generate": ["json"], "runtime discover": [], "runtime exec": ["json", "allow-mutation"],
   };
   if (!allowed[command]) throw new CadError("Unknown command; use help for the complete reference.", 2);
   if (Object.keys(flags).some(flag => flag !== "timeout-ms" && !allowed[command].includes(flag))) throw new CadError("Option is not valid for this command; use help.", 2);
@@ -74,6 +77,13 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
       case "discover": result = { reference: help(), fusion: { endpoint: fusionMcpUrl(), state: "not-probed", discover: "fusion capabilities" }, hunyuan: { configured: !!process.env.PI_HUNYUAN_COMFY_ROOT?.trim(), state: "not-probed", geometryOnly: true }, runtimes: await discover() }; break;
       case "runtime discover": result = await discover(); break;
       case "fusion capabilities": result = await fusionCapabilities(signal, flags.cursor as string | undefined); break;
+      case "fusion resources": result = (await requestFusionMcp("resources/list", flags.cursor ? { cursor: flags.cursor } : {}, { signal, timeoutMs: 8000 })).result; break;
+      case "fusion resource": {
+        const query = json(flags, ["uri"]);
+        if (typeof query.uri !== "string" || !query.uri || query.uri.length > 8192 || /[\x00-\x1f]/.test(query.uri)) throw new CadError("uri must be a nonempty resource URI string (maximum 8192 characters, no control characters).", 2);
+        result = (await requestFusionMcp("resources/read", query, { signal })).result; break;
+      }
+      case "fusion electronics": result = (await callFusionMcp("fusion_mcp_electronics_read", json(flags), { signal })).result; break;
       case "fusion status": result = (await callFusionMcp("fusion_mcp_read", { queryType: "activeCommand" }, { signal, timeoutMs: 8000 })).result; break;
       case "fusion read": {
         const query = json(flags);
