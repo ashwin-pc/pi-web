@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
-import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar, receiveAvatarPackage } from "./server/appIdentity.js";
+import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, readAvatarBody, readAvatarPackageBody, storeAvatar, storeAvatarPackage } from "./server/appIdentity.js";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,7 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
   });
   res.end(body);
 }
@@ -183,7 +184,7 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   }
   const artifactRoots = sessionScoped
     ? new Set([preferredCwd])
-    : new Set([...(preferredCwd ? [preferredCwd] : []), piCwd, ...knownCwds, ...sessionService.knownCwds()]);
+    : new Set([...(preferredCwd ? [preferredCwd] : []), piCwd]);
   const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
@@ -1182,10 +1183,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         });
       }
       if (method === "POST" && ["/api/identity/avatar", "/api/identity/avatar/package"].includes(url.pathname)) {
+        const isPackage = url.pathname.endsWith("/package");
+        let body: Buffer | Awaited<ReturnType<typeof readAvatarPackageBody>>;
+        try { body = isPackage ? await readAvatarPackageBody(req) : await readAvatarBody(req); }
+        catch (error) { throw new HttpError((error as Error).message, 400); }
         const settings = await withAvatarMutation(async () => {
           const previous = (await settingsStore.read()).identity.avatar;
           let assetId: string;
-          try { assetId = await (url.pathname.endsWith("/package") ? receiveAvatarPackage : receiveAvatar)(req, settingsStore.file); }
+          try { assetId = isPackage ? await storeAvatarPackage(body as Awaited<ReturnType<typeof readAvatarPackageBody>>, settingsStore.file) : await storeAvatar(body as Buffer, settingsStore.file); }
           catch (error) { throw new HttpError((error as Error).message, 400); }
           return commitAvatarGeneration(settingsStore.file, assetId, async () => {
             const animated = Boolean(await readAvatar(settingsStore.file, assetId, "newSession"));

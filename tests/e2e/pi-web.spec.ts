@@ -1851,6 +1851,10 @@ test.describe("image rendering", () => {
   });
 
   test("renders markdown artifact links inline", async ({ page }) => {
+    const artifactRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/session-artifacts/mock-current/report.md")) artifactRequests.push(request.url());
+    });
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -1860,11 +1864,67 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
     await expect(page.locator(".artifactPreview--markdown")).toHaveCount(1);
+    await expect(page.locator('a[href="/api/session-artifacts/mock-current/report.md"]')).toHaveCount(1);
     await expect(preview.locator('.artifactPreviewContent a[href="/api/artifacts/report.md"]')).toHaveText("Self reference");
+    await expect.poll(() => artifactRequests.length).toBeGreaterThan(0);
+  });
+
+  test("standalone markdown previews retain artifact session provenance", async ({ page }) => {
+    const requested: string[] = [];
+    await page.route(/\/api\/session-artifacts\/producer-session\/nested\/report%20one\.md\?download=1$/, async (route) => {
+      requested.push(route.request().url());
+      await route.fulfill({
+        contentType: "text/markdown",
+        body: [
+          "# Scoped report",
+          "![Nested image](/api/artifacts/nested/image%20one.png)",
+          "![Already scoped](/api/session-artifacts/producer-session/nested/already%20scoped.png)",
+          "![External](https://cdn.example/api/artifacts/external.png)",
+        ].join("\n\n"),
+      });
+    });
+    await page.route(/\/api\/session-artifacts\/producer-session\/nested\/image%20one\.png$/, async (route) => {
+      requested.push(route.request().url());
+      await route.fulfill({ contentType: "image/png", body: VALID_PNG });
+    });
+    await page.route(/\/api\/session-artifacts\/producer-session\/nested\/already%20scoped\.png$/, async (route) => {
+      requested.push(route.request().url());
+      await route.fulfill({ contentType: "image/png", body: VALID_PNG });
+    });
+    await page.route("https://cdn.example/api/artifacts/external.png", async (route) => {
+      requested.push(route.request().url());
+      await route.fulfill({ contentType: "image/png", body: VALID_PNG });
+    });
+
+    const scoped = "/api/session-artifacts/producer-session/nested/report%20one.md?download=1";
+    await page.goto(`/artifact-preview.html?src=${encodeURIComponent(scoped)}`);
+    await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Scoped report");
+    await expect(page.locator("#artifactPreviewRaw")).toHaveAttribute("href", scoped);
+    const images = page.locator("#artifactPreviewBody img");
+    await expect(images.nth(0)).toHaveAttribute(
+      "src",
+      "/api/session-artifacts/producer-session/nested/image%20one.png",
+    );
+    await expect(images.nth(1)).toHaveAttribute(
+      "src",
+      "/api/session-artifacts/producer-session/nested/already%20scoped.png",
+    );
+    await expect(images.nth(2)).toHaveAttribute("src", "https://cdn.example/api/artifacts/external.png");
+    await expect.poll(() => requested.length).toBe(4);
+
+    const queried = "/api/artifacts/nested/report%20one.md?sessionId=query-producer";
+    const normalized = "/api/session-artifacts/query-producer/nested/report%20one.md";
+    await page.route(/\/api\/session-artifacts\/query-producer\/nested\/report%20one\.md$/, (route) => {
+      requested.push(route.request().url());
+      return route.fulfill({ contentType: "text/markdown", body: "# Query-scoped report" });
+    });
+    await page.goto(`/artifact-preview.html?src=${encodeURIComponent(queried)}`);
+    await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Query-scoped report");
+    await expect(page.locator("#artifactPreviewRaw")).toHaveAttribute("href", normalized);
   });
 
   test("renders html-preview fences inside inline markdown artifact cards", async ({ page }) => {
-    await page.route("**/api/artifacts/report.md", (route) => route.fulfill({
+    await page.route("**/api/session-artifacts/mock-current/report.md", (route) => route.fulfill({
       contentType: "text/markdown",
       body: '# Preview reproduction\n\n```html-preview\n<div id="repro">Interactive artifact</div>\n```\n',
     }));
@@ -2064,7 +2124,7 @@ test.describe("image rendering", () => {
       expect(request).toMatchObject({
         slot: "artifact-preview",
         key: "gcode-preview",
-        event: { context: { name: "e2e-toolpath.gcode", path: "/api/artifacts/e2e-toolpath.gcode", kind: "file" } },
+        event: { context: { name: "e2e-toolpath.gcode", path: "/api/session-artifacts/mock-current/e2e-toolpath.gcode", kind: "file" } },
       });
       await route.fulfill({ json: { ok: true, html: "<!doctype html><p id='toolpath'>Toolpath ready</p>" } });
     });
@@ -2102,7 +2162,7 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-video-artifact.webm");
     const video = preview.locator("video.artifactPreviewVideo");
     await expect(video).toBeVisible();
-    await expect(video.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-video-artifact.webm");
+    await expect(video.locator("source")).toHaveAttribute("src", "/api/session-artifacts/mock-current/e2e-video-artifact.webm");
     await expect(video.locator("source")).toHaveAttribute("type", "video/webm");
   });
 
@@ -2114,7 +2174,7 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-audio-artifact.mp3");
     const audio = preview.locator("audio.artifactPreviewAudio");
     await expect(audio).toBeVisible();
-    await expect(audio.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-audio-artifact.mp3");
+    await expect(audio.locator("source")).toHaveAttribute("src", "/api/session-artifacts/mock-current/e2e-audio-artifact.mp3");
     await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
 
     const downloadStarted = page.waitForEvent("download");
@@ -2123,11 +2183,17 @@ test.describe("image rendering", () => {
   });
 
   test("image actions appear on hover with preview, download and open buttons", async ({ page }) => {
+    const artifactRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/session-artifacts/mock-current/e2e-test.png")) artifactRequests.push(request.url());
+    });
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
     const frame = page.locator(".message.assistant .imageFrame").last();
     await expect(frame).toBeVisible();
+    await expect(frame.locator("img")).toHaveAttribute("src", "/api/session-artifacts/mock-current/e2e-test.png");
+    await expect.poll(() => artifactRequests.length).toBeGreaterThan(0);
 
     // move mouse away so no hover state bleeds in
     await page.mouse.move(0, 0);
