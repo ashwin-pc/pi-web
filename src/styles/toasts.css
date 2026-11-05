@@ -1,0 +1,37 @@
+/* Share the existing header grid row; reserve space without moving chat rows. */
+.appHeader { grid-row: 1; min-width: 0; }
+/* In-flow rail reserves its own space: never covers the composer or keyboard. */
+.toastCenter {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-height: 35dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right));
+  scroll-padding: 8px;
+}
+.toastCenter:empty { display: none; }
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+  margin: 6px auto;
+  padding: 10px 12px;
+  max-width: 880px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 2px 8px #0002;
+}
+.toast--warning, .toast--error { border-inline-start: 4px solid var(--accent); }
+.toastMessage { flex: 1 1 240px; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+.toastActions { display: flex; gap: 8px; flex-wrap: wrap; }
+.toastActions button { min-height: 44px; min-width: 44px; padding: 8px 14px; }
+.toastActions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .toast { gap: 6px; padding: 8px 10px; }
+  .toastActions { width: 100%; }
+  .toastActions button { flex: 1; }
+}
