@@ -95,7 +95,7 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
       resolveAdditionalExtensionPaths: (trusted) => this.options.additionalExtensionPaths(resolvedCwd, trusted),
-      resolveProjectTrust: () => projectTrust.isTrusted(resolvedCwd, settingsManager),
+      resolveProjectTrust: () => projectTrust.isTrustedForLoading(resolvedCwd, settingsManager),
       loaderOptions: {
         cwd: resolvedCwd,
         agentDir,

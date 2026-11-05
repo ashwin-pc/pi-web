@@ -11,6 +11,8 @@ const unconditionalExecutableConfigDefaults = new Map([
   ["core.fsmonitor", "false"],
   ["core.gitproxy", "none"],
   ["core.alternateRefsCommand", "true"],
+  ["core.editor", "true"],
+  ["sequence.editor", "true"],
   ["gpg.program", "gpg"],
   ["gpg.openpgp.program", "gpg"],
   ["gpg.x509.program", "gpgsm"],
@@ -31,23 +33,28 @@ const defaultProtocolPolicies = new Map([
 ]);
 const remoteHelperIdentifier = /^[A-Za-z][A-Za-z0-9+.-]*$/;
 
-function filterConfigKey(key: string) {
+function subsectionConfigKey(key: string) {
+  const sectionSeparator = key.indexOf(".");
   const separator = key.lastIndexOf(".");
-  if (separator <= "filter.".length || key.slice(0, "filter.".length).toLowerCase() !== "filter.") return undefined;
+  if (sectionSeparator <= 0 || separator <= sectionSeparator + 1) return undefined;
+  const section = key.slice(0, sectionSeparator).toLowerCase();
+  if (!["filter", "remote", "tar", "url"].includes(section)) return undefined;
   return {
-    subsection: key.slice("filter.".length, separator),
+    section,
+    subsection: key.slice(sectionSeparator + 1, separator),
     variable: key.slice(separator + 1).toLowerCase(),
   };
 }
 
 function configKeysEqual(left: string, right: string) {
-  const leftFilter = filterConfigKey(left);
-  const rightFilter = filterConfigKey(right);
-  if (leftFilter || rightFilter) {
-    return leftFilter !== undefined &&
-      rightFilter !== undefined &&
-      leftFilter.subsection === rightFilter.subsection &&
-      leftFilter.variable === rightFilter.variable;
+  const leftSubsection = subsectionConfigKey(left);
+  const rightSubsection = subsectionConfigKey(right);
+  if (leftSubsection || rightSubsection) {
+    return leftSubsection !== undefined &&
+      rightSubsection !== undefined &&
+      leftSubsection.section === rightSubsection.section &&
+      leftSubsection.subsection === rightSubsection.subsection &&
+      leftSubsection.variable === rightSubsection.variable;
   }
   return left.toLowerCase() === right.toLowerCase();
 }
@@ -74,6 +81,15 @@ function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
   }
 }
 
+function isUrlRewriteKey(key: string) {
+  const normalized = key.toLowerCase();
+  return normalized.startsWith("url.") && /\.(?:insteadof|pushinsteadof)$/.test(normalized);
+}
+
+export function isGitNetworkCommand(command: string | undefined) {
+  return command !== undefined && ["fetch", "pull", "push", "ls-remote"].includes(command);
+}
+
 export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfigOverride[] {
   assertSafeRemoteConfig(entries);
   const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
@@ -82,8 +98,8 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
   const trustedProtocolAllow = trusted.filter((entry) => entry.key.toLowerCase() === "protocol.allow").at(-1)?.value;
   const overrides: GitConfigOverride[] = [];
   const add = (key: string, value: string) => overrides.push({ key, value });
-  const resetToTrusted = (key: string, fallback: string) => {
-    add(key, fallback);
+  const resetToTrusted = (key: string, fallback?: string) => {
+    if (fallback !== undefined) add(key, fallback);
     for (const entry of trusted) if (configKeysEqual(entry.key, key)) add(entry.key, entry.value);
   };
   const safeFallback = (key: string) => {
@@ -93,6 +109,7 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
     if (key.endsWith(".receivepack")) return "git-receive-pack";
     if (key.endsWith(".proxy")) return "";
     if (key.startsWith("diff.") || key.startsWith("merge.")) return "false";
+    if (key.startsWith("tar.") && key.endsWith(".command")) return "false";
     return "";
   };
 
@@ -108,8 +125,14 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
     if (repositoryKey) resetToTrusted(repositoryKey, fallback);
   }
 
+  const repositoryConfigKeys = new Set(repository.map((entry) => entry.key));
+  for (const key of repositoryConfigKeys) {
+    const normalized = key.toLowerCase();
+    if (normalized.startsWith("tar.") && normalized.endsWith(".command")) resetToTrusted(key, "false");
+  }
+
   const neutralizedFilters = new Set<string>();
-  for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
+  for (const key of [...repositoryConfigKeys].filter((key) => {
     const normalized = key.toLowerCase();
     return normalized === "credential.helper" ||
       /^credential\..+\.helper$/.test(normalized) ||
@@ -120,7 +143,7 @@ export function gitConfigHardeningOverrides(entries: GitConfigEntry[]): GitConfi
       normalized === "protocol.allow" ||
       /^protocol\..+\.allow$/.test(normalized) ||
       /^remote\..+\.(?:proxy|uploadpack|receivepack)$/.test(normalized);
-  }))) {
+  })) {
     const normalized = key.toLowerCase();
     if (normalized.startsWith("filter.")) neutralizedFilters.add(key.slice(0, key.lastIndexOf(".")));
     resetToTrusted(key, safeFallback(normalized));
@@ -142,7 +165,10 @@ export function gitConfigEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
   inheritedCommandConfig: GitConfigOverride[] = [],
 ) {
-  const env: NodeJS.ProcessEnv = { ...baseEnv, GIT_TERMINAL_PROMPT: "0" };
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    GIT_TERMINAL_PROMPT: "0",
+  };
   delete env.GIT_CONFIG_PARAMETERS;
   delete env.GIT_CONFIG_COUNT;
   for (const key of Object.keys(env)) {
@@ -159,6 +185,7 @@ export function gitConfigEnv(
 
 export type GitExecution = {
   entries: GitConfigEntry[];
+  hasRepositoryUrlRewrites: boolean;
   env: NodeJS.ProcessEnv;
   args: (args: string[]) => string[];
 };
@@ -175,12 +202,23 @@ export async function loadGitExecution(cwd: string): Promise<GitExecution> {
   const inheritedCommandConfig = entries
     .filter((entry) => entry.scope === "command")
     .map(({ key, value }) => ({ key, value }));
+  const hasRepositoryUrlRewrites = entries.some(
+    (entry) => (entry.scope === "local" || entry.scope === "worktree") && isUrlRewriteKey(entry.key),
+  );
   const env = gitConfigEnv(gitConfigHardeningOverrides(entries), bootstrapEnv, inheritedCommandConfig);
+  if (hasRepositoryUrlRewrites) {
+    // Git 2.44+ honors this; older versions ignore the unknown environment variable.
+    env.GIT_NO_LAZY_FETCH = "1";
+  }
   return {
     entries,
+    hasRepositoryUrlRewrites,
     env,
     args(args) {
       const [command, ...commandArgs] = args;
+      if (hasRepositoryUrlRewrites && isGitNetworkCommand(command)) {
+        throw new Error(`Git ${command} is disabled because this repository configures URL rewrites`);
+      }
       const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
       const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
       const submoduleDisplayPolicy = ["status", "diff"].includes(command) ? ["--ignore-submodules=dirty"] : [];

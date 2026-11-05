@@ -63,7 +63,7 @@ See the [0.6.1 release notes](docs/releases/0.6.1.md). For the preceding feature
 
 ## Install
 
-Requires Node.js 24 or newer. pi-web currently uses [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) as its agent harness; pi-web 0.6.1 bundles Pi 0.87.1, so a separate global Pi install is not required.
+Requires Node.js 24 or newer and Git 2.44 or newer. pi-web currently uses [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) as its agent harness; pi-web 0.6.1 bundles Pi 0.87.1, so a separate global Pi install is not required.
 
 Install and run pi-web from npm:
 

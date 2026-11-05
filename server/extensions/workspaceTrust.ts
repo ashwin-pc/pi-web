@@ -9,6 +9,7 @@ import {
   discoverExtensionEntryPaths,
   resolveWorkspacePiWebExtensionPaths,
 } from "../extensions.js";
+import { readWorkspaceFile, WorkspaceFileError } from "../shared/workspaceFiles.js";
 
 export type WorkspaceTrustResource = {
   kind: "extension" | "package" | "resource";
@@ -19,6 +20,7 @@ export type WorkspaceExtensionTrustStatus = {
   workspace: string;
   trusted: boolean;
   desiredTrusted: boolean;
+  blockedByWorkspaceBoundary: boolean;
   resources: WorkspaceTrustResource[];
   trustedWorkspaces: string[];
 };
@@ -35,12 +37,11 @@ function canonicalExtensionPath(path: string): string {
   }
 }
 
-function projectSettingsResources(workspace: string): WorkspaceTrustResource[] {
-  const settingsPath = join(workspace, ".pi", "settings.json");
-  if (!existsSync(settingsPath)) return [];
+async function projectSettingsResources(workspace: string): Promise<WorkspaceTrustResource[]> {
   const fallback: WorkspaceTrustResource = { kind: "resource", path: ".pi/settings.json" };
   try {
-    const value = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+    const settings = await readWorkspaceFile(workspace, ".pi/settings.json");
+    const value = JSON.parse(settings.content) as {
       packages?: unknown;
       extensions?: unknown;
     };
@@ -65,12 +66,13 @@ function projectSettingsResources(workspace: string): WorkspaceTrustResource[] {
       }
     }
     return resources.length ? resources : [fallback];
-  } catch {
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && error.status === 404) return [];
     return [fallback];
   }
 }
 
-function projectResources(workspace: string, trustedExtensionPaths: ReadonlySet<string>): WorkspaceTrustResource[] {
+async function projectResources(workspace: string, trustedExtensionPaths: ReadonlySet<string>): Promise<WorkspaceTrustResource[]> {
   const regularExtensionsDir = join(workspace, ".pi", "extensions");
   const discoveredRegularExtensions = discoverExtensionEntryPaths(regularExtensionsDir);
   const regularExtensions = discoveredRegularExtensions
@@ -82,7 +84,7 @@ function projectResources(workspace: string, trustedExtensionPaths: ReadonlySet<
   if (existsSync(regularExtensionsDir) && discoveredRegularExtensions.length === 0) {
     resources.push({ kind: "resource", path: ".pi/extensions" });
   }
-  resources.push(...projectSettingsResources(workspace));
+  resources.push(...await projectSettingsResources(workspace));
 
   for (const name of ["skills", "prompts", "themes", "SYSTEM.md", "APPEND_SYSTEM.md"]) {
     const path = join(workspace, ".pi", name);
@@ -168,6 +170,24 @@ export class WorkspaceExtensionTrust {
     return this.decision(cwd, settingsManager).trusted;
   }
 
+  private async settingsRemainInWorkspace(workspace: string): Promise<boolean> {
+    try {
+      await readWorkspaceFile(workspace, ".pi/settings.json");
+      return true;
+    } catch (error) {
+      return !(error instanceof WorkspaceFileError && error.status === 403);
+    }
+  }
+
+  async isTrustedForLoading(
+    cwd: string,
+    settingsManager?: Pick<SettingsManager, "getDefaultProjectTrust">,
+  ): Promise<boolean> {
+    const workspace = realWorkspacePath(cwd);
+    return await this.settingsRemainInWorkspace(workspace)
+      && this.decision(workspace, settingsManager).trusted;
+  }
+
   trustedWorkspaces(): string[] {
     return readTrustedWorkspacePaths(this.agentDir);
   }
@@ -177,9 +197,12 @@ export class WorkspaceExtensionTrust {
     return trusted ? resolveWorkspacePiWebExtensionPaths(workspace) : [];
   }
 
-  status(cwd: string): WorkspaceExtensionTrustStatus {
+  async status(cwd: string): Promise<WorkspaceExtensionTrustStatus> {
     const workspace = realWorkspacePath(cwd);
-    const decision = this.decision(workspace);
+    const blockedByWorkspaceBoundary = !await this.settingsRemainInWorkspace(workspace);
+    const decision = blockedByWorkspaceBoundary
+      ? { trusted: false, inherited: false, defaulted: false }
+      : this.decision(workspace);
     const trusted = decision.trusted;
     const trustedWorkspaces = this.trustedWorkspaces();
     if (trusted && (decision.inherited || decision.defaulted) && !trustedWorkspaces.includes(workspace)) {
@@ -190,13 +213,17 @@ export class WorkspaceExtensionTrust {
       workspace,
       trusted,
       desiredTrusted: trusted,
-      resources: projectResources(workspace, this.trustedExtensionPaths),
+      blockedByWorkspaceBoundary,
+      resources: await projectResources(workspace, this.trustedExtensionPaths),
       trustedWorkspaces,
     };
   }
 
-  trust(cwd: string): WorkspaceExtensionTrustStatus {
+  async trust(cwd: string): Promise<WorkspaceExtensionTrustStatus> {
     const workspace = realWorkspacePath(cwd);
+    if (!await this.settingsRemainInWorkspace(workspace)) {
+      throw new Error("Workspace settings must remain inside the workspace before trust can be granted");
+    }
     this.store.set(workspace, true);
     return this.status(workspace);
   }

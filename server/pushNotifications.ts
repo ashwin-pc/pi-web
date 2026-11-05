@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import webPush, { type PushSubscription } from "web-push";
 
@@ -42,9 +42,20 @@ export function createPushNotificationService(file: string, subject = "https://g
   async function persist(state: PushState) {
     cached = state;
     await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
-    await rename(tmp, file);
+    const tmp = `${file}.${randomBytes(16).toString("hex")}.tmp`;
+    try {
+      await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+        encoding: "utf-8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      await rename(tmp, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        await unlink(tmp).catch(() => undefined);
+      }
+      throw error;
+    }
     return state;
   }
 

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -221,7 +221,7 @@ describe("shared Git helpers", () => {
     expect(() => gitConfigHardeningOverrides([
       { scope: "local", key: "remote.ipv6.url", value: "git@[::1]:repo.git" },
       { scope: "local", key: "remote.local.url", value: "../repos/with::separator.git" },
-      { scope: "local", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
+      { scope: "global", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
       { scope: "local", key: "remote.codecommit.vcs", value: "codecommit" },
       { scope: "local", key: "remote.persistent.vcs", value: "persistent-https" },
       { scope: "local", key: "remote.hg.vcs", value: "hg" },
@@ -247,6 +247,142 @@ describe("shared Git helpers", () => {
     expect(overrides.filter(({ key }) => key === "filter.Foo.required")).toEqual([
       { key: "filter.Foo.required", value: "false" },
     ]);
+  });
+
+  it("neutralizes repository-selected Git helpers while preserving trusted config", () => {
+    const overrides = gitConfigHardeningOverrides([
+      { scope: "global", key: "core.editor", value: "trusted-editor" },
+      { scope: "global", key: "url.https://local.example/.insteadOf", value: "trusted-local:" },
+      { scope: "global", key: "url.ssh://push.example/.pushInsteadOf", value: "trusted-push:" },
+      { scope: "local", key: "core.editor", value: "repository-editor" },
+      { scope: "worktree", key: "sequence.editor", value: "repository-sequence-editor" },
+      { scope: "local", key: "url.https://local.example/.insteadOf", value: "repository-local:" },
+      { scope: "worktree", key: "url.ssh://push.example/.pushInsteadOf", value: "repository-push:" },
+      { scope: "local", key: "remote.Origin.promisor", value: "true" },
+      { scope: "worktree", key: "remote.Origin.partialCloneFilter", value: "blob:none" },
+      { scope: "local", key: "extensions.partialClone", value: "Origin" },
+      { scope: "local", key: "tar.Custom.command", value: "repository-archive" },
+      { scope: "local", key: "remote.transport.vcs", value: "example" },
+    ]);
+
+    expect(overrides).toEqual(expect.arrayContaining([
+      { key: "core.editor", value: "true" },
+      { key: "core.editor", value: "trusted-editor" },
+      { key: "sequence.editor", value: "true" },
+      { key: "tar.Custom.command", value: "false" },
+    ]));
+    expect(overrides.some(({ key }) => key.toLowerCase() === "remote.transport.vcs")).toBe(false);
+    expect(overrides.some(({ key }) => /\.(?:promisor|partialclonefilter)$/i.test(key) || key.toLowerCase() === "extensions.partialclone")).toBe(false);
+    const serialized = JSON.stringify(overrides);
+    for (const repositoryValue of [
+      "repository-editor",
+      "repository-sequence-editor",
+      "repository-local",
+      "repository-push",
+      "blob:none",
+      "repository-archive",
+    ]) expect(serialized).not.toContain(repositoryValue);
+    expect(overrides.filter(({ key, value }) =>
+      key.toLowerCase().startsWith("url.") && value === "",
+    )).toEqual([]);
+  });
+
+  it("allows partial-clone commit details unless a repository URL rewrite would hide the fetch", async () => {
+    const root = await tempDir("pi-web-shared-git-promisor-");
+    const source = join(root, "source");
+    const origin = join(root, "origin.git");
+    const baseline = join(root, "baseline");
+    const hardened = join(root, "hardened");
+    const syncClient = join(root, "sync");
+    const marker = join(root, "upload-pack-called");
+    const uploadPack = join(root, "upload-pack");
+    const globalConfig = join(root, "global.gitconfig");
+
+    await mkdir(source);
+    runGit(source, "init", "-b", "main");
+    runGit(source, "config", "user.name", "Pi Web Tests");
+    runGit(source, "config", "user.email", "pi-web@example.test");
+    await writeFile(join(source, "payload.txt"), "promised content\n");
+    runGit(source, "add", "payload.txt");
+    runGit(source, "commit", "-m", "add promised object");
+    runGit(root, "clone", "--bare", source, origin);
+    runGit(origin, "config", "uploadpack.allowFilter", "true");
+    runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, baseline);
+    runGit(root, "clone", "--filter=blob:none", "--no-local", "--no-checkout", origin, hardened);
+    runGit(root, "clone", "--filter=blob:none", "--no-local", origin, syncClient);
+    await writeFile(uploadPack, `#!/bin/sh
+printf called >> ${JSON.stringify(marker)}
+exec git-upload-pack "$@"
+`);
+    await chmod(uploadPack, 0o755);
+    await writeFile(globalConfig, `[remote "origin"]\n\tuploadpack = ${uploadPack}\n`);
+
+    const assertObjectMissing = (cwd: string) => execFileSync(
+      "git",
+      ["cat-file", "-e", "HEAD:payload.txt"],
+      { cwd, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } },
+    );
+    expect(() => assertObjectMissing(baseline)).toThrow();
+    expect(() => assertObjectMissing(hardened)).toThrow();
+
+    await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
+      withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
+        const commit = runGit(baseline, "rev-parse", "HEAD");
+        await expect(gitCommitDetails(commit, baseline)).resolves.toMatchObject({
+          ok: true,
+          commit: { hash: commit },
+          diff: expect.stringContaining("+promised content"),
+        });
+        await expect(access(marker)).resolves.toBeUndefined();
+        await rm(marker);
+
+        runGit(hardened, "config", "url.https://rewrite.example/.insteadOf", "rewrite:");
+        await expect(gitCommitDetails(commit, hardened)).rejects.toThrow();
+        await expect(access(marker)).rejects.toThrow();
+
+        await writeFile(join(source, "payload.txt"), "updated promised content\n");
+        runGit(source, "add", "payload.txt");
+        runGit(source, "commit", "-m", "update promised object");
+        runGit(source, "push", origin, "main");
+
+        await expect(gitSync(syncClient)).resolves.toMatchObject({
+          ok: true,
+          status: { isRepo: true, branch: "main" },
+        });
+        expect(await readFile(join(syncClient, "payload.txt"), "utf8")).toBe("updated promised content\n");
+        await expect(access(marker)).resolves.toBeUndefined();
+      }));
+  });
+
+  it("keeps local Git reads usable while blocking repository URL rewrites on network commands", async () => {
+    const cwd = await makeRepo();
+    const globalConfig = join(await tempDir("pi-web-shared-git-url-config-"), "global.gitconfig");
+    await writeFile(globalConfig, `[url "https://trusted.example/"]\n\tinsteadOf = trusted:\n`);
+    runGit(cwd, "config", "url.https://local.example/.insteadOf", "local:");
+
+    await withEnv("GIT_CONFIG_NOSYSTEM", "1", () =>
+      withEnv("GIT_CONFIG_GLOBAL", globalConfig, async () => {
+        await writeFile(join(cwd, "tracked.txt"), "second\n");
+        await expect(gitStatus(cwd)).resolves.toMatchObject({ ok: true, isRepo: true });
+        await expect(gitLog(cwd)).resolves.toMatchObject({
+          ok: true,
+          commits: [expect.objectContaining({ subject: "initial" })],
+        });
+        await expect(gitDiff({ cwd, path: "tracked.txt", staged: false })).resolves.toMatchObject({
+          ok: true,
+          diff: expect.stringContaining("+second"),
+        });
+        await expect(git(["config", "--get", "url.https://local.example/.insteadOf"], 15_000, cwd))
+          .resolves.toMatchObject({ stdout: "local:\n" });
+        await expect(git(["ls-remote", "--get-url", "local:repo.git"], 15_000, cwd))
+          .rejects.toThrow("Git ls-remote is disabled because this repository configures URL rewrites");
+        await expect(git(["fetch", "--prune"], 15_000, cwd))
+          .rejects.toThrow("Git fetch is disabled because this repository configures URL rewrites");
+
+        runGit(cwd, "config", "--unset-all", "url.https://local.example/.insteadOf");
+        await expect(git(["ls-remote", "--get-url", "trusted:repo.git"], 15_000, cwd))
+          .resolves.toMatchObject({ stdout: "https://trusted.example/repo.git\n" });
+      }));
   });
 
   it("re-encodes bootstrap command config before hardening and clears inherited namespaces", () => {
@@ -279,6 +415,7 @@ describe("shared Git helpers", () => {
       GIT_CONFIG_KEY_3: "filter.a=b.required",
       GIT_CONFIG_VALUE_3: "false",
     });
+    expect(env.GIT_NO_LAZY_FETCH).toBeUndefined();
     expect(env.GIT_CONFIG_PARAMETERS).toBeUndefined();
     expect(env.GIT_CONFIG_KEY_9).toBeUndefined();
     expect(env.GIT_CONFIG_VALUE_9).toBeUndefined();
@@ -627,7 +764,7 @@ signed fixture
     runGit(child, "commit", "-m", "child initial");
     const repos = await listGitRepos(cwd);
     expect(repos.repos.map((repo) => repo.path)).toEqual([".", "child"]);
-    expect(await gitCwdFromRepoParam("child", cwd)).toBe(child);
+    expect(await gitCwdFromRepoParam("child", cwd)).toBe(await realpath(child));
     await expect(gitCwdFromRepoParam("../outside", cwd)).rejects.toThrow("outside the workspace");
     await rm(child, { recursive: true });
 
@@ -639,6 +776,22 @@ signed fixture
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
   }, 15_000);
+
+  it("selects only canonical repository directories contained by the workspace", async () => {
+    const workspace = await tempDir("pi-web-shared-git-selection-");
+    const inside = join(workspace, "inside");
+    const insideLink = join(workspace, "inside-link");
+    const outside = await tempDir("pi-web-shared-git-outside-");
+    const outsideLink = join(workspace, "outside-link");
+    await mkdir(inside);
+    await symlink(inside, insideLink, "dir");
+    await symlink(outside, outsideLink, "dir");
+
+    expect(await gitCwdFromRepoParam(null, workspace)).toBe(await realpath(workspace));
+    expect(await gitCwdFromRepoParam("inside-link", workspace)).toBe(await realpath(inside));
+    await expect(gitCwdFromRepoParam("../outside", workspace)).rejects.toThrow("Repository path is outside the workspace");
+    await expect(gitCwdFromRepoParam("outside-link", workspace)).rejects.toThrow("outside the workspace");
+  });
 
   it("syncs an advancing flat repository with a dirty parent from a nested directory", async () => {
     const cwd = await makeRepo();
