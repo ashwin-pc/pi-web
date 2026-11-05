@@ -66,3 +66,51 @@ test("async actions prevent duplicate clicks and surface failures", async ({ pag
   await page.getByRole("button", { name: "Dismiss" }).click();
   await expect(page.locator(".toast")).toHaveCount(1);
 });
+
+test("replaced or dismissed async actions cannot mutate a newer notice", async ({ page }) => {
+  await page.evaluate(() => (window as any).notices.show({ id: "action", message: "Old", persistent: true,
+    actions: [{ label: "Retry", run: () => new Promise((_, reject) => { (window as any).rejectOld = reject; }) }] }));
+  const retry = page.getByRole("button", { name: "Retry" });
+  await retry.focus();
+  await retry.press("Enter");
+  await expect(retry).toBeFocused();
+  await page.evaluate(() => (window as any).notices.show({ id: "action", message: "New", persistent: true,
+    actions: [{ label: "Retry", run: () => new Promise((_, reject) => { (window as any).rejectNew = reject; }) }] }));
+  await expect(retry).toBeEnabled();
+  await retry.press("Enter");
+  await page.evaluate(() => (window as any).rejectOld(new Error("stale")));
+  await expect(retry).toBeDisabled();
+  await expect(page.locator('[data-toast-id="action:action-error"]')).toHaveCount(0);
+  await page.evaluate(() => { (window as any).notices.dismiss("action"); (window as any).rejectNew(new Error("dismissed")); });
+  await expect(page.locator(".toast")).toHaveCount(0);
+});
+
+test("stale successful actions cannot clear a replacement's failure", async ({ page }) => {
+  await page.evaluate(() => (window as any).notices.show({ id: "action", message: "Old", persistent: true,
+    actions: [{ label: "Retry", run: () => new Promise<void>(resolve => { (window as any).resolveOld = resolve; }) }] }));
+  await page.getByRole("button", { name: "Retry" }).click();
+  await page.evaluate(() => (window as any).notices.show({ id: "action", message: "New", persistent: true,
+    actions: [{ label: "Retry", run: async () => { throw new Error("new failure"); } }] }));
+  await page.getByRole("button", { name: "Retry" }).click();
+  const failure = page.locator('[data-toast-id="action:action-error"]');
+  await expect(failure).toBeVisible();
+  await page.evaluate(async () => { (window as any).resolveOld(); await Promise.resolve(); });
+  await expect(failure).toBeVisible();
+});
+
+test("pending transient actions retain focus and pause expiry until settled", async ({ page }) => {
+  await page.evaluate(() => (window as any).notices.show({ id: "slow", message: "Working", durationMs: 1000,
+    actions: [{ label: "Run", run: () => new Promise<void>(resolve => { (window as any).finish = resolve; }) }] }));
+  const run = page.getByRole("button", { name: "Run", exact: true });
+  await run.focus();
+  await run.press("Enter");
+  await expect(run).toBeFocused();
+  await page.locator("#outside").focus();
+  await page.mouse.move(800, 600);
+  await page.clock.runFor(10_000);
+  await expect(page.locator(".toast")).toHaveCount(1);
+  await page.evaluate(() => (window as any).finish());
+  await expect(run).toBeEnabled();
+  await page.clock.runFor(1001);
+  await expect(page.locator(".toast")).toHaveCount(0);
+});

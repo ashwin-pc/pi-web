@@ -59,20 +59,25 @@ export function createStatusBar(options: {
   let connectionKind: "reconnecting" | "offline" | "reconnected" | "syncRequired" | undefined;
   let syncRequired = false;
   let syncRevision = 0;
-  let syncPending = false;
+  let syncPending: Promise<void> | undefined;
 
-  async function syncOnly() {
-    if (syncPending) return;
-    syncPending = true;
+  function syncOnly(): Promise<void> {
+    if (syncPending) return syncPending;
     const revision = syncRevision;
-    try {
-      await Promise.all([refreshSessions(), refreshState()]);
+    const sessionId = state.currentSessionId;
+    syncPending = (async () => {
+      // Wait for both requests even on failure: a retry must not overlap an
+      // earlier state/history refresh that is still applying its response.
+      const results = await Promise.allSettled([refreshSessions(), refreshState()]);
+      if (revision !== syncRevision || sessionId !== state.currentSessionId) return;
+      const failed = results.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
       if (!state.initialSyncComplete) throw new Error("Session sync incomplete");
-      if (revision !== syncRevision) return;
       syncRequired = false;
       if (!state.wsDisconnected) hideConnectionStatus();
       else setConnectionStatus("offline", "Live updates unavailable", "Messages may still send, but live updates are unavailable.");
-    } finally { syncPending = false; }
+    })().finally(() => { syncPending = undefined; });
+    return syncPending;
   }
 
   function setStatusTitle(title: string) {
@@ -168,7 +173,6 @@ export function createStatusBar(options: {
   function hideConnectionStatus() {
     connectionKind = undefined;
     toasts.dismiss("connection");
-
   }
 
   function activityKey() {
@@ -302,6 +306,7 @@ export function createStatusBar(options: {
   }
 
   function markWebSocketClosed() {
+    syncRevision += 1;
     state.wsDisconnected = true;
     if (connectionKind === "reconnected") hideConnectionStatus();
     scheduleConnectionStatus();

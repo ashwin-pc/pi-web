@@ -11,7 +11,7 @@ export type ToastCenter = ReturnType<typeof createToastCenter>;
 
 /** Host-owned notifications. Persistent notices can only be cleared by their owner. */
 export function createToastCenter(host: HTMLElement) {
-  const entries = new Map<string, { node: HTMLElement; timer?: number; events: AbortController; paused: boolean; remaining: number; started: number }>();
+  const entries = new Map<string, { node: HTMLElement; timer?: number; events: AbortController; paused: boolean; pending: number; remaining: number; started: number }>();
   host.classList.add("toastCenter");
   host.hidden = true;
   host.setAttribute("aria-label", "Notifications");
@@ -22,6 +22,7 @@ export function createToastCenter(host: HTMLElement) {
     entry.events.abort();
     entry.node.remove();
     entries.delete(id);
+    dismiss(`${id}:action-error`);
     host.hidden = entries.size === 0;
   }
   function show(toast: Toast) {
@@ -47,14 +48,16 @@ export function createToastCenter(host: HTMLElement) {
     if (!reuseActions) previousActions?.remove();
     const actions = reuseActions ? previousActions : document.createElement("div");
     actions.className = "toastActions";
-    const entry = { node, events: new AbortController(), paused: false, remaining: toast.persistent ? 0 : Math.max(1000, toast.durationMs ?? 6000), started: Date.now(), timer: undefined as number | undefined };
+    const entry = { node, events: new AbortController(), paused: false, pending: 0, remaining: toast.persistent ? 0 : Math.max(1000, toast.durationMs ?? 6000), started: Date.now(), timer: undefined as number | undefined };
     entries.set(toast.id, entry);
     const schedule = () => {
       if (entries.get(toast.id) !== entry) return;
       window.clearTimeout(entry.timer);
       if (!toast.persistent && entry.remaining && !entry.paused) {
         entry.started = Date.now();
-        entry.timer = window.setTimeout(() => dismiss(toast.id), entry.remaining);
+        entry.timer = window.setTimeout(() => {
+          if (entries.get(toast.id) === entry) dismiss(toast.id);
+        }, entry.remaining);
       }
     };
     const pause = () => {
@@ -64,7 +67,7 @@ export function createToastCenter(host: HTMLElement) {
       entry.remaining = Math.max(1, entry.remaining - (Date.now() - entry.started));
     };
     const resume = () => {
-      if (node.matches(":hover") || node.contains(document.activeElement)) return;
+      if (entry.pending || node.matches(":hover") || node.contains(document.activeElement)) return;
       entry.paused = false;
       schedule();
     };
@@ -76,11 +79,29 @@ export function createToastCenter(host: HTMLElement) {
       const button = (reuseActions ? actions.children[index] : document.createElement("button")) as HTMLButtonElement;
       button.type = "button";
       button.textContent = action.label;
+      button.disabled = false;
+      button.removeAttribute("aria-disabled");
+      let pending = false;
       button.onclick = async () => {
-        button.disabled = true;
-        try { await action.run(); dismiss(`${toast.id}:action-error`); }
-        catch { show({ id: `${toast.id}:action-error`, message: `${action.label} failed. Please try again.`, tone: "error" }); }
-        finally { button.disabled = false; }
+        if (pending || entries.get(toast.id) !== entry) return;
+        pending = true;
+        entry.pending += 1;
+        pause();
+        // Native disabled buttons drop keyboard focus in some browsers.
+        button.setAttribute("aria-disabled", "true");
+        try {
+          await action.run();
+          if (entries.get(toast.id) === entry) dismiss(`${toast.id}:action-error`);
+        } catch {
+          if (entries.get(toast.id) === entry) show({ id: `${toast.id}:action-error`, message: `${action.label} failed. Please try again.`, tone: "error" });
+        } finally {
+          pending = false;
+          entry.pending -= 1;
+          if (entries.get(toast.id) === entry) {
+            button.removeAttribute("aria-disabled");
+            resume();
+          }
+        }
       };
       if (!reuseActions) actions.append(button);
     }

@@ -75,8 +75,10 @@ expire after six seconds (override with `durationMs`), pause on hover/focus, and
 Dismiss. Persistent notices have no timeout or dismiss button: their owner clears
 them when the condition resolves. Text is never interpreted as HTML. Status prose is
 announced politely without moving focus; buttons remain ordinary keyboard controls.
-Async actions are disabled while pending, catch failures into a deduplicated transient
-error, and clear that error after a successful retry.
+Async actions are aria-disabled while pending (retaining keyboard focus), pause
+transient expiry, catch failures into a deduplicated transient error, and clear that
+error after a successful retry. Replacing or dismissing a notice invalidates its old
+action completions and timer callbacks; stale work cannot alter the new notice.
 
 Connection recovery preserves the delayed disconnect warning and brief Reconnected
 acknowledgement. **Live updates** uses the existing page-reload recovery path (drafts
