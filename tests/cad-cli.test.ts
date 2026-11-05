@@ -28,13 +28,31 @@ function fusion(result: unknown, list?: any) {
   return { fetch, requests };
 }
 const entry = resolve("examples/pi-web-extensions/3d-modeling/cad/cli.ts");
-async function cli(args: string[], cwd?: string, signalAfterMs?: number, launcher = false) {
+async function cli(args: string[], cwd?: string, signalWhenReady?: string, launcher = false) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
     const child = spawn(process.execPath, launcher ? [resolve("examples/pi-web-extensions/3d-modeling/cad.mjs"), ...args] : ["--import", resolve("node_modules/tsx/dist/loader.mjs"), entry, ...args], { cwd, env: { ...process.env, PI_MODELING_CONFIG: process.env.PI_MODELING_CONFIG ?? join(tmpdir(), "cad-no-config.json") }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
-    child.once("error", reject); child.once("close", code => done({ code, stdout, stderr }));
-    if (signalAfterMs) setTimeout(() => child.kill("SIGTERM"), signalAfterMs);
+    let readinessTimer: ReturnType<typeof setInterval> | undefined;
+    let readinessDeadline: ReturnType<typeof setTimeout> | undefined;
+    let readinessFinished = false;
+    const clearReadiness = () => { readinessFinished = true; clearInterval(readinessTimer); clearTimeout(readinessDeadline); };
+    child.once("error", error => { clearReadiness(); reject(error); });
+    child.once("close", code => { clearReadiness(); done({ code, stdout, stderr }); });
+    if (signalWhenReady) {
+      // Node/tsx startup is unbounded under CI contention. Signal only after the
+      // owned backend has installed its cleanup handler, not after a guessed delay.
+      readinessTimer = setInterval(() => {
+        void access(signalWhenReady).then(() => {
+          if (readinessFinished) return;
+          clearReadiness(); child.kill("SIGTERM");
+        }, () => {});
+      }, 10);
+      readinessDeadline = setTimeout(() => {
+        clearReadiness(); child.kill("SIGKILL");
+        reject(new Error(`CLI backend did not become ready: ${stderr}`));
+      }, 15_000);
+    }
   });
 }
 
@@ -280,11 +298,33 @@ describe("configured local runtime and CLI lifecycle", () => {
     const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs","timeoutMs":50}', "--allow-mutation"], cwd);
     expect(result.code).toBe(124); expect(result.stdout).toBe(""); expect(JSON.parse(result.stderr).result.status).toBe("timed-out");
   });
-  it("propagates SIGTERM, waits for owned cleanup and returns exit130", async () => {
-    const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
-    const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation"], cwd, 1000);
-    expect(result.code).toBe(130); expect(result.stdout).toBe(""); expect(JSON.parse(result.stderr).exitCode).toBe(130);
-  });
+  it.each([false, true])("propagates SIGTERM, waits for owned cleanup and returns exit130 (launcher=%s)", async launcher => {
+    const { cwd, root } = await runtimeWorkspace();
+    const ready = join(root, "ready.json"), cleaned = join(root, "cleaned.json");
+    await writeFile(join(root, "wait.mjs"), `
+import { writeFileSync } from "node:fs";
+process.once("SIGTERM", () => {
+  setTimeout(() => {
+    console.log("owned cleanup completed");
+    writeFileSync(${JSON.stringify(cleaned)}, JSON.stringify({ pid: process.pid }));
+    process.exit(0);
+  }, 75);
+});
+setInterval(() => {}, 1000);
+writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
+`);
+    const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation"], cwd, ready, launcher);
+    expect(result.code).toBe(130); expect(result.stdout).toBe("");
+    const response = JSON.parse(result.stderr);
+    expect(response).toMatchObject({ ok: false, exitCode: 130, result: { status: "cancelled", exitCode: 0 } });
+    const run = join(root, "modeling-runs", response.result.id);
+    expect(JSON.parse(await readFile(join(run, "result.json"), "utf8"))).toEqual(response.result);
+    expect(await readFile(join(run, "execution.log"), "utf8")).toContain("owned cleanup completed");
+    const { pid } = JSON.parse(await readFile(ready, "utf8"));
+    expect(JSON.parse(await readFile(cleaned, "utf8"))).toEqual({ pid });
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    expect(() => process.kill(-pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+  }, 30_000);
   it("preserves retained runtime evidence when global timeout translates cancellation", async () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
     const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation", "--timeout-ms", "100"], cwd);
