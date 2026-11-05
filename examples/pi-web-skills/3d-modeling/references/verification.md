@@ -25,6 +25,8 @@ A geometrically solid object does not imply 100% printed infill. Slicer infill a
 
 ## Conversion and material preservation
 
+Check the runtime's script-failure exit contract and verify that expected outputs exist, are nonempty and belong to the current invocation. Some applications exit successfully even after a script traceback unless configured otherwise. Process exit success is not proof a render or export completed.
+
 Reopen exported assets and compare bounds, units, orientation, component counts, and required metadata. Check whether the destination format preserves materials, color, parametric history, assemblies, and instances. Do not imply STL carries material assignments.
 
 Retopology changes triangle identities. Face-index-based paint cannot generally be copied unchanged. Use a supported spatial/material transfer when needed, quantify uncertain mappings, and inspect important boundaries. Preserve placements, support overrides, and manufacturing settings separately from geometry, avoiding double-applied transforms.

@@ -61,7 +61,10 @@ async function cli(args: string[], cwd?: string, signalWhenReady?: string, launc
     const { cwd } = await workspace(); const { fetch } = fusion({});
     const result: any = await runCad(["discover"], { cwd });
     expect(result.reference.commands.map((c: any) => c.command).join("\n")).toContain("fusion exec --script");
-    expect(result.reference.runtimeConfig.runtimes[0].args).toContain("{script}");
+    const runtimeArgs = result.reference.runtimeConfig.runtimes[0].args;
+    expect(runtimeArgs).toContain("{script}");
+    expect(runtimeArgs.slice(runtimeArgs.indexOf("--python-exit-code"), runtimeArgs.indexOf("--python-exit-code") + 2)).toEqual(["--python-exit-code", "1"]);
+    expect(runtimeArgs.indexOf("--python-exit-code")).toBeLessThan(runtimeArgs.indexOf("--python"));
     expect(result.fusion.state).toBe("not-probed"); expect(fetch).not.toHaveBeenCalled();
   });
   it("returns clean JSON stdout for help and stderr-only JSON/exit2 for invalid argv", async () => {

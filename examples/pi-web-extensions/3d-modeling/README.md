@@ -59,7 +59,7 @@ Use short inspect → change → verify steps. Errors must propagate; do not sup
     "id": "blender",
     "description": "Explicit locally installed Blender",
     "executable": "/absolute/path/to/blender",
-    "args": ["--background", "--python", "{script}", "--", "{run}"],
+    "args": ["--background", "--python-exit-code", "1", "--python", "{script}", "--", "{run}"],
     "scriptExtension": ".py",
     "requiredPaths": [],
     "timeoutMs": 120000
@@ -67,7 +67,7 @@ Use short inspect → change → verify steps. Errors must propagate; do not sup
 }
 ```
 
-Placeholders replace whole arguments; `{artifacts}` is also supported. Runtime execution snapshots the source and records its SHA-256, runtime descriptor, redacted logs and result under a unique `modeling-runs/` artifact directory. It owns a POSIX process group and terminates group members on cancellation, timeout and leader exit. Windows execution fails closed. Deliberately detached descendants and persistent-service scripts are unsupported. Generic runtimes do not replace the owned-ComfyUI lifecycle or Fusion's document semantics.
+Placeholders replace whole arguments; `{artifacts}` is also supported. Configure the application's script-failure exit behavior: Blender needs `--python-exit-code 1` to make uncaught script exceptions produce a nonzero exit. A process exit code alone is not an output-validation contract; check expected artifacts and inspect the actual result. Runtime execution snapshots the source and records its SHA-256, runtime descriptor, redacted logs and result under a unique `modeling-runs/` artifact directory. It owns a POSIX process group and terminates group members on cancellation, timeout and leader exit. Windows execution fails closed. Deliberately detached descendants and persistent-service scripts are unsupported. Generic runtimes do not replace the owned-ComfyUI lifecycle or Fusion's document semantics.
 
 ### Legacy migration
 
