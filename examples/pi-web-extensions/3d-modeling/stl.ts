@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { stlEnvironment, stlFloorFactor } from "./stl-environment.js";
 import { readFile } from "node:fs/promises";
 import { artifactFile, errorView, esc } from "./shared.js";
 
@@ -60,12 +62,73 @@ function indexMesh(source: Triangle[], cellScale = 1e-7): Model {
 function b64(a: ArrayBufferView) { return Buffer.from(a.buffer, a.byteOffset, a.byteLength).toString("base64"); }
 function packed(m: Model) { return { p: b64(m.positions), n: b64(m.normals), i: b64(m.indices), u: m.indices.BYTES_PER_ELEMENT === 4 ? 32 : 16, s: m.sourceTriangles, d: m.indices.length / 3, b: m.bounds }; }
 
+// Browser-only expansion: never duplicate the compact mesh in the response.
+// 35-degree creases split normals and produce feature edges, not triangulation.
+export function stlRenderGeometry(p: Float32Array, smooth: Float32Array, indices: Uint16Array | Uint32Array) {
+  const faces: number[][] = [], adjacent: number[][] = Array.from({ length: p.length / 3 }, () => []);
+  const edges = new Map<string, { a: number; b: number; faces: number[] }>();
+  const threshold = Math.cos(35 * Math.PI / 180);
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i], b = indices[i + 1], c = indices[i + 2];
+    const u = [p[b * 3] - p[a * 3], p[b * 3 + 1] - p[a * 3 + 1], p[b * 3 + 2] - p[a * 3 + 2]];
+    const v = [p[c * 3] - p[a * 3], p[c * 3 + 1] - p[a * 3 + 1], p[c * 3 + 2] - p[a * 3 + 2]];
+    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const length = Math.hypot(...n) || 1;
+    faces.push(n.map(x => x / length));
+    const face = i / 3;
+    for (const vertex of [a, b, c]) adjacent[vertex].push(face);
+    for (const [x, y] of [[a, b], [b, c], [c, a]]) {
+      const key = `${Math.min(x, y)},${Math.max(x, y)}`;
+      const edge = edges.get(key) ?? { a: x, b: y, faces: [] };
+      edge.faces.push(face); edges.set(key, edge);
+    }
+  }
+  const positions = new Float32Array(indices.length * 3), normals = new Float32Array(positions.length), smoothNormals = new Float32Array(positions.length);
+  for (let i = 0; i < indices.length; i++) {
+    const vertex = indices[i], face = faces[Math.floor(i / 3)], sum = [0, 0, 0];
+    for (const f of adjacent[vertex]) if (face[0] * faces[f][0] + face[1] * faces[f][1] + face[2] * faces[f][2] >= threshold) for (let k = 0; k < 3; k++) sum[k] += faces[f][k];
+    const length = Math.hypot(...sum) || 1;
+    for (let k = 0; k < 3; k++) { positions[i * 3 + k] = p[vertex * 3 + k]; normals[i * 3 + k] = sum[k] / length; smoothNormals[i * 3 + k] = smooth[vertex * 3 + k]; }
+  }
+  const lines: number[] = [];
+  for (const edge of edges.values()) {
+    const a = faces[edge.faces[0]], b = faces[edge.faces[1]];
+    if (edge.faces.length === 2 && a[0] * b[0] + a[1] * b[1] + a[2] * b[2] >= threshold) continue;
+    for (const vertex of [edge.a, edge.b]) for (let k = 0; k < 3; k++) lines.push(p[vertex * 3 + k]);
+  }
+  return { positions, normals, smoothNormals, lines: new Float32Array(lines) };
+}
+
+// Orthographic camera-space centroid sorting. Intersecting triangles remain an
+// approximation, but ordinary front/back shells blend in the correct order.
+export function stlTransparentOrder(positions: Float32Array, depth: number[]) {
+  const triangles = Array.from({ length: positions.length / 9 }, (_, i) => i);
+  const distances = triangles.map(i => {
+    let z = 0;
+    for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) z += positions[i * 9 + v * 3 + k] * depth[k];
+    return z;
+  });
+  triangles.sort((a, b) => distances[b] - distances[a] || a - b);
+  const order = new Uint32Array(triangles.length * 3);
+  for (let i = 0; i < triangles.length; i++) for (let k = 0; k < 3; k++) order[i * 3 + k] = triangles[i] * 3 + k;
+  return order;
+}
+
+const stylesheet = readFileSync(new URL("./stl.css", import.meta.url), "utf8");
+const runtime = readFileSync(new URL("./stl-runtime.js", import.meta.url), "utf8")
+  .replace("__GEOMETRY__", () => stlRenderGeometry.toString())
+  .replace("__ORDER__", () => stlTransparentOrder.toString())
+  .replace("__ENVIRONMENT__", () => stlEnvironment.toString())
+  .replace("__FLOOR_FACTOR__", () => stlFloorFactor.toString());
+
 function viewer(name: string, source: Triangle[]) {
   let scale = 1e-7, model = indexMesh(source, scale), data = JSON.stringify(packed(model));
-  while (data.length > MAX_HTML - 12_000 && scale < .1) { scale *= 1.7; model = indexMesh(source, scale); data = JSON.stringify(packed(model)); }
-  if (data.length > MAX_HTML - 12_000) throw new Error("This mesh cannot be compacted safely enough for the preview response.");
+  while (data.length > MAX_HTML - Buffer.byteLength(runtime) - Buffer.byteLength(stylesheet) - 8_000 && scale < .1) { scale *= 1.7; model = indexMesh(source, scale); data = JSON.stringify(packed(model)); }
+  if (data.length > MAX_HTML - Buffer.byteLength(runtime) - Buffer.byteLength(stylesheet) - 8_000) throw new Error("This mesh cannot be compacted safely enough for the preview response.");
   const size = model.bounds.slice(3).map((v, i) => v - model.bounds[i]);
-  return { html: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="color-scheme" content="dark"><style>*{box-sizing:border-box}html,body,.stage{height:100%;margin:0;overflow:hidden;overscroll-behavior:none}body{background:#080d18;color:#dce7fa;font:13px system-ui}.stage{position:relative;min-height:360px;background:radial-gradient(circle at 50% 42%,#24334d,#080d18 72%)}canvas{width:100%;height:100%;display:block;touch-action:none;cursor:grab}.title{position:absolute;left:14px;top:12px;max-width:calc(100% - 70px);padding:7px 10px;border:1px solid #30405d;border-radius:9px;background:#0c1422dd;color:white;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.info{position:absolute;right:14px;top:12px}.info>button{width:34px;height:34px;border:1px solid #40516e;border-radius:50%;background:#111b2cdd;color:white;font:bold 15px Georgia;cursor:pointer}.tip{position:absolute;right:0;top:42px;width:245px;padding:13px;border:1px solid #354662;border-radius:11px;background:#101827f2;opacity:0;visibility:hidden}.info.open .tip{opacity:1;visibility:visible}.tip div{padding:5px 0;color:#91a1ba}.tip b{float:right;color:white}.tip button{width:100%;margin-top:8px;padding:7px;border:1px solid #354662;border-radius:7px;background:#18243a;color:white}.hint{position:absolute;left:14px;bottom:11px;padding:5px 8px;border-radius:7px;background:#0a111dcc;color:#8190a9;font-size:12px;pointer-events:none}</style></head><body><div class="stage"><canvas aria-label="Interactive 3D STL model"></canvas><div class="title">${esc(name)}</div><div class="info"><button id="info" aria-label="Model information">i</button><div class="tip"><div>Dimensions <b>${size.map(n => n.toFixed(1)).join(" × ")} mm</b></div><div>Triangles <b>${model.indices.length / 3 === model.sourceTriangles ? model.sourceTriangles.toLocaleString() : `${(model.indices.length / 3).toLocaleString()} / ${model.sourceTriangles.toLocaleString()}`}</b></div><div>Rendering <b>Indexed WebGL</b></div><button id="reset">Reset view</button></div></div><div class="hint">Orbit · shift/right-drag pan · wheel/pinch zoom</div></div><script>const M=${data},c=document.querySelector('canvas'),gl=c.getContext('webgl2',{antialias:true}),info=document.querySelector('.info');if(!gl)throw Error('WebGL 2 is required');function bytes(s){const q=atob(s),a=new Uint8Array(q.length);for(let i=0;i<q.length;i++)a[i]=q.charCodeAt(i);return a.buffer}const P=new Float32Array(bytes(M.p)),N=new Float32Array(bytes(M.n)),I=M.u===16?new Uint16Array(bytes(M.i)):new Uint32Array(bytes(M.i));function sh(t,s){const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(x));return x}const pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,'#version 300 es\\nin vec3 p,n;uniform mat3 r;uniform vec3 center;uniform float scale,aspect;uniform vec2 pan;out vec3 normal;void main(){vec3 q=r*(p-center)*scale;gl_Position=vec4(q.x/aspect+pan.x,q.y+pan.y,q.z*.45,1);normal=r*n;}'));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,'#version 300 es\\nprecision mediump float;in vec3 normal;out vec4 color;void main(){float d=abs(dot(normalize(normal),normalize(vec3(.35,.55,.8))));color=vec4(vec3(.10,.64,.82)*(.58+.42*d),1);}'));gl.linkProgram(pr);gl.useProgram(pr);for(const [key,a]of [['p',P],['n',N]]){const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,a,gl.STATIC_DRAW);const l=gl.getAttribLocation(pr,key);gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,3,gl.FLOAT,false,0,0)}const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,I,gl.STATIC_DRAW);const B=M.b,center=new Float32Array([(B[0]+B[3])/2,(B[1]+B[4])/2,(B[2]+B[5])/2]),span=Math.max(B[3]-B[0],B[4]-B[1],B[5]-B[2])||1;gl.uniform3fv(gl.getUniformLocation(pr,'center'),center);gl.enable(gl.DEPTH_TEST);/* STL winding is not reliably consistent; render both sides. */let ax=-.58,ay=2.4,z=1,ox=0,oy=0,pts=new Map,gesture,mode='orbit';function draw(){const d=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*d;c.height=h*d;gl.viewport(0,0,c.width,c.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);const x=Math.cos(ax),X=Math.sin(ax),y=Math.cos(ay),Y=Math.sin(ay);gl.uniformMatrix3fv(gl.getUniformLocation(pr,'r'),false,new Float32Array([y,X*Y,-x*Y,0,x,X,Y,-X*y,x*y]));gl.uniform1f(gl.getUniformLocation(pr,'scale'),1.55*z/span);gl.uniform1f(gl.getUniformLocation(pr,'aspect'),w/h);gl.uniform2f(gl.getUniformLocation(pr,'pan'),ox/w*2,-oy/h*2);gl.drawElements(gl.TRIANGLES,I.length,M.u===16?gl.UNSIGNED_SHORT:gl.UNSIGNED_INT,0)}function pair(){const a=[...pts.values()];return a.length<2?null:{x:(a[0].x+a[1].x)/2,y:(a[0].y+a[1].y)/2,d:Math.hypot(a[1].x-a[0].x,a[1].y-a[0].y)}}c.oncontextmenu=e=>e.preventDefault();c.onpointerdown=e=>{e.preventDefault();c.setPointerCapture(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});mode=e.pointerType==='mouse'&&(e.button||e.shiftKey)?'pan':'orbit';gesture=pair()};c.onpointermove=e=>{if(!pts.has(e.pointerId))return;const old=pts.get(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pts.size>1){const q=pair();if(gesture){z=Math.max(.15,Math.min(10,z*q.d/(gesture.d||q.d)));ox+=q.x-gesture.x;oy+=q.y-gesture.y}gesture=q}else if(mode==='pan'){ox+=e.clientX-old.x;oy+=e.clientY-old.y}else{ay+=(e.clientX-old.x)*.009;ax+=(e.clientY-old.y)*.009}draw()};function up(e){pts.delete(e.pointerId);gesture=pair()}c.onpointerup=c.onpointercancel=up;c.onwheel=e=>{e.preventDefault();z=Math.max(.15,Math.min(10,z*Math.exp(-e.deltaY*.001)));draw()};const button=document.querySelector('#info');button.onclick=()=>info.classList.toggle('open');document.querySelector('#reset').onclick=()=>{ax=-.58;ay=2.4;z=1;ox=oy=0;draw()};new ResizeObserver(draw).observe(c);draw()</script></body></html>` };
+  const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="color-scheme" content="dark"><style>${stylesheet}</style></head><body><div class="stage"><canvas aria-label="Interactive 3D STL model"></canvas><div class="title" data-summary="${size.map(n => n.toFixed(1)).join(" × ")} mm / ${model.indices.length / 3} faces">${esc(name)}</div><div class="info"><button id="info" aria-label="Model information" aria-expanded="false" aria-controls="model-info">i</button><div class="tip" id="model-info"><div>Dimensions <b>${size.map(n => n.toFixed(1)).join(" × ")} mm</b></div><div>Triangles <b>${model.indices.length / 3 === model.sourceTriangles ? model.sourceTriangles.toLocaleString() : `${(model.indices.length / 3).toLocaleString()} / ${model.sourceTriangles.toLocaleString()}`}</b></div><div>Rendering <b>Indexed WebGL</b></div><p class="navigation-help">Drag to orbit · two-finger drag to pan · pinch to zoom.<br>Mouse: shift/right-drag to pan · wheel to zoom.</p><label class="box-option"><input id="bounds" type="checkbox" checked aria-label="Bounding box"> Bounding box</label><button id="reset">Reset view</button></div></div><div class="controls"><label><span class="control-name">Style</span> <select id="style" aria-label="Shading style"><option value="cad">CAD</option><option value="smooth">Smooth</option><option value="flat">Flat</option></select></label><label><input id="outlines" type="checkbox" checked aria-label="Feature outlines"><span><span class="feature-prefix">Feature </span>outlines</span></label><label class="opacity-control"><span class="control-name">Opacity</span> <input id="opacity" type="range" min="0.15" max="1" step="0.05" value="1" aria-label="Surface opacity"><output id="alpha">100%</output></label></div></div><script>${runtime.replace("__MODEL__", () => data)}</script></body></html>`;
+  if (Buffer.byteLength(html, "utf8") > MAX_HTML) throw new Error("This mesh exceeds the preview response limit.");
+  return { html };
 }
 export function stlContribution(getCwd: () => string) {
   return { slot: "artifact-preview", kind: "rendered", title: "STL viewer", label: "3D mesh", match: { extensions: [".stl"] }, async render(event: any) {
