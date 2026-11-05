@@ -7,7 +7,7 @@ import { CadError, runCad } from "../examples/pi-web-extensions/3d-modeling/cad/
 import { fusionMcpUrl } from "../examples/pi-web-extensions/3d-modeling/fusion/client.js";
 
 const directories: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function workspace() {
   const cwd = await mkdtemp(join(tmpdir(), "cad-cli-")); directories.push(cwd);
   const root = join(cwd, ".pi/web/artifacts"); await mkdir(root, { recursive: true });
@@ -18,6 +18,7 @@ async function workspace() {
 function fusion(result: unknown, list?: any) {
   const requests: any[] = [];
   const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+    if (options.method === "DELETE") return new Response(null, { status: 202 });
     const body = JSON.parse(String(options.body)); requests.push(body);
     if (body.method === "initialize") return new Response(JSON.stringify({ result: {} }), { headers: { "mcp-session-id": "fake-session" } });
     if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
@@ -61,6 +62,7 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
     expect(await runCad(["fusion", "capabilities", "--cursor", "page"], { cwd })).toEqual(list);
     expect(requests[2]).toMatchObject({ method: "tools/list", params: { cursor: "page" } });
     expect(fetch.mock.calls.every(call => call[1].redirect === "error")).toBe(true);
+    expect(fetch.mock.calls.filter(call => call[1].method === "DELETE")).toHaveLength(1);
     await expect(runCad(["fusion", "rpc", "--json", '{}'], { cwd })).rejects.toMatchObject({ exitCode: 2 });
   });
   it("forwards generic read and docs queries without narrow command duplication", async () => {
@@ -144,6 +146,37 @@ async function cli(args: string[], cwd?: string, signalAfterMs?: number) {
       options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
     })));
     await expect(runCad(["fusion", "status", "--timeout-ms", "10"], { cwd })).rejects.toMatchObject({ exitCode: 124 });
+  });
+  it("reports unknown Fusion state after invocation timeout without claiming remote cleanup", async () => {
+    const { cwd, root } = await workspace(); await writeFile(join(root, "wait.py"), "def run(context):\n    pass\n");
+    const mock = fusion({});
+    mock.fetch.mockImplementation(async (_url: string, options: RequestInit) => {
+      if (options.method === "DELETE") return new Response(null, { status: 202 });
+      const body = JSON.parse(String(options.body));
+      if (body.method === "initialize") return new Response('{"result":{}}', { headers: { "mcp-session-id": "test" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return new Promise((_resolve, reject) => { options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }); });
+    });
+    try { await runCad(["fusion", "exec", "--script", "wait.py", "--allow-mutation", "--timeout-ms", "20"], { cwd }); throw new Error("expected timeout"); }
+    catch (error) {
+      expect(error).toMatchObject({ exitCode: 124 });
+      expect((error as Error).message).toContain("does not cancel Fusion execution");
+      expect((error as Error).message).toContain("do not automatically retry mutation");
+      expect((error as Error).message).not.toContain("cleanup completed");
+    }
+    expect(mock.fetch.mock.calls.some(call => call[1].method === "DELETE")).toBe(true);
+  });
+  it("preserves 120-second mutation budgets and warns on bridge-level timeout", async () => {
+    const { cwd, root } = await workspace(); await writeFile(join(root, "script.py"), "def run(context):\n    pass\n");
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    fusion({ content: [] });
+    await runCad(["fusion", "exec", "--script", "script.py", "--allow-mutation"], { cwd });
+    expect(timeout).toHaveBeenCalledWith(120_000);
+    timeout.mockClear();
+    await runCad(["fusion", "undo", "--allow-mutation"], { cwd });
+    expect(timeout).toHaveBeenCalledWith(120_000);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("bridge deadline", "TimeoutError"); }));
+    await expect(runCad(["fusion", "exec", "--script", "script.py", "--allow-mutation"], { cwd })).rejects.toMatchObject({ exitCode: 124, message: expect.stringContaining("document state are unknown") });
   });
   it("bounds actual response streams even without Content-Length", async () => {
     const { cwd } = await workspace();

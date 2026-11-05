@@ -89,14 +89,24 @@ export async function requestFusionMcp(method: "tools/call" | "tools/list" | "re
   const sessionId = response.headers.get("mcp-session-id");
   if (!sessionId) throw new Error("Fusion MCP did not return a session id.");
   headers["mcp-session-id"] = sessionId;
-  response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
-  await drainInitialized(response, Math.min(options.maxResponseBytes ?? MAX_TEXT_RESPONSE_BYTES, 512 * 1024));
-  response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }) });
-  const result = await readLimited(response, options.maxResponseBytes);
-  if (result.error) throw new Error(`Fusion MCP error: ${JSON.stringify(result.error).slice(0, 1000)}`);
-  const structuredFailure = structuredToolFailure(result.result);
-  if (result.result?.isError || result.result?.error || structuredFailure) throw new Error(`Fusion MCP tool error: ${String(result.result.error || structuredFailure || JSON.stringify(result.result.content)).slice(0, 1000)}`);
-  return { initialized: initialized.result, result: result.result };
+  try {
+    response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
+    await drainInitialized(response, Math.min(options.maxResponseBytes ?? MAX_TEXT_RESPONSE_BYTES, 512 * 1024));
+    response = await fetch(url, { method: "POST", redirect: "error", headers, signal, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }) });
+    const result = await readLimited(response, options.maxResponseBytes);
+    if (result.error) throw new Error(`Fusion MCP error: ${JSON.stringify(result.error).slice(0, 1000)}`);
+    const structuredFailure = structuredToolFailure(result.result);
+    if (result.result?.isError || result.result?.error || structuredFailure) throw new Error(`Fusion MCP tool error: ${String(result.result.error || structuredFailure || JSON.stringify(result.result.content)).slice(0, 1000)}`);
+    return { initialized: initialized.result, result: result.result };
+  } finally {
+    // Session disposal is best effort, separately bounded even after the request
+    // signal aborts. DELETE is not proof that remote Python stopped executing.
+    // Older bridges may reject session deletion; never mask the call outcome.
+    try {
+      const closed = await fetch(url, { method: "DELETE", redirect: "error", headers, signal: AbortSignal.timeout(2_000) });
+      await closed.body?.cancel();
+    } catch { /* unsupported disposal, unavailable bridge, or disposal timeout */ }
+  }
 }
 
 export function callFusionMcp(tool: string, args: unknown, options: { signal?: AbortSignal; timeoutMs?: number; maxResponseBytes?: number } = {}) {

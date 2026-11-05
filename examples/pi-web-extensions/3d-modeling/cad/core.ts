@@ -29,7 +29,7 @@ const COMMANDS = [
 ];
 
 function help(topic = "") {
-  return { name: "modeling", version: 1, invocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3600000, default 1800000); bounds the complete invocation, propagates cancellation. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
+  return { name: "modeling", version: 1, invocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3600000, default 1800000); bounds the complete invocation, propagates cancellation. Aborting Fusion transport does NOT cancel remote execution: document state is unknown and mutation must not be automatically retried. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
 }
 
 function parse(args: string[]) {
@@ -92,7 +92,7 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
       }
       case "fusion undo": case "fusion redo":
         if (!flags["allow-mutation"]) throw new CadError("--allow-mutation is required for undo/redo.", 2);
-        result = (await callFusionMcp("fusion_mcp_update", { featureType: words[1] }, { signal })).result; break;
+        result = (await callFusionMcp("fusion_mcp_update", { featureType: words[1] }, { signal, timeoutMs: 120_000 })).result; break;
       case "slice": {
         const options = json(flags, ["input", "output", "printerProfile", "printProfile", "materialProfile", "datadir"]);
         if (typeof options.input !== "string" || typeof options.output !== "string" || Object.values(options).some(v => typeof v !== "string")) throw new CadError("Slice input/output and supplied profiles/datadir must be strings.", 2);
@@ -112,8 +112,11 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
     // Sanitize diagnostics at the shared boundary, not just in the CLI printer.
     return redactValue(result ?? null);
   } catch (error) {
-    if (context.signal?.aborted) throw new CadError("Modeling invocation cancelled; owned cleanup completed.", 130);
-    if (timeout.aborted) throw new CadError("Modeling invocation timed out; owned cleanup completed.", 124);
+    const remoteWarning = command.startsWith("fusion ") ? " Aborting transport does not cancel Fusion execution. Remote completion and document state are unknown; do not automatically retry mutation. Inspect Fusion before continuing." : " Local adapter cancellation was requested; inspect retained lifecycle evidence before assuming cleanup completed.";
+    if (context.signal?.aborted) throw new CadError(`Modeling invocation cancelled.${remoteWarning}`, 130);
+    if (timeout.aborted) throw new CadError(`Modeling invocation timed out.${remoteWarning}`, 124);
+    if (command.startsWith("fusion ") && error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw new CadError(`Fusion transport interrupted.${remoteWarning}`, error.name === "TimeoutError" ? 124 : 130);
+    if (command.startsWith("fusion ") && error instanceof TypeError) throw new CadError(`Fusion transport failed: ${error.message}.${remoteWarning}`);
     if (error instanceof CadError) { error.message = redact(error.message); error.result = redactValue(error.result); throw error; }
     throw new CadError(redact(error instanceof Error ? error.message : String(error)));
   }
