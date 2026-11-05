@@ -133,13 +133,13 @@ async function setDocumentVisibility(page: Page, visibility: "visible" | "hidden
 async function expectPointerTarget(page: Page, selector: string, minimumHeight: number) {
   // Capture state text can update before its controls finish rendering.
   await expect(page.locator(selector)).toBeVisible();
-  const hit = await page.locator(selector).evaluate((element, minHeight) => {
+  // Contribution rendering can replace a control after its status text appears.
+  // Assert one atomic, live geometry/hit-test snapshot instead of a detached node.
+  await expect.poll(() => page.locator(selector).evaluate((element, minHeight) => {
     const rect = element.getBoundingClientRect();
     const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-    return { height: rect.height, hit: target === element || Boolean(target && element.contains(target)), minHeight };
-  }, minimumHeight);
-  expect(hit.height).toBeGreaterThanOrEqual(hit.minHeight);
-  expect(hit.hit).toBe(true);
+    return { sized: rect.height >= minHeight, hit: target === element || Boolean(target && element.contains(target)) };
+  }, minimumHeight)).toEqual({ sized: true, hit: true });
 }
 
 test.beforeEach(async ({ page }) => {
