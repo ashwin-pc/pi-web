@@ -1,6 +1,6 @@
 import "./style.css";
 import "highlight.js/styles/github-dark.css";
-import { renderStandaloneMarkdown } from "./markdown/render.js";
+import { renderArtifactMarkdown } from "./markdown/artifact.js";
 import { artifactSessionId, scopeArtifactUrl } from "./artifacts/url.js";
 
 function allowedArtifactPath(value: string | null) {
@@ -49,7 +49,7 @@ async function loadPreview() {
   try {
     const res = await fetch(src);
     if (!res.ok) throw new Error(`Preview failed (${res.status})`);
-    renderStandaloneMarkdown(body, await res.text(), { sessionId: artifactSessionId(src) });
+    renderArtifactMarkdown(body, await res.text(), { sessionId: artifactSessionId(src) });
   } catch (error) {
     body.textContent = error instanceof Error ? error.message : String(error);
   }

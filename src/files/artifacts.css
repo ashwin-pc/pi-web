@@ -89,8 +89,6 @@
 .artifactBrowserPreviewBody--audio { display: grid; place-items: center; padding: 18px; }
 .artifactBrowserPreviewBody--audio audio { display: block; width: min(100%, 700px); }
 .artifactBrowserPreviewBody--markdown { padding: clamp(18px, 4vw, 42px); }
-.artifactBrowserPreviewBody--markdown.markdownBody { width: 100%; }
-.artifactBrowserPreviewBody--markdown > * { max-width: 900px; margin-right: auto; margin-left: auto; }
 .artifactBrowserPreviewBody--file { padding: 20px; }
 .artifactBrowserPreviewBody--file pre { min-width: max-content; margin: 0; color: #cdd1da; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; }
 
