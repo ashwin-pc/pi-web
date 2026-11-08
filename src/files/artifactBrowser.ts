@@ -1,4 +1,4 @@
-import { renderStandaloneMarkdown } from "../markdown/render.js";
+import { renderArtifactMarkdown } from "../markdown/artifact.js";
 import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
 import { mountImagePreview } from "./imagePreview.js";
 
@@ -413,7 +413,7 @@ export function initArtifactBrowser(options: {
       if (generation !== previewGeneration || activeEntry?.path !== entry.path) return;
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`;
       previewBody.textContent = "";
-      if (kind === "markdown") renderStandaloneMarkdown(previewBody, text);
+      if (kind === "markdown") renderArtifactMarkdown(previewBody, text);
       else { const pre = document.createElement("pre"); pre.textContent = text; previewBody.append(pre); }
     } catch (error) {
       if (generation !== previewGeneration) return;
