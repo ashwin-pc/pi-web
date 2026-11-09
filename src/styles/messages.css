@@ -505,6 +505,11 @@ body.artifactPreviewDocument {
 .artifactPreviewShield:hover span,
 .artifactPreviewShield:focus-visible span { opacity: 1; }
 .artifactPreview--interactive .artifactPreviewShield { pointer-events: none; }
+.artifactPreview--interactive .artifactPreviewShield span { opacity: 0; }
+@media (hover: none) {
+  .artifactPreviewShield span { opacity: 1; }
+  .artifactPreview--interactive .artifactPreviewShield span { opacity: 0; }
+}
 .artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
 .artifactPreviewAudio { display: block; width: calc(100% - 24px); height: 42px; margin: 12px; }
 .artifactPreview--video .artifactPreviewContent { padding: 0; }
