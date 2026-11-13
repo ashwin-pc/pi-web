@@ -456,10 +456,11 @@ export function initArtifactBrowser(options: {
       const isCurrent = () => generation === previewGeneration && activeEntry?.path === entry.path;
       void mountArtifactPreview(previewBody, { name: entry.name, path: url, kind }, {
         title: `Interactive preview of ${entry.name}`,
+        layout: "panel",
         isCurrent,
       }).then((mounted) => {
         if (!mounted) return renderTextPreview(entry, kind, generation);
-        if (isCurrent()) previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html";
+        if (isCurrent()) previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--extension";
       }).catch((error) => {
         if (isCurrent()) renderPreviewError(error instanceof Error ? error.message : String(error));
       });

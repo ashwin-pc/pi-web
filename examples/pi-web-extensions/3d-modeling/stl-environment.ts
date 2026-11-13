@@ -87,3 +87,12 @@ export function stlFloorFactor(depthY: number) {
   const t = Math.max(0, Math.min(1, -depthY / 0.22));
   return t * t * (3 - 2 * t);
 }
+
+// STL has no up-axis metadata. Explicit right-handed source-to-view basis only;
+// the original scene remains Y-up and the source GPU buffers never change.
+export function stlViewingBounds(bounds: number[], zUp: boolean) {
+  return zUp ? [bounds[0], bounds[2], -bounds[4], bounds[3], bounds[5], -bounds[1]] : bounds.slice();
+}
+export function stlViewingRotation(r: number[], zUp: boolean) {
+  return zUp ? [r[0],r[1],r[2],-r[6],-r[7],-r[8],r[3],r[4],r[5]] : r.slice();
+}

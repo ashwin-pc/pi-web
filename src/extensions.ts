@@ -86,6 +86,7 @@ export type PiWebContribution =
       title: string;
       label?: string;
       match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      derive?: PiWebArtifactDerive;
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
     }
   | {
@@ -121,7 +122,20 @@ export type PiWebArtifactContext = {
 export type PiWebArtifactPreviewView = {
   /** Complete document rendered in an opaque-origin iframe with scripts allowed. */
   html: string;
+  /** Opt into the host-owned, confirmed stream of this preview's artifact only. */
+  artifactBytes?: true;
+  /** Opt into on-demand derived bytes; requires a registered derive handler. */
+  artifactDerived?: true;
 };
+
+export type PiWebArtifactDeriveOptions = {
+  signal: AbortSignal;
+  /** Core-bound original input file. Consume this path, never re-resolve the artifact URL. Server-only. */
+  source: string;
+  /** Core-owned private output file. Write here; never return a path or URL. */
+  destination: string;
+};
+export type PiWebArtifactDerive = (artifact: PiWebArtifactContext, options: PiWebArtifactDeriveOptions) => Promise<void>;
 
 export type PiWebArtifactPreview = {
   title: string;
@@ -129,6 +143,7 @@ export type PiWebArtifactPreview = {
   /** Built-in previews retain precedence; this matches otherwise generic artifacts. */
   kinds?: PiWebArtifactContext["kind"][];
   extensions?: string[];
+  derive?: PiWebArtifactDerive;
   render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
 };
 

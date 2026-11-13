@@ -9,6 +9,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
+import { handleArtifactDerivedRoute, mintArtifactDerivedSelection } from "./server/extensions/artifactDerivedRoute.js";
+import { ArtifactDerivations } from "./server/extensions/artifactDerived.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
 import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
@@ -49,6 +51,8 @@ import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.j
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
 import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
+
+const artifactDerivations = new ArtifactDerivations();
 
 initializeSupervisorPeerContext(process.env);
 
@@ -188,6 +192,9 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
+  const selection = req.headers["x-pi-artifact-selection"];
+  const checkSource = typeof selection === "string" && sessionScoped
+    ? artifactDerivations.bind(selection, pathSessionId, url.pathname, resolvedFile) : undefined;
   const size = statSync(resolvedFile).size;
   const headers: Record<string, string | number> = {
     "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
@@ -198,7 +205,13 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   const rangeHeader = req.headers.range?.trim();
   if (!rangeHeader) {
     res.writeHead(200, headers);
-    pipeReadStream(res, resolvedFile);
+    if (checkSource) {
+      const stream = createReadStream(resolvedFile);
+      stream.on("error", error => res.destroy(error));
+      res.once("close", () => stream.destroy());
+      stream.on("end", () => { try { checkSource(); res.end(); } catch (error) { res.destroy(error as Error); } });
+      stream.pipe(res, { end: false });
+    } else pipeReadStream(res, resolvedFile);
     return;
   }
 
@@ -533,6 +546,7 @@ function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
 }
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
+    artifactDerivations.releaseSession(event.sessionId);
     mockPromptCorrelations.delete(event.sessionKey);
     mockPromptCorrelations.delete(event.sessionFile);
     mockPromptCorrelations.delete(event.sessionId);
@@ -962,6 +976,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         }
       }
 
+      if (await handleArtifactDerivedRoute(req, res, url, {
+        derivations: artifactDerivations, readBody, resolveSessionId,
+        invoke: (sessionId, selection, options) => sessionService.deriveArtifactPreview(sessionId, selection, options),
+      })) return;
+
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
         const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
         const controller = new AbortController();
@@ -971,7 +990,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const timeout = setTimeout(abort, 3 * 60_000);
         timeout.unref?.();
         try {
-          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body, controller.signal) });
+          const sessionId = resolveSessionId(body.sessionId);
+          const result = await sessionService.invokeContribution(sessionId, body, controller.signal) as Record<string, unknown>;
+          mintArtifactDerivedSelection(artifactDerivations, sessionId, body, result);
+          return sendJson(res, 200, { ok: true, ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status
