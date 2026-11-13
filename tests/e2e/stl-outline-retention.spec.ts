@@ -1,22 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:net';
-import { mkdtemp, mkdir, writeFile, readFile, copyFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthStore, hashSecret, randomSecret } from '../../server/auth/kernel.js';
-import { isolatedAuthEnv } from '../auth-isolation.js';
+import { bootstrapStlPage, isolatedStlEnv, reserveStlOrigin, startOwnedStlServer } from './helpers/owned-stl-server.js';
 import { stlViewingRotation } from '../../examples/pi-web-extensions/3d-modeling/stl-environment.js';
 
 test('real outline derivation and activity regrouping retain the iframe document, camera and source', async ({ browser }, info) => {
   test.skip(info.project.name !== 'desktop');
   test.setTimeout(120_000);
-  const reservation = createServer();
-  await new Promise<void>(resolve => reservation.listen(0, '127.0.0.1', resolve));
-  const address = reservation.address();
-  if (!address || typeof address === 'string') throw Error('No port');
-  const origin = `http://localhost:${address.port}`;
-  await new Promise<void>(resolve => reservation.close(() => resolve()));
+  const { port, origin } = await reserveStlOrigin();
   const dir = await mkdtemp(join(tmpdir(), 'pi-web-outline-retention-'));
   const workspace = join(dir, 'workspace'), home = join(dir, 'home'), authPath = join(dir, 'auth.json');
   const agent = join(dir, 'agent'), sessionId = '01a1bf40-1000-7000-8000-000000000001';
@@ -38,15 +31,13 @@ test('real outline derivation and activity regrouping retain the iframe document
     state.config = { policy: 'authenticated', methods: [] };
     state.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + 120_000 };
   });
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], {
-    cwd: process.cwd(), env: { ...isolatedAuthEnv(), PI_WEB_HOME: home, PI_CODING_AGENT_DIR: agent,
-      PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin,
-      PI_WEB_CWD: workspace, PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(address.port),
-      PI_WEB_SETTINGS_FILE: settings, PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, stdio: 'ignore',
-  });
   const context = await browser.newContext({ viewport: { width: 1100, height: 1000 }, serviceWorkers: 'block' });
+  const server = startOwnedStlServer({ ...await isolatedStlEnv(dir), PI_WEB_HOME: home, PI_CODING_AGENT_DIR: agent,
+      PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin,
+      PI_WEB_CWD: workspace, PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port),
+      PI_WEB_SETTINGS_FILE: settings, PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, dir, Math.min(30_000, info.timeout / 3));
   try {
-    await expect.poll(() => fetch(origin + '/api/state').then(response => response.status).catch(() => 0)).toBe(401);
+    await server.ready();
     const page = await context.newPage();
     let fullSources = 0, derivatives = 0, refreshes = 0;
     page.on('request', request => {
@@ -54,10 +45,7 @@ test('real outline derivation and activity regrouping retain the iframe document
       if (request.url().endsWith('/api/web-contributions/artifact-derived')) derivatives++;
       if (request.url().includes('/api/messages?')) refreshes++;
     });
-    await page.goto(origin + '/api/auth/bootstrap?token=' + encodeURIComponent(token));
-    await page.getByLabel('New password (12+ characters)').fill('isolated outline fixture password');
-    await page.getByLabel('Confirm password').fill('isolated outline fixture password');
-    await page.getByRole('button', { name: 'Set password', exact: true }).click();
+    await bootstrapStlPage(page, origin, token, 'isolated outline fixture password');
     await expect(page.locator('#prompt')).toBeVisible();
     await page.goto(origin + '/?sessionId=' + sessionId);
     await expect(page.locator('html')).toHaveAttribute('data-density', 'minimal');
@@ -129,8 +117,6 @@ test('real outline derivation and activity regrouping retain the iframe document
     await mkdir('.pi/web/artifacts/stl-outline-reset-followup', { recursive: true });
     await card.screenshot({ path: '.pi/web/artifacts/stl-outline-reset-followup/real-derive-after.png' });
   } finally {
-    await context.close(); child.kill();
-    await new Promise<void>(resolve => child.once('exit', () => resolve()));
-    await rm(dir, { recursive: true, force: true });
+    try { await context.close(); } finally { await server.close(); }
   }
 });

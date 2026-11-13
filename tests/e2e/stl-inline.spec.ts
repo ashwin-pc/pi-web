@@ -1,34 +1,24 @@
 import { test, expect } from '@playwright/test';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:net';
 import { mkdtemp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthStore, hashSecret, randomSecret } from '../../server/auth/kernel.js';
-import { isolatedAuthEnv } from '../auth-isolation.js';
+import { bootstrapStlPage, isolatedStlEnv, reserveStlOrigin, startOwnedStlServer } from './helpers/owned-stl-server.js';
 import { stlContribution } from '../../examples/pi-web-extensions/3d-modeling/stl.js';
 
 test('streamed STL becomes touch interactive only when ready and remains active across releases', async ({ browser }, info) => {
   test.skip(info.project.name !== 'desktop');
   test.setTimeout(120_000);
-  const reservation = createServer();
-  await new Promise<void>(resolve => reservation.listen(0, '127.0.0.1', resolve));
-  const address = reservation.address();
-  if (!address || typeof address === 'string') throw Error('No test port');
-  const port = address.port, origin = `http://localhost:${port}`;
-  await new Promise<void>(resolve => reservation.close(() => resolve()));
+  const { port, origin } = await reserveStlOrigin();
   const dir = await mkdtemp(join(tmpdir(), 'pi-stl-touch-'));
   const authPath = join(dir, 'auth.json'), token = randomSecret();
   await new AuthStore(authPath).update(state => { state.config = { policy: 'authenticated', methods: [] }; state.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + 120_000 }; });
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server.ts'], { env: { ...isolatedAuthEnv(), PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin, PI_WEB_MOCK: '1', PI_WEB_CWD: process.cwd(), PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port), PI_WEB_SETTINGS_FILE: join(dir, 'settings.json'), PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, stdio: 'ignore' });
   const context = await browser.newContext({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+  const server = startOwnedStlServer({ ...await isolatedStlEnv(dir), PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin, PI_WEB_MOCK: '1', PI_WEB_CWD: process.cwd(), PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port), PI_WEB_SETTINGS_FILE: join(dir, 'settings.json'), PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, dir, Math.min(30_000, info.timeout / 3));
   try {
-    await expect.poll(() => fetch(`${origin}/api/state`).then(r => r.status).catch(() => 0)).toBe(401);
+    await server.ready();
     const page = await context.newPage();
-    await page.goto(`${origin}/api/auth/bootstrap?token=${encodeURIComponent(token)}`);
-    await page.getByLabel('New password (12+ characters)').fill('isolated STL test password');
-    await page.getByLabel('Confirm password').fill('isolated STL test password');
-    await page.getByRole('button', { name: 'Set password', exact: true }).click();
+    await bootstrapStlPage(page, origin, token, 'isolated STL test password');
     await expect(page.locator('#prompt')).toBeVisible();
     await page.request.post(`${origin}/api/mock/state`, { headers: { 'x-pi-web-test-client-intent': 'playwright-test' }, data: { webContributions: [{ version: 1, key: 'stl-touch', slot: 'artifact-preview', kind: 'rendered', title: 'STL', match: { kinds: ['file'], extensions: ['.gcode'] } }] } });
     const html = (await stlContribution(() => { throw Error('no server source read'); }).render({ context: { name: 'mesh.stl', path: '/api/artifacts/mesh.stl' } })).html;
@@ -142,5 +132,5 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     for(const width of [393,1440]) { await page.setViewportSize({width,height:900}); await page.screenshot({path:`.pi/web/artifacts/stl-panel-${width}-consent.png`}); const boxes=await panel.evaluate(el=>{const a=el.getBoundingClientRect(),b=el.querySelector('.artifact-stream-card > div')!.getBoundingClientRect();return Math.abs((a.left+a.right-b.left-b.right)/2);});expect(boxes).toBeLessThan(2); }
 
 
-  } finally { await context.close(); child.kill(); }
+  } finally { try { await context.close(); } finally { await server.close(); } }
 });
