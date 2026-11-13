@@ -2,6 +2,10 @@
 
 A shared modeling CLI with **one optional agent tool**, interactive `.stl` and `.gcode` previews, and a **Slice** browser action. The CLI and tool share one dispatcher and backend adapters; neither duplicates execution logic. Discovery is always available, even when a backend is unconfigured.
 
+## Design
+
+The portable `3d-modeling` skill carries modeling reasoning and verification principles; host configuration supplies machine-specific facts; adapters own backend execution; task-specific scripts compose operations without adding agent tools. The host owns authentication, workspace trust, artifact serving and previews. Discovery reports configured or observed evidence—not inferred dependency readiness, reserved resources or a sandbox guarantee. Source migration and session activation are separate: updating files does not reload running sessions.
+
 ## CLI and tool
 
 From this repository (Node >=24 and installed dependencies):
@@ -16,7 +20,7 @@ node examples/pi-web-extensions/3d-modeling/cad.mjs fusion read --json '{"queryT
 
 For another working directory, use `node /absolute/path/to/3d-modeling/cad.mjs help`. The launcher resolves its own installed `tsx` dependency; no caller-side `--import` flags are required. The current directory determines the artifact root. No global command installation or PATH changes are required. The TypeScript entry point also supports `node --import tsx .../cad/cli.ts` from this repository.
 
-The extension registers only `modeling`, taking `{ "args": ["help"] }` or any identical CLI argument vector. `help [command]` is the complete current command and parameter reference. Successful standalone commands emit JSON to stdout; failed commands emit JSON to stderr and exit nonzero. Exit codes: 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation. `--timeout-ms` bounds an invocation. The CLI never asks for interactive input.
+The extension registers only `modeling`, taking `{ "args": ["help"] }` or any identical CLI argument vector. `help [command]` is the complete current command and parameter reference. Successful standalone commands emit JSON to stdout; failed commands emit JSON to stderr and exit nonzero. Exit codes: 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation. `--timeout-ms` bounds an invocation: the default is 30 minutes, or 65 minutes for Hunyuan generation to cover its native 3-minute startup, one-hour generation and cleanup budget. Explicit limits are honored. The CLI never asks for interactive input.
 
 Core commands:
 
