@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import type { PiWebArtifactDeriveOptions } from "@ashwin-pc/pi-web/extensions";
 import { esc, errorView } from "./shared.js";
 import { deriveStlEdges } from "./stl-edges.js";
-const runtime = readFileSync(new URL("./stl-runtime.js", import.meta.url), "utf8");
+// Embed classic-script helpers into the same opaque iframe; no runtime imports.
+const runtime = ["stl-decoder.js", "stl-port-protocol.js", "stl-camera.js", "stl-runtime.js"]
+  .map((name) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8"))
+  .join("\n");
 const stylesheet = readFileSync(new URL("./stl.css", import.meta.url), "utf8");
 const icon = (paths: string) => `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 // No mesh read or GPU work occurs until the host supplies the consented stream.

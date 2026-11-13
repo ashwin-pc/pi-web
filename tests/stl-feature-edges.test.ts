@@ -34,6 +34,24 @@ describe('bounded true source-face feature edges',()=>{
   const crease=n[2]/Math.hypot(...n)<Math.cos(35*Math.PI/180);expect(out.result.lines).toBe(crease?5:4);expect(out.result.boundaries).toBe(4);
   expect(out.result.lines).toBe(4);expect(originalLines(t).size).toBe(5); // 34.99999836° raw vs 35.00000023° first-representative welded.
  });
+ it('preserves pre-refactor binary bytes across sorted-run boundaries', async () => {
+  const triangles: Triangle[] = Array.from({ length: 70000 }, (_, index) => {
+   const angle = (index % 2 ? 35.000001 : 34.999999) * Math.PI / 180;
+   const x = index % 101, y = index % 97;
+   return index % 17 === 0
+    ? [[x, y, -0], [x, y, 0], [x, y, 0]]
+    : [[x, y, -0], [x + 1, y, 0], [x + (index % 3) * 1e-8, y + Math.cos(angle), Math.sin(angle)]];
+  });
+  const { result } = await run(triangles);
+  // Captured from HEAD 0defa37, not computed by another production path.
+  // More than 196608 records exercises two sorted runs and coincident incidence.
+  expect(result).toMatchObject({
+   outputHash: '43d2f61f5a9cd5b00aab065983d5444ab69a77a95dda77af5f3b1ea29c2b4c62',
+   triangles: 70000, lines: 29391, boundaries: 0, creases: 0,
+   nonmanifold: 29391, degenerate: 4118, records: 197646,
+   scratchBytes: 14935896, workingBufferBytes: 30703616,
+  });
+ });
  it('rejects explicit scratch exhaustion instead of silently dropping edges',async()=>{await expect(run(cubeTriangles,{maxScratchBytes:10})).rejects.toThrow('scratch budget');});
  it('supports ASCII source and rejects malformed/nonfinite input',async()=>{const dir=await mkdtemp(join(tmpdir(),'pi-web-edge-ascii-'));try{const source=join(dir,'ascii.stl');await writeFile(source,'solid a\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid a');const out=generateEdges({source,destination:join(dir,'lines'),scratch:join(dir,'scratch')});expect(out.lines).toBe(3);await writeFile(source,Buffer.concat([binary(cubeTriangles),Buffer.from('junk')]));expect(()=>generateEdges({source,destination:join(dir,'bad'),scratch:join(dir,'bad-run')})).toThrow();}finally{await rm(dir,{recursive:true,force:true});}});
  it('rejects corrupt finite cached coordinates and enforces LRU/expiry without retaining excessive disk',async()=>{
