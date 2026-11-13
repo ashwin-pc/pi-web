@@ -65,7 +65,9 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await expect(frame).toHaveCSS('pointer-events', 'auto');
     await expect(shield.locator('span')).toHaveCSS('opacity', '0');
     await frame.scrollIntoViewIfNeeded();
-    const canvas = frame.contentFrame().locator('canvas');
+    const viewer = frame.contentFrame();
+    const canvas = viewer.locator('canvas');
+    await expect(viewer.locator('.gesture-hint')).toBeHidden();
     const before = await canvas.screenshot();
     const infoMenu = frame.contentFrame().locator('.info-menu');
     await infoMenu.locator('summary').tap();
