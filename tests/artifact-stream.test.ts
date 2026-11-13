@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mountArtifactStream, selectedArtifactUrl } from "../src/extensions/artifactStream.js";
+import { mountArtifactStream, selectedArtifactUrl, type ArtifactStreamOptions } from "../src/extensions/artifactStream.js";
+import { openRendererPort, watchStreamConnection } from "../src/extensions/artifactStreamLifecycle.js";
+import { streamArtifactIntoRenderer } from "../src/extensions/artifactStreamSource.js";
 import { configureArtifactPreviews, mountArtifactPreview, setArtifactPreviews } from "../src/extensions/artifactPreviews.js";
 
 class Element {
@@ -34,7 +36,7 @@ describe("selected artifact stream host", () => {
   });
   it.each([20 * 1024 * 1024, 20 * 1024 * 1024 + 1])("auto-initializes at or below 20 MiB and asks consent only above it (bytes=%s)", async size => {
     const {host,frame}=dom();const fetch=vi.fn(async()=>({ok:true,headers:new Headers({'content-range':`bytes 0-0/${size}`}),body:{cancel:async()=>{}}}));vi.stubGlobal('fetch',fetch);
-    mountArtifactStream(host as any,frame as any,'/selected',()=>({}),()=>true);
+    mountArtifactStream({ host: host as any, frame: frame as any, url: '/selected', headers: ()=>({}), isCurrent: ()=>true });
     await vi.waitFor(()=>expect(controls(host).meta.textContent).toContain('20.0 MiB'));
     expect(host.contains(frame)).toBe(size <= 20 * 1024 * 1024);
     expect(controls(host).load.hidden).toBe(size <= 20 * 1024 * 1024);
@@ -51,7 +53,7 @@ describe("selected artifact stream host", () => {
     const cancel = vi.fn();
     const fetch = vi.fn(async (_url: string, _options: any) => ({ ok: true, headers: new Headers({ "content-range": "bytes 0-0/207486284" }), body: { cancel } }));
     vi.stubGlobal("fetch", fetch);
-    mountArtifactStream(host as any, frame as any, "/selected", () => ({ Authorization: "host-only" }), () => true);
+    mountArtifactStream({ host: host as any, frame: frame as any, url: "/selected", headers: () => ({ Authorization: "host-only" }), isCurrent: () => true });
     await vi.waitFor(() => expect(controls(host).load.hidden).toBe(false));
     const { title, status, meta, warning, load, stop, download } = controls(host);
     expect(meta.textContent).toContain("197.9 MiB");
@@ -86,7 +88,7 @@ describe("selected artifact stream host", () => {
       ? { ok: true, headers: new Headers({ "content-range": "bytes 0-0/207486284" }), body: { cancel: async () => {} } }
       : { ok: true, headers: new Headers({ "content-length": "207486284" }), body: { getReader: () => ({ read, cancel: cancelReader }) } });
     vi.stubGlobal("fetch", fetch);
-    mountArtifactStream(host as any, frame as any, "/selected", () => ({ Authorization: "host-only" }), () => true);
+    mountArtifactStream({ host: host as any, frame: frame as any, url: "/selected", headers: () => ({ Authorization: "host-only" }), isCurrent: () => true });
     await vi.waitFor(() => expect(controls(host).load.hidden).toBe(false));
     controls(host).load.onclick!(); frame.onload!();
     await vi.waitFor(() => expect(sent.some(m => m.type === "chunk")).toBe(true));
@@ -104,7 +106,7 @@ describe("selected artifact stream host", () => {
     (frame as any).contentWindow={postMessage: (_m:any,_o:string,ports:MessagePort[])=>{remote=ports[0];remote.onmessage=e=>{if(e.data.type==='chunk')remote!.postMessage({type:'ack',triangles:1});if(e.data.type==='end')remote!.postMessage({type:'complete'});};remote.postMessage({type:'ready'});}};
     const fetch=vi.fn(async()=>++calls===1?{ok:true,headers:new Headers({'content-range':'bytes 0-0/3'}),body:{cancel:async()=>{}}}:{ok:true,headers:new Headers({'content-length':'3'}),body:{getReader:()=>({read:async()=>++reads===1?{done:false,value:new Uint8Array(whole?3:2)}:{done:true},cancel:async()=>{}})}});
     const onFrameReady = vi.fn();
-    vi.stubGlobal('fetch',fetch);mountArtifactStream(host as any,frame as any,'/selected',()=>({}),()=>true,onFrameReady);
+    vi.stubGlobal('fetch',fetch);mountArtifactStream({ host: host as any, frame: frame as any, url: '/selected', headers: ()=>({}), isCurrent: ()=>true, onFrameReady: onFrameReady });
     await vi.waitFor(()=>expect(frame.onload).toBeTypeOf('function'));
     expect(onFrameReady).not.toHaveBeenCalled();
     frame.onload!();
@@ -155,7 +157,7 @@ describe("selected artifact stream host", () => {
       return new Promise<never>((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
     });
     vi.stubGlobal("fetch", fetch); const ready = vi.fn();
-    mountArtifactStream(host as any, frame as any, "/selected", () => ({ "content-type": "application/json" }), () => true, ready, "inline", { selection: "private-selection", key: "stl", sessionId: "one" });
+    mountArtifactStream({ host: host as any, frame: frame as any, url: "/selected", headers: () => ({ "content-type": "application/json" }), isCurrent: () => true, onFrameReady: ready, layout: "inline", derivation: { selection: "private-selection", key: "stl", sessionId: "one" } });
     await vi.waitFor(() => expect(frame.onload).toBeTypeOf("function")); frame.onload!();
     await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
     expect(calls).toBe(2); expect(fetch.mock.calls[0][1].headers["x-pi-artifact-selection"]).toBe("private-selection");
@@ -180,7 +182,7 @@ describe("selected artifact stream host", () => {
       return { ok: true, headers: new Headers({ 'content-length': '3' }), body: { getReader: () => ({ read: async () => ++reads === 1 ? { done: false, value: new Uint8Array(3) } : { done: true }, cancel: async () => {} }) } };
     });
     vi.stubGlobal('fetch', fetch); const ready = vi.fn();
-    mountArtifactStream(host as any, frame as any, '/selected', () => ({}), () => true, ready, 'inline', { selection: 'selected', key: 'stl', sessionId: 'one' });
+    mountArtifactStream({ host: host as any, frame: frame as any, url: '/selected', headers: () => ({}), isCurrent: () => true, onFrameReady: ready, layout: 'inline', derivation: { selection: 'selected', key: 'stl', sessionId: 'one' } });
     await vi.waitFor(() => expect(frame.onload).toBeTypeOf('function')); frame.onload!();
     await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
     original!.postMessage({ type: 'derive' }); await vi.waitFor(() => expect(pending).toHaveLength(1));
@@ -202,12 +204,114 @@ describe("selected artifact stream host", () => {
     await new Promise(resolve => setTimeout(resolve, 20)); expect(pending).toHaveLength(2);
     original!.close(); host.children[0].children.at(-1)!.children[1].onclick!();
   });
+  it("shares connection observation and releases only the disposed owner", () => {
+    dom();
+    const disconnect = vi.fn();
+    const observe = vi.fn();
+    const constructor = vi.fn();
+    vi.stubGlobal("MutationObserver", class {
+      constructor(fn: () => void) { constructor(); mutation = fn; }
+      observe = observe;
+      disconnect = disconnect;
+    });
+    const first = vi.fn(), second = vi.fn();
+    const disposeFirst = watchStreamConnection(first);
+    const disposeSecond = watchStreamConnection(second);
+    expect(constructor).toHaveBeenCalledOnce();
+    mutation();
+    expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledOnce();
+    disposeFirst(); mutation();
+    expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledTimes(2);
+    expect(disconnect).not.toHaveBeenCalled();
+    disposeSecond(); expect(disconnect).toHaveBeenCalledOnce();
+  });
+  it.each([false, true])("cleans up handshake listeners and owns its private port (abort=%s)", async abort => {
+    const { frame } = dom();
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    const close = vi.fn();
+    const local = { onmessage: null as any, close };
+    const remote = {};
+    vi.stubGlobal("MessageChannel", class { port1 = local; port2 = remote; });
+    const postMessage = vi.fn();
+    (frame as any).contentWindow = { postMessage };
+    const result = openRendererPort(frame as any, 123, controller.signal);
+    frame.onload!();
+    expect(postMessage).toHaveBeenCalledWith({ type: "pi-artifact-stream", size: 123, streamVersion: 2 }, "*", [remote]);
+    if (abort) {
+      controller.abort();
+      await expect(result).rejects.toThrow("Cancelled");
+      expect(close).toHaveBeenCalledOnce();
+    } else {
+      local.onmessage({ data: { type: "ready", streamVersion: 2 } });
+      await expect(result).resolves.toEqual({ port: local, pipelined: true });
+      controller.abort(); // ownership passed to the caller, not a lingering listener
+      expect(close).not.toHaveBeenCalled();
+    }
+    expect(frame.onload).toBeNull(); expect(local.onmessage).toBeNull();
+    expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+  it.each([false, true])("owns completion before end, retains derive intents, and cleans up (abort=%s)", async abort => {
+    const { frame } = dom();
+    const controller = new AbortController();
+    const close = vi.fn(), ready = vi.fn(), derive = vi.fn(), cancelDerivation = vi.fn();
+    const phase = vi.fn(), error = vi.fn();
+    const local = {
+      onmessage: null as any, close,
+      postMessage(message: any) {
+        if (message.type === "chunk") local.onmessage({ data: { type: "ack" } });
+        if (message.type === "end") {
+          if (abort) controller.abort();
+          else local.onmessage({ data: { type: "complete", decodeMs: 12, uploadMs: 8 } });
+        }
+      },
+    };
+    vi.stubGlobal("MessageChannel", class { port1 = local; port2 = {}; });
+    (frame as any).contentWindow = { postMessage: () => local.onmessage({ data: { type: "ready" } }) };
+    const stream = streamArtifactIntoRenderer({
+      frame: frame as any, signal: controller.signal, current: () => !controller.signal.aborted,
+      source: {
+        probe: async () => 3,
+        open: async () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(3)); c.close(); } }).getReader(),
+      },
+      phase, ready, derive, cancelDerivation, error, progress: vi.fn(),
+    });
+    const done = stream.run(3);
+    frame.onload!();
+    if (abort) {
+      await expect(done).rejects.toThrow("Cancelled");
+      expect(ready).not.toHaveBeenCalled();
+    } else {
+      await done;
+      expect(ready).toHaveBeenCalledWith(expect.objectContaining({ processedBytes: 3, decodeMs: 12, uploadMs: 8, totalMs: expect.any(Number) }));
+      local.onmessage({ data: { type: "derive" } });
+      local.onmessage({ data: { type: "derive-cancel" } });
+      expect(derive).toHaveBeenCalledOnce(); expect(cancelDerivation).toHaveBeenCalledOnce();
+      expect(stream.getPort()).toBe(local);
+      controller.abort(); // completed handshake has removed its abort listener
+    }
+    expect(phase.mock.calls).toEqual([["receiving"], ["finalizing"]]);
+    stream.dispose();
+    expect(local.onmessage).toBeNull(); expect(close).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+  });
+  it("uses typed options and aborts detach, but not a connected reparent", () => {
+    const { host, frame } = dom();
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", (_: string, options: any) => { signal = options.signal; return new Promise(() => {}); });
+    const options: ArtifactStreamOptions = { host: host as any, frame: frame as any, url: "/selected", headers: () => ({}), isCurrent: () => true, layout: "panel" };
+    mountArtifactStream(options);
+    mutation(); // A move within the document leaves the host connected.
+    expect(signal?.aborted).toBe(false);
+    host.isConnected = false; mutation();
+    expect(signal?.aborted).toBe(true);
+  });
   it("aborts a pending size probe when the preview is removed or session changes", () => {
     const { host, frame } = dom();
     let signal: AbortSignal | undefined;
     vi.stubGlobal("fetch", (_: string, options: any) => { signal = options.signal; return new Promise(() => {}); });
     let current = true;
-    mountArtifactStream(host as any, frame as any, "/selected", () => ({}), () => current);
+    mountArtifactStream({ host: host as any, frame: frame as any, url: "/selected", headers: () => ({}), isCurrent: () => current });
     current = false; mutation();
     expect(signal?.aborted).toBe(true);
   });

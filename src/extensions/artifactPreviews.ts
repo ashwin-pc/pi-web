@@ -85,8 +85,8 @@ export async function mountArtifactPreview(
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
   if (artifactBytes) {
-    mountArtifactStream(host, frame, selectedArtifactUrl(artifact.path, invokingSession), requestHeaders,
-      () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()), options.onFrameReady, options.layout, derivation, () => {
+    mountArtifactStream({ host, frame, url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
+      isCurrent: () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()), onFrameReady: options.onFrameReady, layout: options.layout, derivation, onRetry: () => {
         void mountArtifactPreview(host, artifact, options).catch(() => {
           if (sessionId() === invokingSession && (!options.isCurrent || options.isCurrent())) {
             host.replaceChildren();
@@ -95,7 +95,7 @@ export async function mountArtifactPreview(
             host.append(error);
           }
         });
-      });
+      } });
   } else {
     host.replaceChildren(frame);
     options.onFrameReady?.(frame, host);
