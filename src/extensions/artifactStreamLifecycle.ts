@@ -1,3 +1,4 @@
+import { awaitPortReply } from "./artifactPortReply.js";
 // One connection observer per document, not one subtree callback per preview.
 const watchers = new Set<() => void>();
 let observer: MutationObserver | undefined;
@@ -27,48 +28,31 @@ export function openRendererPort(
   size: number,
   signal: AbortSignal,
 ): Promise<{ port: MessagePort; pipelined: boolean }> {
-  return new Promise((resolve, reject) => {
-    let port: MessagePort | undefined;
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      frame.onload = null;
-      if (port) port.onmessage = null;
-    };
-    const fail = (message: string) => {
-      cleanup();
-      port?.close();
-      reject(new Error(message));
-    };
-    const abort = () => fail("Cancelled");
-    const timer = setTimeout(
-      () =>
-        fail(
-          "The renderer did not initialize. Try a browser with WebGL 2 support.",
-        ),
-      15000,
-    );
-    if (signal.aborted) {
-      abort();
-      return;
-    }
-    signal.addEventListener("abort", abort, { once: true });
-    frame.onload = () => {
-      frame.onload = null;
-      const channel = new MessageChannel();
-      port = channel.port1;
-      port.onmessage = (event) => {
-        if (event.data?.type === "ready") {
-          cleanup();
-          resolve({ port: port!, pipelined: event.data.streamVersion === 2 });
-        } else if (event.data?.type === "error")
-          fail(event.data.error || "WebGL renderer unavailable.");
+  const channel = new MessageChannel();
+  const port = channel.port1;
+  return awaitPortReply({
+    port, signal, timeout: 15000,
+    timeoutMessage: "The renderer did not initialize. Try a browser with WebGL 2 support.",
+    cleanup: () => { frame.onload = null; },
+    start: (failLoad) => {
+      frame.onload = () => {
+        frame.onload = null;
+        try {
+          frame.contentWindow?.postMessage(
+            { type: "pi-artifact-stream", size, streamVersion: 2 },
+            "*", [channel.port2],
+          );
+        } catch (error) { failLoad(error); }
       };
-      frame.contentWindow?.postMessage(
-        { type: "pi-artifact-stream", size, streamVersion: 2 },
-        "*",
-        [channel.port2],
-      );
-    };
+    },
+    accept: (data) => {
+      if (data?.type === "ready") return { value: { port, pipelined: data.streamVersion === 2 } };
+      if (data?.type === "error") throw new Error(data.error || "WebGL renderer unavailable.");
+      return undefined;
+    },
+  }).catch((error) => {
+    port.close();
+    channel.port2.close();
+    throw error;
   });
 }

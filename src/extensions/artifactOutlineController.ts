@@ -1,3 +1,4 @@
+import { awaitPortReply } from "./artifactPortReply.js";
 import { transferArtifact } from "./artifactStreamTransport.js";
 import type { ArtifactStreamOptions } from "./artifactStream.js";
 
@@ -29,8 +30,9 @@ export function createOutlineController({
     }
     const active = new AbortController();
     derivedController = active;
-    getPort()?.postMessage({ type: "derive-status", status: "generating" });
+    let remotePort: MessagePort | undefined;
     try {
+      getPort()?.postMessage({ type: "derive-status", status: "generating" });
       const response = await fetch("/api/web-contributions/artifact-derived", {
         method: "POST",
         headers: headers(),
@@ -48,37 +50,18 @@ export function createOutlineController({
         throw new Error("Invalid derived artifact size");
       const channel = new MessageChannel();
       derivedPort = channel.port1;
-      const pipelined = await new Promise<boolean>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error("Outline renderer did not initialize"));
-        }, 15000);
-        const cleanup = () => {
-          clearTimeout(timer);
-          active.signal.removeEventListener("abort", abort);
-          if (derivedPort) derivedPort.onmessage = null;
-        };
-        const abort = () => {
-          cleanup();
-          reject(new Error("Cancelled"));
-        };
-        if (active.signal.aborted) {
-          abort();
-          return;
-        }
-        active.signal.addEventListener("abort", abort, { once: true });
-        derivedPort!.onmessage = (event) => {
-          cleanup();
-          if (event.data?.type === "ready")
-            resolve(event.data.streamVersion === 2);
-          else
-            reject(new Error(event.data?.error || "Outline renderer failed"));
-        };
-        frame.contentWindow?.postMessage(
-          { type: "pi-artifact-derived", size, streamVersion: 2 },
-          "*",
-          [channel.port2],
-        );
+      remotePort = channel.port2;
+      const port = derivedPort;
+      const pipelined = await awaitPortReply({
+        port, signal: active.signal, timeout: 15000,
+        timeoutMessage: "Outline renderer did not initialize",
+        start: () => frame.contentWindow?.postMessage(
+          { type: "pi-artifact-derived", size, streamVersion: 2 }, "*", [channel.port2],
+        ),
+        accept: (data) => {
+          if (data?.type === "ready") return { value: data.streamVersion === 2 };
+          throw new Error(data?.error || "Outline renderer failed");
+        },
       });
       await transferArtifact(
         response.body.getReader(),
@@ -88,32 +71,14 @@ export function createOutlineController({
         pipelined,
         () => {},
       );
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error("Outline renderer did not complete"));
-        }, 30000);
-        const cleanup = () => {
-          clearTimeout(timer);
-          active.signal.removeEventListener("abort", abort);
-          if (derivedPort) derivedPort.onmessage = null;
-        };
-        const abort = () => {
-          cleanup();
-          reject(new Error("Cancelled"));
-        };
-        if (active.signal.aborted) {
-          abort();
-          return;
-        }
-        active.signal.addEventListener("abort", abort, { once: true });
-        derivedPort!.onmessage = (event) => {
-          cleanup();
-          event.data?.type === "complete"
-            ? resolve()
-            : reject(new Error(event.data?.error || "Outline renderer failed"));
-        };
-        derivedPort!.postMessage({ type: "end" });
+      await awaitPortReply({
+        port, signal: active.signal, timeout: 30000,
+        timeoutMessage: "Outline renderer did not complete",
+        start: () => port.postMessage({ type: "end" }),
+        accept: (data) => {
+          if (data?.type === "complete") return { value: undefined };
+          throw new Error(data?.error || "Outline renderer failed");
+        },
       });
     } catch (error) {
       if (current() && !active.signal.aborted)
@@ -123,6 +88,7 @@ export function createOutlineController({
         });
     } finally {
       active.abort();
+      remotePort?.close();
       if (derivedController === active) {
         derivedPort?.close();
         derivedPort = undefined;

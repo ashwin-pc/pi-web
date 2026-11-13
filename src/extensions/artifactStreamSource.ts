@@ -1,3 +1,4 @@
+import { awaitPortReply } from "./artifactPortReply.js";
 import { openRendererPort } from "./artifactStreamLifecycle.js";
 import {
   transferArtifact,
@@ -99,64 +100,45 @@ export function streamArtifactIntoRenderer(options: RendererStreamOptions) {
   const { source, frame, signal, current } = options;
   let port: MessagePort | undefined;
   let cancelCompletion = () => {};
-  const finish = (stats: StreamProgress, started: number) =>
-    new Promise<void>((resolve, reject) => {
-      let completed = false;
-      const cleanup = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", abort);
-        cancelCompletion = () => {};
-      };
-      const fail = (error: Error) => {
-        cleanup();
-        if (completed) options.error(error);
-        else reject(error);
-      };
-      const abort = () => fail(new Error("Cancelled"));
-      const timer = setTimeout(
-        () =>
-          fail(
-            new Error(
-              "The full model did not finish decoding. Try a larger-memory device.",
-            ),
-          ),
-        30000,
-      );
-      cancelCompletion = abort;
-      if (signal.aborted) {
-        abort();
-        return;
-      }
-      signal.addEventListener("abort", abort, { once: true });
-      port!.onmessage = (event) => {
-        if (!current()) return;
-        if (event.data?.type === "derive") {
-          options.derive();
-          return;
-        }
-        if (event.data?.type === "derive-cancel") {
-          options.cancelDerivation();
-          return;
-        }
-        if (event.data?.type !== "complete") {
-          fail(
-            new Error(
-              event.data?.error ||
-                "The renderer failed. Open again or download the original.",
-            ),
-          );
-          return;
-        }
-        cleanup();
-        if (!completed) {
-          completed = true;
-          options.ready(completionMetrics(stats, event.data, started));
-          resolve();
-        }
-      };
-      // Install the completion/intent handler before asking the renderer to finish.
-      port!.postMessage({ type: "end" });
-    });
+  const rendererError = (data: any) => new Error(
+    data?.error || "The renderer failed. Open again or download the original.",
+  );
+  const intent = (data: any) => {
+    if (data?.type === "derive") { options.derive(); return true; }
+    if (data?.type === "derive-cancel") { options.cancelDerivation(); return true; }
+    return false;
+  };
+  // The completed wait relinquishes its listener, but outline intents remain live.
+  const receiveIntent = (event: MessageEvent) => {
+    if (!current() || intent(event.data) || event.data?.type === "complete") return;
+    options.error(rendererError(event.data));
+  };
+  const finish = async (stats: StreamProgress, started: number) => {
+    const completion = new AbortController();
+    const abort = () => completion.abort();
+    cancelCompletion = abort;
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    try {
+      const message = await awaitPortReply<Record<string, unknown>>({
+        port: port!, signal: completion.signal, timeout: 30000,
+        timeoutMessage: "The full model did not finish decoding. Try a larger-memory device.",
+        start: () => port!.postMessage({ type: "end" }),
+        accept: (data) => {
+          if (!current() || intent(data)) return undefined;
+          if (data?.type === "complete") {
+            port!.onmessage = receiveIntent;
+            return { value: data };
+          }
+          throw rendererError(data);
+        },
+      });
+      options.ready(completionMetrics(stats, message, started));
+    } finally {
+      signal.removeEventListener("abort", abort);
+      cancelCompletion = () => {};
+    }
+  };
   return {
     getPort: () => port,
     async run(size: number) {

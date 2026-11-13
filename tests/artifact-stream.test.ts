@@ -231,7 +231,7 @@ describe("selected artifact stream host", () => {
     const removeListener = vi.spyOn(controller.signal, "removeEventListener");
     const close = vi.fn();
     const local = { onmessage: null as any, close };
-    const remote = {};
+    const remote = { close: vi.fn() };
     vi.stubGlobal("MessageChannel", class { port1 = local; port2 = remote; });
     const postMessage = vi.fn();
     (frame as any).contentWindow = { postMessage };
@@ -262,7 +262,12 @@ describe("selected artifact stream host", () => {
         if (message.type === "chunk") local.onmessage({ data: { type: "ack" } });
         if (message.type === "end") {
           if (abort) controller.abort();
-          else local.onmessage({ data: { type: "complete", decodeMs: 12, uploadMs: 8 } });
+          else {
+            local.onmessage({ data: { type: "complete", decodeMs: 12, uploadMs: 8 } });
+            // Even synchronous intents immediately following completion stay live.
+            local.onmessage({ data: { type: "derive" } });
+            local.onmessage({ data: { type: "derive-cancel" } });
+          }
         }
       },
     };
@@ -286,7 +291,7 @@ describe("selected artifact stream host", () => {
       expect(ready).toHaveBeenCalledWith(expect.objectContaining({ processedBytes: 3, decodeMs: 12, uploadMs: 8, totalMs: expect.any(Number) }));
       local.onmessage({ data: { type: "derive" } });
       local.onmessage({ data: { type: "derive-cancel" } });
-      expect(derive).toHaveBeenCalledOnce(); expect(cancelDerivation).toHaveBeenCalledOnce();
+      expect(derive).toHaveBeenCalledTimes(2); expect(cancelDerivation).toHaveBeenCalledTimes(2);
       expect(stream.getPort()).toBe(local);
       controller.abort(); // completed handshake has removed its abort listener
     }

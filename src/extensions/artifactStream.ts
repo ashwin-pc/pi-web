@@ -48,6 +48,14 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
   const current = () =>
     !controller.signal.aborted && shell.ownsPanel() && isCurrent();
   const source = createArtifactSource(options, controller.signal);
+  const outline = createOutlineController({
+    frame,
+    derivation,
+    headers,
+    current,
+    getPort: () => stream.getPort(),
+    isModelComplete: () => modelComplete,
+  });
   const stream = streamArtifactIntoRenderer({
     source,
     frame,
@@ -64,14 +72,6 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
     },
     cancelDerivation: () => outline.cancel(),
     error: (error) => fail(error),
-  });
-  const outline = createOutlineController({
-    frame,
-    derivation,
-    headers,
-    current,
-    getPort: stream.getPort,
-    isModelComplete: () => modelComplete,
   });
   const stop = () => {
     controller.abort();
