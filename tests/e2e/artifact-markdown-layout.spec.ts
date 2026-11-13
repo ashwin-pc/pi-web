@@ -15,6 +15,7 @@ test("artifact markdown shares one centered responsive column across preview sur
   }));
   await page.goto("/artifact-markdown-layout-fixture");
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  await expect(page.locator(".artifactMarkdownContent")).toHaveCount(2);
   for (const width of [1600, 1000, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const columns = await page.locator(".artifactMarkdownContent").evaluateAll((nodes) => nodes.map((node) => {
