@@ -63,7 +63,9 @@ export class ArtifactDerivations {
     invoke: (value: Selection, options: PiWebArtifactDeriveOptions) => Promise<void>) {
     const value = this.get(token, sessionId);
     if (value.key !== key || !value.source || !value.identity) throw new HttpError("Unselected artifact renderer", 403);
-    if (value.running || this.running >= 2) throw new HttpError("Artifact generation is busy", 429);
+    // The current STL adapter admits one job per server; reject at the host
+    // boundary with a typed busy response rather than an opaque adapter failure.
+    if (value.running || this.running >= 1) throw new HttpError("Artifact generation is busy", 429);
     if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the model", 409);
     signal.throwIfAborted();
     value.running = true; this.running++;

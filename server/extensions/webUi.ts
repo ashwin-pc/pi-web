@@ -1,10 +1,4 @@
 import { randomUUID } from "node:crypto";
-const previewRegistrations = new WeakMap<object, string>();
-function previewRegistration(source: object) {
-  let id = previewRegistrations.get(source);
-  if (!id) { id = randomUUID(); previewRegistrations.set(source, id); }
-  return id;
-}
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebArtifactDeriveOptions, PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
@@ -13,6 +7,13 @@ import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
 import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
+
+const previewRegistrations = new WeakMap<object, string>();
+function previewRegistration(source: object) {
+  let id = previewRegistrations.get(source);
+  if (!id) { id = randomUUID(); previewRegistrations.set(source, id); }
+  return id;
+}
 
 export interface WebUiBridgeDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;

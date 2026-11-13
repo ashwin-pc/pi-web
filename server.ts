@@ -9,8 +9,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
+import { handleArtifactDerivedRoute, mintArtifactDerivedSelection } from "./server/extensions/artifactDerivedRoute.js";
 import { ArtifactDerivations } from "./server/extensions/artifactDerived.js";
-const artifactDerivations = new ArtifactDerivations();
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
 import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
@@ -51,6 +51,8 @@ import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.j
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
 import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
+
+const artifactDerivations = new ArtifactDerivations();
 
 initializeSupervisorPeerContext(process.env);
 
@@ -974,32 +976,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         }
       }
 
-      if (method === "POST" && url.pathname === "/api/web-contributions/artifact-derived") {
-        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; selection?: unknown };
-        const sessionId = resolveSessionId(body.sessionId);
-        if (!sessionId || typeof body.selection !== "string" || typeof body.key !== "string") throw new HttpError("Invalid derivation request", 400);
-        const controller = new AbortController();
-        const abort = () => controller.abort(new Error("Artifact request cancelled"));
-        req.once("aborted", abort);
-        res.once("close", abort);
-        let output: Awaited<ReturnType<ArtifactDerivations["derive"]>> | undefined;
-        try {
-          output = await artifactDerivations.derive(body.selection, sessionId, body.key, controller.signal,
-            (selection, options) => sessionService.deriveArtifactPreview(sessionId, selection, options));
-          controller.signal.throwIfAborted();
-          res.writeHead(200, { "content-type": "application/octet-stream", "content-length": output.size, "cache-control": "no-store" });
-          const stream = output.file.createReadStream({ autoClose: false });
-          await new Promise<void>((resolve, reject) => {
-            stream.on("error", reject); res.once("finish", resolve);
-            res.once("close", () => { stream.destroy(); resolve(); });
-            stream.pipe(res);
-          });
-        } finally {
-          req.off("aborted", abort); res.off("close", abort);
-          await output?.cleanup();
-        }
-        return;
-      }
+      if (await handleArtifactDerivedRoute(req, res, url, {
+        derivations: artifactDerivations, readBody, resolveSessionId,
+        invoke: (sessionId, selection, options) => sessionService.deriveArtifactPreview(sessionId, selection, options),
+      })) return;
 
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
         const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
@@ -1012,14 +992,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         try {
           const sessionId = resolveSessionId(body.sessionId);
           const result = await sessionService.invokeContribution(sessionId, body, controller.signal) as Record<string, unknown>;
-          if (sessionId && result.artifactDerived === true && typeof result.registration === "string" && typeof body.key === "string") {
-            const context = (body.event as { context?: { name: string; path: string; kind: string } })?.context;
-            if (!context) throw new HttpError("Missing selected artifact", 400);
-            const prefix = `/api/session-artifacts/${encodeURIComponent(sessionId)}/`;
-            const selectedUrl = context.path.startsWith("/api/artifacts/") ? prefix + context.path.slice("/api/artifacts/".length) : context.path;
-            result.selection = artifactDerivations.select({ sessionId, key: body.key, registration: result.registration, artifact: context, url: selectedUrl });
-            delete result.registration;
-          }
+          mintArtifactDerivedSelection(artifactDerivations, sessionId, body, result);
           return sendJson(res, 200, { ok: true, ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

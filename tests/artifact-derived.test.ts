@@ -22,6 +22,20 @@ async function setup(timeout = 1000, maxBytes = 100) {
   return { store, token, source, bind, derive };
 }
 describe("derived preview registrations", () => {
+  it("rejects a second selected source with typed server-wide busy admission", async () => {
+    const s = await setup(); s.bind();
+    const token = s.store.select({ sessionId: "two", key: "stl", registration: "revision", artifact: { name: "model.stl", path: "/api/artifacts/model.stl", kind: "file" }, url: "/api/session-artifacts/two/model.stl" });
+    s.store.bind(token, "two", "/api/session-artifacts/two/model.stl", s.source);
+    let finish!: () => void;
+    const started = new Promise<void>(resolve => { finish = resolve; });
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const first = s.derive(async (_selection, options) => { entered(); await started; await writeFile(options.destination, "edges"); });
+    await ready;
+    try {
+      await expect(s.store.derive(token, "two", "stl", new AbortController().signal, async () => {})).rejects.toMatchObject({ status: 429, message: "Artifact generation is busy" });
+    } finally { finish(); await (await first).cleanup(); }
+  });
   it("requires opt-in and rejects replaced registrations or mismatched contexts", async () => {
     let ui: any; let calls = 0;
     const bridge = createWebUiBridge({ emit: () => {}, clientCount: () => 1,
