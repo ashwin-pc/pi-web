@@ -14,6 +14,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
+import { createArtifactOwnerRegistry, placeNodes, planRetention, recordOwner } from "./artifactOwnerRetention.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -330,8 +331,7 @@ export function createMessageList(options: {
   let mutationSerial = 0;
   // Connected artifact owners are retained, never detached/reparented: moving an
   // iframe resets its browsing context even when its element identity survives.
-  let artifactOwners = new Map<string, { fingerprint: string; nodes: HTMLElement[] }>();
-  let artifactOwnerSession = "";
+  let artifactOwners = createArtifactOwnerRegistry();
   let applyingRefresh = false;
   let bulkRendering = false;
   let thinkingSerial = 0;
@@ -1237,7 +1237,7 @@ export function createMessageList(options: {
     for (const child of Array.from(messagesEl.children)) {
       if (!retained.has(child as HTMLElement)) child.remove();
     }
-    if (invalidate) { artifactOwners.clear(); artifactOwnerSession = ""; }
+    if (invalidate) artifactOwners = createArtifactOwnerRegistry();
     thinkingSerial = 0;
     currentAssistantResponseKey = "";
     streamingAssistant = null;
@@ -1565,26 +1565,10 @@ export function createMessageList(options: {
     try {
       isStreaming = Boolean(historyIsStreaming);
       const allMessages = (data.messages || []) as MessageDto[];
-      const reusable = new Map<string, { fingerprint: string; nodes: HTMLElement[] }>();
-      const retained = new Set<HTMLElement>();
-      if (artifactOwnerSession === sessionId) {
-        for (const message of allMessages) {
-          const owner = message.entryId && artifactOwners.get(message.entryId);
-          if (owner && owner.fingerprint === JSON.stringify(message) && owner.nodes.every(node => node.parentElement === messagesEl) && owner.nodes.some(node => node.querySelector('.artifactPreview'))) {
-            reusable.set(message.entryId!, owner);
-            owner.nodes.forEach(node => retained.add(node));
-          }
-        }
-        // A branch reorder must not move a retained iframe. Rebuild rather than
-        // accidentally transferring a live viewer into another transcript order.
-        const previous = Array.from(messagesEl.children).filter(node => retained.has(node as HTMLElement));
-        const next = Array.from(reusable.values()).flatMap(owner => owner.nodes);
-        if (previous.some((node, index) => node !== next[index])) { reusable.clear(); retained.clear(); }
-      }
+      const { reusable, retained } = planRetention(allMessages, artifactOwners, sessionId, messagesEl);
       clearInternal(false, retained);
       clearActiveToolCards();
-      artifactOwners = new Map();
-      artifactOwnerSession = sessionId;
+      artifactOwners = createArtifactOwnerRegistry(sessionId);
       const orderedNodes: HTMLElement[] = [];
       const runtimeState = transcriptRuntimeState(allMessages, historyIsStreaming);
       bulkRendering = true;
@@ -1610,7 +1594,7 @@ export function createMessageList(options: {
         const owner = message.entryId && reusable.get(message.entryId);
         if (owner) {
           owner.nodes.forEach(node => assignAssistantResponseKey(node, message.entryId));
-          artifactOwners.set(message.entryId!, owner);
+          recordOwner(artifactOwners, message, owner.nodes);
           orderedNodes.push(...owner.nodes);
           continue;
         }
@@ -1631,15 +1615,11 @@ export function createMessageList(options: {
         // Long prose renders Markdown lazily. Record pure-text candidates now;
         // require an actual artifact card when deciding reuse on the next refresh.
         if (pureText && message.entryId && nodes.every(node => node.matches('.message.assistant'))) {
-          artifactOwners.set(message.entryId, { fingerprint: JSON.stringify(message), nodes });
+          recordOwner(artifactOwners, message, nodes);
         }
       }
       // Insert newly rendered nodes around connected owners; never move owners.
-      let cursor = messagesEl.firstElementChild;
-      for (const node of orderedNodes) {
-        if (node === cursor) cursor = cursor.nextElementSibling;
-        else if (!retained.has(node)) messagesEl.insertBefore(node, cursor);
-      }
+      placeNodes(messagesEl, orderedNodes, retained);
       activity.restore();
       activityRestored = true;
       bulkRendering = false;
