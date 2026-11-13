@@ -19,7 +19,7 @@ function originalLines(triangles:Triangle[]){
  for(let i=0;i<3;i++){const a=t[i],b=t[(i+1)%3],key=[Math.min(a,b),Math.max(a,b)].join(',');const edge=edges.get(key)??{a,b,normals:[]};edge.normals.push(normal);edges.set(key,edge);}}
  const lines=new Set<string>();for(const {a,b,normals:n} of edges.values())if(n.length!==2||n[0].reduce((sum,x,k)=>sum+x*n[1][k],0)<Math.cos(35*Math.PI/180))lines.add(lineKey(vertices[a],vertices[b]));return lines;
 }
-async function run(t:Triangle[],extra:Record<string,unknown>={}) { const dir=await mkdtemp(join(tmpdir(),'pi-web-edge-fixture-'));try{const source=join(dir,'input.stl'),destination=join(dir,'lines');await writeFile(source,binary(t));const result=generateEdges({source,destination,scratch:join(dir,'runs'),...extra});return {result,lines:lineSet(await readFile(destination))};}finally{await rm(dir,{recursive:true,force:true});} }
+async function run(t:Triangle[],extra:Record<string,unknown>={}) { const dir=await mkdtemp(join(tmpdir(),'pi-web-edge-fixture-'));try{const source=join(dir,'input.stl'),destination=join(dir,'lines');await writeFile(source,binary(t));const result=generateEdges({source,destination,scratch:join(dir,'runs'),...extra}),output=await readFile(destination);return {result,bytes:output.length,lines:lineSet(output)};}finally{await rm(dir,{recursive:true,force:true});} }
 const cube:Point[]=[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
 const cubeTriangles:Triangle[]=[[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]].map(t=>t.map(i=>cube[i]) as Triangle);
 const wedge=(degrees:number):Triangle[]=>[[[0,0,0],[1,0,0],[0,1,0]],[[1,0,0],[0,0,0],[0,-Math.cos(degrees*Math.PI/180),Math.sin(degrees*Math.PI/180)]]];
@@ -51,6 +51,21 @@ describe('bounded true source-face feature edges',()=>{
    nonmanifold: 29391, degenerate: 4118, records: 197646,
    scratchBytes: 14935896, workingBufferBytes: 30703616,
   });
+ });
+ it('retains boundary, crease, and nonmanifold edges when their source faces cross sorted runs',async()=>{
+  const a=wedge(90)[0],b=wedge(90)[1],filler:Triangle=[[100,100,0],[101,100,0],[100,101,0]];
+  const triangles=[a,...Array.from({length:69998},()=>filler),b];
+  // Three records per valid source triangle: A is in run 0 and B in run 1.
+  expect(Math.floor(0*3/196608)).not.toBe(Math.floor(69999*3/196608));
+  const {result,bytes,lines}=await run(triangles);
+  expect(result).toMatchObject({triangles:70000,records:210000,lines:8,boundaries:4,creases:1,nonmanifold:3,degenerate:0,scratchBytes:15120192});
+  expect(bytes).toBe(8*24);
+  const point=(p:Point)=>p.map(Math.fround);
+  expect(lines).toEqual(new Set([
+   lineKey(point(a[0]),point(a[1])),lineKey(point(a[1]),point(a[2])),lineKey(point(a[2]),point(a[0])),
+   lineKey(point(b[0]),point(b[1])),lineKey(point(b[1]),point(b[2])),lineKey(point(b[2]),point(b[0])),
+   lineKey(point(filler[0]),point(filler[1])),lineKey(point(filler[1]),point(filler[2])),lineKey(point(filler[2]),point(filler[0])),
+  ]));
  });
  it('rejects explicit scratch exhaustion instead of silently dropping edges',async()=>{await expect(run(cubeTriangles,{maxScratchBytes:10})).rejects.toThrow('scratch budget');});
  it('supports ASCII source and rejects malformed/nonfinite input',async()=>{const dir=await mkdtemp(join(tmpdir(),'pi-web-edge-ascii-'));try{const source=join(dir,'ascii.stl');await writeFile(source,'solid a\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid a');const out=generateEdges({source,destination:join(dir,'lines'),scratch:join(dir,'scratch')});expect(out.lines).toBe(3);await writeFile(source,Buffer.concat([binary(cubeTriangles),Buffer.from('junk')]));expect(()=>generateEdges({source,destination:join(dir,'bad'),scratch:join(dir,'bad-run')})).toThrow();}finally{await rm(dir,{recursive:true,force:true});}});
