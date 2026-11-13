@@ -65,7 +65,9 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await expect(upAxis).toHaveValue('z');
     await expect(upAxis).toBeInViewport();
     await upAxis.selectOption('y');
-    await infoMenu.locator('summary').tap();
+    await upAxis.press('Escape');
+    await expect(infoMenu).toHaveJSProperty('open', false);
+    await expect(infoMenu.locator('summary')).toBeFocused();
     const yUp = await canvas.screenshot();
     expect(yUp).not.toEqual(before);
     await infoMenu.locator('summary').tap();

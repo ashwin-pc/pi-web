@@ -580,11 +580,6 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
         for (const other of document.querySelectorAll("details"))
           if (other !== detail) other.open = false;
     });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape")
-      for (const detail of document.querySelectorAll("details"))
-        detail.open = false;
-  });
   new ResizeObserver(() => {
     if (ended) {
       render();
