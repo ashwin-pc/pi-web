@@ -1,38 +1,75 @@
 import { spawn } from "node:child_process";
 import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
 
-/** Bounded standalone equivalent of pi.exec, with owned POSIX process-group cleanup. */
-export const execLocal: PiWebExtensionAPI["exec"] = async (command, args, options = {}) => {
+export interface OwnedProcessOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  timeout?: number;
+  outputLimit?: number;
+  retention?: "head" | "tail";
+}
+export interface OwnedProcessResult {
+  stdout: string; stderr: string; output: string; truncated: boolean;
+  code: number | null; reason?: "cancelled" | "timed-out"; error?: Error;
+}
+
+/** Own only the freshly detached child's group, including descendants after leader exit.
+ * Deliberately re-sessioned descendants and abrupt host exit without awaited
+ * cancellation are outside this ownership boundary. */
+export async function runOwnedProcess(command: string, args: string[], options: OwnedProcessOptions = {}): Promise<OwnedProcessResult> {
   if (options.signal?.aborted) throw new Error("Execution cancelled before launch.");
-  if (process.platform === "win32") throw new Error("Standalone execution requires POSIX process groups.");
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "", code: number | null = null, spawnError: Error | undefined;
-    let stopped = false, killed = false, reason = "";
+  if (process.platform === "win32") throw new Error("Execution requires POSIX process groups.");
+  return new Promise(resolve => {
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const result: OwnedProcessResult = { stdout: "", stderr: "", output: "", truncated: false, code: null };
+    let stopping = false, finished = false;
     let escalation: ReturnType<typeof setTimeout> | undefined;
-    const kill = (signal: NodeJS.Signals) => { if (child.pid) try { process.kill(-child.pid, signal); } catch (error: any) { if (error.code !== "ESRCH") spawnError = error; } };
+    const limit = options.outputLimit ?? 65536;
+    const signalGroup = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, signal); } catch (error: any) { if (error.code !== "ESRCH") result.error ??= error; }
+    };
     const finish = () => {
-      clearTimeout(timer); if (escalation) clearTimeout(escalation);
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer); clearTimeout(escalation);
       options.signal?.removeEventListener("abort", cancel);
       child.stdout.destroy(); child.stderr.destroy();
-      if (reason) reject(new Error(reason));
-      else if (spawnError) reject(spawnError);
-      else resolve({ stdout, stderr, code: code ?? 1, killed });
+      resolve(result);
     };
     const cleanup = () => {
-      if (stopped) return;
-      stopped = true; clearTimeout(timer); kill("SIGTERM");
-      escalation = setTimeout(() => { kill("SIGKILL"); finish(); }, 250);
+      if (stopping) return;
+      stopping = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+      signalGroup("SIGTERM");
+      escalation = setTimeout(() => { signalGroup("SIGKILL"); finish(); }, 250);
     };
-    const cancel = () => { killed = true; reason = "Execution cancelled."; cleanup(); };
-    const timer = setTimeout(() => { killed = true; reason = "Execution timed out."; cleanup(); }, options.timeout ?? 180_000);
+    const cancel = () => { if (!stopping) { result.reason = "cancelled"; cleanup(); } };
+    const timer = setTimeout(() => { if (!stopping) { result.reason = "timed-out"; cleanup(); } }, options.timeout ?? 180_000);
+    const append = (existing: string, text: string) => options.retention === "tail" ? (existing + text).slice(-limit) : existing + text.slice(0, Math.max(0, limit - existing.length));
+    const collect = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      const text = chunk.toString();
+      if (result.output.length + text.length > limit) result.truncated = true;
+      result[stream] = append(result[stream], text);
+      result.output = append(result.output, text);
+    };
+    child.stdout.on("data", chunk => collect("stdout", chunk));
+    child.stderr.on("data", chunk => collect("stderr", chunk));
+    child.once("error", error => { result.error = error; cleanup(); });
+    child.once("exit", code => { result.code = code; cleanup(); });
     options.signal?.addEventListener("abort", cancel, { once: true });
-    child.stdout.on("data", chunk => { stdout = (stdout + chunk).slice(-65536); });
-    child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-65536); });
-    child.once("error", error => { spawnError = error; cleanup(); });
-    child.once("exit", value => { code = value; cleanup(); });
     if (options.signal?.aborted) cancel();
   });
+}
+
+/** Standalone pi.exec adapter preserves its rejection and bounded-tail contract. */
+export const execLocal: PiWebExtensionAPI["exec"] = async (command, args, options = {}) => {
+  const result = await runOwnedProcess(command, args, { ...options, retention: "tail" });
+  if (result.reason) throw new Error(result.reason === "cancelled" ? "Execution cancelled." : "Execution timed out.");
+  if (result.error) throw result.error;
+  return { stdout: result.stdout, stderr: result.stderr, code: result.code ?? 1, killed: false };
 };
 
 export function redactValue(value: unknown): unknown {

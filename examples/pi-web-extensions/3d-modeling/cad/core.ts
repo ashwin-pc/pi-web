@@ -72,9 +72,9 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_900_000) throw new CadError("--timeout-ms must be an integer from 1 to 3900000.", 2);
   const timeout = AbortSignal.timeout(timeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
+  let result: unknown;
   try {
     signal.throwIfAborted();
-    let result: unknown;
     switch (command) {
       case "discover": result = { reference: help(), fusion: { endpoint: fusionMcpUrl(), state: "not-probed", discover: "fusion capabilities" }, hunyuan: { configured: !!process.env.PI_HUNYUAN_COMFY_ROOT?.trim(), state: "not-probed", geometryOnly: true }, runtimes: await discover() }; break;
       case "runtime discover": result = await discover(); break;
@@ -125,7 +125,7 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
     return redactValue(result ?? null);
   } catch (error) {
     const remoteWarning = command.startsWith("fusion ") ? " Aborting transport does not cancel Fusion execution. Remote completion and document state are unknown; do not automatically retry mutation. Inspect Fusion before continuing." : " Local adapter cancellation was requested; inspect retained lifecycle evidence before assuming cleanup completed.";
-    const evidence = error instanceof CadError ? redactValue(error.result) : undefined;
+    const evidence = redactValue(error instanceof CadError && error.result !== undefined ? error.result : result);
     if (context.signal?.aborted) throw new CadError(`Modeling invocation cancelled.${remoteWarning}`, 130, evidence);
     if (timeout.aborted) throw new CadError(`Modeling invocation timed out.${remoteWarning}`, 124, evidence);
     if (command.startsWith("fusion ") && error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw new CadError(`Fusion transport interrupted.${remoteWarning}`, error.name === "TimeoutError" ? 124 : 130);

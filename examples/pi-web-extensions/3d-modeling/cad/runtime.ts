@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { resolveArtifactRead } from "../shared.js";
-import { redact } from "./process.js";
+import { redact, runOwnedProcess } from "./process.js";
 
 export interface RuntimeDescriptor {
   id: string;
@@ -24,11 +23,30 @@ export async function loadConfig(path = configPath()): Promise<ModelingConfig | 
   try { if ((await lstat(path)).size > 1024 * 1024) throw new Error("Configuration too large."); source = await readFile(path, "utf8"); } catch (error: any) { if (error.code === "ENOENT") return; throw new Error("Cannot read modeling configuration."); }
   let value: any;
   try { value = JSON.parse(source); } catch { throw new Error("Invalid modeling configuration JSON."); }
-  if (value?.version !== 1 || (!Array.isArray(value.runtimes) || value.runtimes.length > 64)) throw new Error("Expected modeling config version 1 and runtimes array.");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Modeling configuration: expected an object.");
+  if (value.version !== 1) throw new Error("version: expected modeling config version 1.");
+  if (!Array.isArray(value.runtimes) || value.runtimes.length > 64) throw new Error("runtimes: expected an array of at most 64 runtime descriptors.");
   const ids = new Set<string>();
-  for (const r of value.runtimes) {
-    if (!r || !/^[a-z][a-z0-9-]{0,63}$/.test(r.id) || ids.has(r.id) || typeof r.description !== "string" || r.description.length > 4096 || !isAbsolute(r.executable || "") || !Array.isArray(r.args) || r.args.length > 64 || !r.args.every((a: unknown) => typeof a === "string" && a.length <= 8192) || r.args.filter((a: string) => a === "{script}").length !== 1 || !/^\.[a-z0-9]+$/.test(r.scriptExtension || "") || (r.requiredPaths !== undefined && (!Array.isArray(r.requiredPaths) || r.requiredPaths.length > 64 || !r.requiredPaths.every((p: unknown) => typeof p === "string" && isAbsolute(p)))) || (r.timeoutMs !== undefined && (!Number.isInteger(r.timeoutMs) || r.timeoutMs < 1 || r.timeoutMs > 3_600_000))) throw new Error("Invalid modeling runtime descriptor.");
-    if (r.args.some((a: string) => /\{/.test(a) && !["{script}", "{artifacts}", "{run}"].includes(a))) throw new Error("Unknown runtime argument placeholder.");
+  for (const [index, r] of value.runtimes.entries()) {
+    const invalid = (field: string, message: string): never => { throw new Error(`runtimes[${index}]${field ? `.${field}` : ""}: ${message}`); };
+    if (!r || typeof r !== "object" || Array.isArray(r)) invalid("", "expected an object.");
+    if (typeof r.id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(r.id)) invalid("id", "expected a lowercase identifier (1–64 letters, digits or hyphens, starting with a letter).");
+    if (ids.has(r.id)) invalid("id", "duplicate runtime identifier.");
+    if (typeof r.description !== "string" || r.description.length > 4096) invalid("description", "expected a string of at most 4096 characters.");
+    const absolutePath = (p: unknown): p is string => typeof p === "string" && !p.includes("\0") && isAbsolute(p);
+    if (!absolutePath(r.executable)) invalid("executable", "expected an absolute path without NUL characters.");
+    if (!Array.isArray(r.args) || r.args.length > 64) invalid("args", "expected an array of at most 64 arguments.");
+    for (const [i, arg] of r.args.entries()) {
+      if (typeof arg !== "string" || arg.length > 8192 || arg.includes("\0")) invalid(`args[${i}]`, "expected a string of at most 8192 characters without NUL characters.");
+      if (/[{}]/.test(arg) && !["{script}", "{artifacts}", "{run}"].includes(arg)) invalid(`args[${i}]`, "unknown placeholder; placeholders must occupy the whole argument.");
+    }
+    if (r.args.filter((a: string) => a === "{script}").length !== 1) invalid("args", "expected exactly one {script} argument.");
+    if (typeof r.scriptExtension !== "string" || !/^\.[a-z0-9]+$/.test(r.scriptExtension)) invalid("scriptExtension", "expected a dot followed by lowercase letters or digits.");
+    if (r.requiredPaths !== undefined) {
+      if (!Array.isArray(r.requiredPaths) || r.requiredPaths.length > 64) invalid("requiredPaths", "expected an array of at most 64 absolute paths.");
+      for (const [i, p] of r.requiredPaths.entries()) if (!absolutePath(p)) invalid(`requiredPaths[${i}]`, "expected an absolute path without NUL characters.");
+    }
+    if (r.timeoutMs !== undefined && (!Number.isInteger(r.timeoutMs) || r.timeoutMs < 1 || r.timeoutMs > 3_600_000)) invalid("timeoutMs", "expected an integer from 1 to 3600000.");
     ids.add(r.id);
   }
   return value;
@@ -98,46 +116,16 @@ export async function executeModeling(cwd: string, input: ExecuteInput, signal?:
   if (busy.has(key(runtime))) throw new Error("This extension already owns an active run for that executable.");
   busy.add(key(runtime));
   const started = Date.now();
-  let output = "";
-  let truncated = false;
-  let reason: "cancelled" | "timed-out" | undefined;
-  let exitCode: number | null = null;
-  let failed = false;
   try {
-    await new Promise<void>(done => {
-      const child = spawn(runtime.executable, args, { cwd: run, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: homedir(), TMPDIR: process.env.TMPDIR ?? "/tmp", LANG: "C.UTF-8" } });
-      let cleanupStarted = false;
-      let finished = false;
-      let escalation: ReturnType<typeof setTimeout> | undefined;
-      // The detached child's PID identifies only our newly created process group.
-      // Never enumerate processes or target a pre-existing service.
-      const signalGroup = (sig: NodeJS.Signals) => {
-        if (!child.pid) return;
-        try { process.kill(-child.pid, sig); } catch (error: any) { if (error.code !== "ESRCH") failed = true; }
-      };
-      const cleanup = () => {
-        if (cleanupStarted) return;
-        cleanupStarted = true;
-        clearTimeout(timer);
-        signalGroup("SIGTERM");
-        escalation = setTimeout(() => { signalGroup("SIGKILL"); finish(); }, 250);
-      };
-      const stop = (why: typeof reason) => { reason ??= why; cleanup(); };
-      const cancel = () => stop("cancelled");
-      const timer = setTimeout(() => stop("timed-out"), timeout);
-      signal?.addEventListener("abort", cancel, { once: true });
-      if (signal?.aborted) cancel();
-      const collect = (data: Buffer) => { const text = data.toString(); const room = 256 * 1024 - output.length; output += text.slice(0, Math.max(0, room)); if (text.length > room) truncated = true; };
-      child.stdout.on("data", collect); child.stderr.on("data", collect);
-      // Always clean the group even when the leader exits normally: its descendants
-      // may still be computing or retaining pipes. Do not wait for pipe close.
-      child.once("exit", code => { exitCode = code; cleanup(); });
-      child.once("error", () => { failed = true; cleanup(); });
-      function finish() { if (finished) return; finished = true; clearTimeout(timer); if (escalation) clearTimeout(escalation); signal?.removeEventListener("abort", cancel); child.stdout.destroy(); child.stderr.destroy(); done(); }
+    const owned = await runOwnedProcess(runtime.executable, args, {
+      cwd: run, signal, timeout, outputLimit: 256 * 1024,
+      // Explicit allowlist: never spread the host environment or forward secrets.
+      env: { PATH: process.env.PATH ?? "", HOME: homedir(), TMPDIR: process.env.TMPDIR ?? "/tmp", LANG: "C.UTF-8" },
     });
-    const status = reason ?? (failed || exitCode !== 0 ? "failed" : "succeeded");
+    const { code: exitCode, truncated } = owned;
+    const status = owned.reason ?? (owned.error || exitCode !== 0 ? "failed" : "succeeded");
     const result = { id, runtime: runtime.id, reproducibility: { descriptor: { id: runtime.id, description: redact(runtime.description), executable: redact(runtime.executable), args: runtime.args.map(redact), scriptExtension: runtime.scriptExtension, requiredPaths: runtime.requiredPaths?.map(redact), timeoutMs: runtime.timeoutMs }, executable: redact(runtime.executable), args: args.map(redact), script: { source: redact(script.relative), snapshot: `/api/artifacts/modeling-runs/${id}/script${runtime.scriptExtension}`, sha256: scriptSha256 }, timeoutMs: timeout }, status, exitCode, elapsedMs: Date.now() - started, truncated, log: `/api/artifacts/modeling-runs/${id}/execution.log`, evidence: `/api/artifacts/modeling-runs/${id}/result.json`, note: "Process completion is not geometry validation. Owned POSIX process group receives SIGTERM then SIGKILL after 250ms, including after leader exit. Descendants that deliberately create new sessions escape this ownership boundary. Review generated artifacts separately." };
-    await writeFile(join(run, "execution.log"), redact(output), { flag: "wx", mode: 0o600 });
+    await writeFile(join(run, "execution.log"), redact(owned.output + (owned.error ? `\nProcess error: ${owned.error.message}` : "")), { flag: "wx", mode: 0o600 });
     await writeFile(join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx", mode: 0o600 });
     return result;
   } finally { busy.delete(key(runtime)); }

@@ -367,6 +367,27 @@ writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
       expect(JSON.parse(await readFile(join(root, "modeling-runs", result.id, "result.json"), "utf8")).status).toBe("cancelled");
     } finally { clearTimeout(timer); }
   });
+  it("preserves completed success evidence when caller aborts during normal group cleanup", async () => {
+    const { cwd, root } = await runtimeWorkspace();
+    await writeFile(join(root, "script.mjs"), "console.log('completed');\n");
+    const controller = new AbortController();
+    const kill = process.kill.bind(process);
+    // The shared runner removes its abort listener before sending SIGTERM on
+    // normal leader exit. Abort during that awaited grace period, not execution.
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid < 0 && signal === "SIGTERM") controller.abort();
+      return kill(pid, signal);
+    });
+    let failure: CadError | undefined;
+    try {
+      await runCad(["runtime", "exec", "--json", '{"runtime":"node","script":"script.mjs"}', "--allow-mutation"], { cwd, signal: controller.signal });
+    } catch (error) { expect(error).toBeInstanceOf(CadError); failure = error as CadError; }
+    expect(failure?.exitCode).toBe(130);
+    const result: any = failure?.result;
+    expect(result?.status).toBe("succeeded");
+    expect(result.log).toContain("execution.log");
+    expect(JSON.parse(await readFile(join(root, "modeling-runs", result.id, "result.json"), "utf8")).status).toBe("succeeded");
+  });
   it("rejects escaping run-directory symlinks without writing outside artifacts", async () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "script.mjs"), "console.log('no');\n");
     const outside = join(cwd, "outside"); await mkdir(outside); await symlink(outside, join(root, "modeling-runs"));
