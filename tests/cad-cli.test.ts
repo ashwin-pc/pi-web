@@ -223,6 +223,24 @@ async function cli(args: string[], cwd?: string, signalWhenReady?: string, launc
     for (const printerProfile of ["--evil", "name\nvalue"]) await expect(runCad(["slice", "--json", JSON.stringify({ input: "part.stl", output: "part.gcode", printerProfile })], { cwd, exec })).rejects.toThrow(/profile name is invalid/);
     expect(exec).not.toHaveBeenCalled();
   });
+  it("selects Hunyuan's full native budget by default and honors explicit invocation limits without loading a model", async () => {
+    const { cwd } = await workspace();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    // Invalid JSON stops dispatch before any adapter/model launch, after the
+    // invocation timeout has been selected.
+    for (const [args, expected] of [
+      [["hunyuan", "generate", "--json", "invalid"], 3_900_000],
+      [["hunyuan", "generate", "--json", "invalid", "--timeout-ms", "42"], 42],
+      [["slice", "--json", "invalid"], 1_800_000],
+    ] as const) {
+      timeout.mockClear();
+      await expect(runCad([...args], { cwd })).rejects.toMatchObject({ exitCode: 2 });
+      expect(timeout.mock.calls).toEqual([[expected]]);
+    }
+    const reference: any = await runCad(["help"], { cwd });
+    expect(reference.global).toContain("hunyuan generate defaults to 3900000");
+  });
+
   it("forwards network cancellation and reports invocation timeout", async () => {
     const { cwd } = await workspace();
     vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => new Promise((_resolve, reject) => {

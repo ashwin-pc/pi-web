@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ runCad: vi.fn(), sliceStl: vi.fn() }));
-vi.mock("../examples/pi-web-extensions/3d-modeling/cad/core.js", () => ({ runCad: mocks.runCad }));
+vi.mock("../examples/pi-web-extensions/3d-modeling/cad/core.js", async importOriginal => ({ ...await importOriginal<typeof import("../examples/pi-web-extensions/3d-modeling/cad/core.js")>(), runCad: mocks.runCad }));
+import { CadError } from "../examples/pi-web-extensions/3d-modeling/cad/core.js";
 vi.mock("../examples/pi-web-extensions/3d-modeling/slicing/prusa.js", () => ({ sliceStl: mocks.sliceStl }));
 import modelingExtension from "../examples/pi-web-extensions/3d-modeling/index.js";
 
@@ -38,6 +39,25 @@ describe("single CLI-backed modeling extension", () => {
     const { tools } = setup();
     mocks.runCad.mockRejectedValue(new Error("Mutation requires acknowledgement"));
     await expect(tools[0].execute("call", { args: ["fusion", "undo"] }, undefined, undefined, { cwd: "/workspace" })).rejects.toThrow("acknowledgement");
+  });
+
+  it("throws redacted failure evidence with retained paths and exit codes", async () => {
+    const { tools } = setup();
+    vi.stubEnv("MODELING_TEST_SECRET", "sensitive-evidence-value");
+    try {
+      const evidence = { id: "run-123", status: "failed", exitCode: 17, log: "/api/artifacts/modeling-runs/run-123/execution.log", result: "/api/artifacts/modeling-runs/run-123/result.json", diagnostics: ["sensitive-evidence-value", "Bearer private-access-value"] };
+      mocks.runCad.mockRejectedValue(new CadError("Backend failed: sensitive-evidence-value", 17, evidence));
+      try {
+        await tools[0].execute("call", { args: ["slice"] }, undefined, undefined, { cwd: "/workspace" });
+        throw new Error("Expected failure");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        const message = (error as Error).message;
+        expect(message).not.toContain("sensitive-evidence-value");
+        expect(message).not.toContain("private-access-value");
+        expect(JSON.parse(message)).toMatchObject({ ok: false, exitCode: 17, result: { ...evidence, diagnostics: ["[REDACTED]", "Bearer [REDACTED]"] } });
+      }
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("keeps STL/G-code previews and routes the Slice action to the canonical slicer", async () => {

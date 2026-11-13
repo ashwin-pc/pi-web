@@ -1,6 +1,7 @@
 import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
 import { Type } from "typebox";
-import { runCad } from "./cad/core.js";
+import { CadError, runCad } from "./cad/core.js";
+import { redact, redactValue } from "./cad/process.js";
 
 /** The optional agent surface uses exactly the standalone CLI's dispatcher. */
 export function registerModelingTool(pi: PiWebExtensionAPI) {
@@ -12,7 +13,17 @@ export function registerModelingTool(pi: PiWebExtensionAPI) {
       args: Type.Array(Type.String({ maxLength: 262144 }), { maxItems: 128, description: "CLI argument vector without executable. Example: ['fusion','read','--json','{\"queryType\":\"activeCommand\"}']. Use ['help'] for all commands and parameter contracts." }),
     }),
     async execute(_id, params, signal, _update, ctx) {
-      const result = await runCad(params.args, { cwd: ctx.cwd, signal, exec: pi.exec.bind(pi) });
+      let result: unknown;
+      try {
+        result = await runCad(params.args, { cwd: ctx.cwd, signal, exec: pi.exec.bind(pi) });
+      } catch (error) {
+        if (error instanceof CadError) {
+          // Throw, rather than returning successful content, while retaining the
+          // same diagnostic fields exposed by the standalone CLI.
+          throw new Error(JSON.stringify(redactValue({ ok: false, error: redact(error.message), exitCode: error.exitCode, ...(error.result !== undefined ? { result: error.result } : {}) })));
+        }
+        throw error;
+      }
       const serialized = JSON.stringify(result, null, 2);
       // Full structured output remains available to the host; keep advertised
       // discovery schemas from overwhelming the model's text context.

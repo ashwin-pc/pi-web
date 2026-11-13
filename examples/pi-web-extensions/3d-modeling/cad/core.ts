@@ -32,7 +32,7 @@ const COMMANDS = [
 ];
 
 function help(topic = "") {
-  return { name: "modeling", version: 1, invocation: "node /absolute/path/to/3d-modeling/cad.mjs <args>", sourceInvocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3600000, default 1800000); bounds the complete invocation, propagates cancellation. Aborting Fusion transport does NOT cancel remote execution: document state is unknown and mutation must not be automatically retried. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", scope: "CAD modeling and read-only MCP introspection. Optional marketing, purchase and media services are excluded; no arbitrary MCP RPC invocation is exposed.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python-exit-code", "1", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
+  return { name: "modeling", version: 1, invocation: "node /absolute/path/to/3d-modeling/cad.mjs <args>", sourceInvocation: "node --import tsx examples/pi-web-extensions/3d-modeling/cad/cli.ts <args>", request: { args: "string[] (identical CLI argv)" }, global: "--timeout-ms INTEGER (1–3900000, default 1800000; hunyuan generate defaults to 3900000 to cover its 3-minute startup + 1-hour generation budget and cleanup); bounds the complete invocation, propagates cancellation. Aborting Fusion transport does NOT cancel remote execution: document state is unknown and mutation must not be automatically retried. CLI success JSON to stdout; errors JSON to stderr only. Exit codes 0 success, 1 backend/configuration failure, 2 invalid arguments, 124 timeout, 130 cancellation.", artifacts: "Paths are relative to <cwd>/.pi/web/artifacts; traversal and escaping symlinks rejected. Fusion Python and configured runtimes are unsandboxed trusted code, not a security sandbox.", scope: "CAD modeling and read-only MCP introspection. Optional marketing, purchase and media services are excluded; no arbitrary MCP RPC invocation is exposed.", commands: COMMANDS.filter(c => !topic || c.command.startsWith(topic)), runtimeConfig: { version: 1, runtimes: [{ id: "blender", description: "Explicit locally installed Blender", executable: "/absolute/path/to/blender", args: ["--background", "--python-exit-code", "1", "--python", "{script}", "--", "{run}"], scriptExtension: ".py", requiredPaths: [], timeoutMs: 120000 }] } };
 }
 
 function parse(args: string[]) {
@@ -66,8 +66,10 @@ export async function runCad(args: string[], context: CadContext): Promise<unkno
   };
   if (!allowed[command]) throw new CadError("Unknown command; use help for the complete reference.", 2);
   if (Object.keys(flags).some(flag => flag !== "timeout-ms" && !allowed[command].includes(flag))) throw new CadError("Option is not valid for this command; use help.", 2);
-  const timeoutMs = flags["timeout-ms"] === undefined ? 1_800_000 : Number(flags["timeout-ms"]);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_600_000) throw new CadError("--timeout-ms must be an integer from 1 to 3600000.", 2);
+  // Hunyuan owns a 3-minute startup + 1-hour generation budget; allow
+  // another two minutes for setup/cleanup instead of truncating it at 30m.
+  const timeoutMs = flags["timeout-ms"] === undefined ? (command === "hunyuan generate" ? 3_900_000 : 1_800_000) : Number(flags["timeout-ms"]);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_900_000) throw new CadError("--timeout-ms must be an integer from 1 to 3900000.", 2);
   const timeout = AbortSignal.timeout(timeoutMs);
   const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
   try {
