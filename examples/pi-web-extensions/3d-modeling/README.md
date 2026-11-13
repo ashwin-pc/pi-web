@@ -54,6 +54,8 @@ Use short inspect → change → verify steps. Errors must propagate; do not sup
 
 ### Configured local runtimes
 
+Configured runtimes are an intentional part of the modeling workflow, not a replacement for bash. They give the portable skill a discoverable contract for installed applications such as Blender and give the tool and CLI the same script snapshot/hash, bounded redacted logs, result artifact and owned cancellation behavior. Backend-specific setup stays on the host rather than in prompts. Adapters provide those modeling-specific contracts around one shared local process manager; Hunyuan retains its specialized owned-ComfyUI lifecycle, and Fusion retains its remote-document semantics.
+
 `PI_MODELING_CONFIG` selects a trusted JSON file, otherwise `~/.pi/modeling.json` is used. Paths are host configuration, not skill instructions. Example:
 
 ```json
