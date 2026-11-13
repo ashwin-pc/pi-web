@@ -3,6 +3,7 @@ import { constants, statSync } from "node:fs";
 import { mkdtemp, open, rm, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PiWebArtifactDeriveOptions } from "../../src/extensions.js";
 import { HttpError } from "../shared/httpError.js";
 
 export const MAX_DERIVED_BYTES = 128 * 1024 * 1024;
@@ -59,7 +60,7 @@ export class ArtifactDerivations {
     return value;
   }
   async derive(token: string, sessionId: string, key: string, signal: AbortSignal,
-    invoke: (value: Selection, options: { signal: AbortSignal; destination: string }) => Promise<void>) {
+    invoke: (value: Selection, options: PiWebArtifactDeriveOptions) => Promise<void>) {
     const value = this.get(token, sessionId);
     if (value.key !== key || !value.source || !value.identity) throw new HttpError("Unselected artifact renderer", 403);
     if (value.running || this.running >= 2) throw new HttpError("Artifact generation is busy", 429);
@@ -80,7 +81,7 @@ export class ArtifactDerivations {
       const destination = join(directory, "output");
       timer = setTimeout(() => controller.abort(new Error("Artifact generation timed out")), this.timeoutMs);
       quota = setInterval(() => { void lstat(destination).then(s => { if (s.size > this.maxBytes) controller.abort(new Error("Derived artifact exceeds size limit")); }).catch(() => {}); }, 100);
-      work = Promise.resolve().then(() => invoke(value, { signal: controller.signal, destination }));
+      work = Promise.resolve().then(() => invoke(value, { signal: controller.signal, source: value.source!, destination }));
       const cancelled = new Promise<never>((_, reject) => {
         const fail = () => reject(controller.signal.reason || new Error("Artifact generation cancelled"));
         controller.signal.addEventListener("abort", fail, { once: true });

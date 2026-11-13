@@ -128,11 +128,14 @@ export type PiWebArtifactPreviewView = {
   artifactDerived?: true;
 };
 
-export type PiWebArtifactDerive = (artifact: PiWebArtifactContext, options: {
+export type PiWebArtifactDeriveOptions = {
   signal: AbortSignal;
+  /** Core-bound original input file. Consume this path, never re-resolve the artifact URL. Server-only. */
+  source: string;
   /** Core-owned private output file. Write here; never return a path or URL. */
   destination: string;
-}) => Promise<void>;
+};
+export type PiWebArtifactDerive = (artifact: PiWebArtifactContext, options: PiWebArtifactDeriveOptions) => Promise<void>;
 
 export type PiWebArtifactPreview = {
   title: string;

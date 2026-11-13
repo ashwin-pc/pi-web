@@ -34,7 +34,7 @@ describe("derived preview registrations", () => {
     ui.web.setArtifactPreview("stl", preview);
     const result = await bridge.invokeContribution(session, { slot: "artifact-preview", key: "stl", event: { context: artifact } }) as any;
     expect(result.artifactDerived).toBe(true); expect(result.registration).toBeTypeOf("string");
-    const options = { destination: "/private/output", signal: new AbortController().signal };
+    const options = { source: "/private/input", destination: "/private/output", signal: new AbortController().signal };
     await bridge.deriveArtifactPreview(session, { key: "stl", registration: result.registration, artifact }, options);
     expect(calls).toBe(1);
     await expect(bridge.deriveArtifactPreview(session, { key: "stl", registration: result.registration, artifact: { ...artifact, path: "/api/session-artifacts/two/model.stl" } }, options)).rejects.toThrow("Invalid artifact context");
@@ -58,7 +58,7 @@ describe("selected artifact derivations", () => {
   });
   it("owns the private destination and cleans successful output", async () => {
     const s = await setup(); s.bind(); let destination = "";
-    const output = await s.derive(async (_selection, options) => { destination = options.destination; await writeFile(destination, "edges"); });
+    const output = await s.derive(async (_selection, options) => { expect(options.source).toBe(s.source); destination = options.destination; await writeFile(destination, "edges"); });
     expect(await output.file.readFile("utf8")).toBe("edges"); expect(output.size).toBe(5);
     expect(destination).not.toContain(".pi/web/artifacts");
     await output.cleanup(); await expect(readFile(destination)).rejects.toThrow();
@@ -105,6 +105,15 @@ describe("selected artifact derivations", () => {
     const s = await setup(); const check = s.bind(); await writeFile(s.source, "modified");
     expect(check).toThrow("Source changed"); expect(s.bind).toThrow("Source changed");
     await expect(s.derive(async () => {})).rejects.toThrow("Source changed");
+  });
+  it("rejects a bound path replaced with a symlink during generation", async () => {
+    const s = await setup(); s.bind();
+    const replacement = join(s.source, "..", "replacement.stl");
+    await writeFile(replacement, "different");
+    await expect(s.derive(async (_selection, options) => {
+      await rm(s.source); await symlink(replacement, s.source);
+      await writeFile(options.destination, await readFile(options.source));
+    })).rejects.toThrow("Source changed");
   });
   it("rejects mutation during generation and cleans output", async () => {
     const s = await setup(); s.bind(); let destination = "";

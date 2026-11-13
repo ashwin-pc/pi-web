@@ -6,7 +6,7 @@ function previewRegistration(source: object) {
   return id;
 }
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactDeriveOptions, PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import type { AudioCapturePolicy, ValidatedAudioCapture } from "./captureStore.js";
 import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
@@ -920,7 +920,7 @@ async function bindWebExtensions(value: any) {
         ? { artifactDerived: true, registration: previewRegistration(preview) } : {}) };
   }
 
-  async function deriveArtifactPreview(value: any, input: { key: string; registration: string; artifact: { name: string; path: string; kind: string } }, options: { signal: AbortSignal; destination: string }) {
+  async function deriveArtifactPreview(value: any, input: { key: string; registration: string; artifact: { name: string; path: string; kind: string } }, options: PiWebArtifactDeriveOptions) {
     const { contribution } = renderedContribution(value, "artifact-preview", input.key);
     if (!contribution || previewRegistration(contribution.source) !== input.registration) throw new Error("Artifact preview registration changed");
     const artifact = cleanArtifactContext(input.artifact, String(value.sessionId || ""));
