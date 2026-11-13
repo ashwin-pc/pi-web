@@ -1,3 +1,5 @@
+import { mountArtifactStream, selectedArtifactUrl } from "./artifactStream.js";
+
 export type ArtifactPreviewKind = "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
 
 type ArtifactPreviewDescriptor = {
@@ -13,8 +15,10 @@ export type ArtifactContext = { name: string; path: string; kind: ArtifactPrevie
 
 export type ArtifactPreviewMountOptions = {
   title: string;
+  layout?: "inline" | "panel";
   className?: string;
   isCurrent?: () => boolean;
+  onFrameReady?: (frame: HTMLIFrameElement, surface: HTMLElement) => void;
 };
 
 let descriptors: ArtifactPreviewDescriptor[] = [];
@@ -61,7 +65,8 @@ export async function renderArtifactPreview(descriptor: ArtifactPreviewDescripto
   if (!response.ok || !data.ok || typeof data.html !== "string") {
     throw new Error(data.error || response.statusText || "Artifact preview failed");
   }
-  return { html: data.html as string, label: typeof data.label === "string" ? data.label : undefined };
+  return { html: data.html as string, artifactBytes: data.artifactBytes === true,
+    derivation: data.artifactDerived === true && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key, sessionId: sessionId() } : undefined, label: typeof data.label === "string" ? data.label : undefined };
 }
 
 export async function mountArtifactPreview(
@@ -71,13 +76,29 @@ export async function mountArtifactPreview(
 ) {
   const descriptor = matchingArtifactPreview(artifact.name, artifact.kind);
   if (!descriptor) return false;
-  const { html } = await renderArtifactPreview(descriptor, artifact);
-  if (options.isCurrent && !options.isCurrent()) return true;
+  const invokingSession = sessionId();
+  const { html, artifactBytes, derivation } = await renderArtifactPreview(descriptor, artifact);
+  if (sessionId() !== invokingSession || (options.isCurrent && !options.isCurrent())) return true;
   const frame = document.createElement("iframe");
   if (options.className) frame.className = options.className;
   frame.srcdoc = html;
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
-  host.replaceChildren(frame);
+  if (artifactBytes) {
+    mountArtifactStream(host, frame, selectedArtifactUrl(artifact.path, invokingSession), requestHeaders,
+      () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()), options.onFrameReady, options.layout, derivation, () => {
+        void mountArtifactPreview(host, artifact, options).catch(() => {
+          if (sessionId() === invokingSession && (!options.isCurrent || options.isCurrent())) {
+            host.replaceChildren();
+            const error = document.createElement("p");
+            error.textContent = "Preview could not be reopened. Close and reopen the artifact to try again.";
+            host.append(error);
+          }
+        });
+      });
+  } else {
+    host.replaceChildren(frame);
+    options.onFrameReady?.(frame, host);
+  }
   return true;
 }

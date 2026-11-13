@@ -1,4 +1,4 @@
-import { renderStandaloneMarkdown } from "../markdown/render.js";
+import { renderArtifactMarkdown } from "../markdown/artifact.js";
 import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
 import { mountImagePreview } from "./imagePreview.js";
 
@@ -413,7 +413,7 @@ export function initArtifactBrowser(options: {
       if (generation !== previewGeneration || activeEntry?.path !== entry.path) return;
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`;
       previewBody.textContent = "";
-      if (kind === "markdown") renderStandaloneMarkdown(previewBody, text);
+      if (kind === "markdown") renderArtifactMarkdown(previewBody, text);
       else { const pre = document.createElement("pre"); pre.textContent = text; previewBody.append(pre); }
     } catch (error) {
       if (generation !== previewGeneration) return;
@@ -456,10 +456,11 @@ export function initArtifactBrowser(options: {
       const isCurrent = () => generation === previewGeneration && activeEntry?.path === entry.path;
       void mountArtifactPreview(previewBody, { name: entry.name, path: url, kind }, {
         title: `Interactive preview of ${entry.name}`,
+        layout: "panel",
         isCurrent,
       }).then((mounted) => {
         if (!mounted) return renderTextPreview(entry, kind, generation);
-        if (isCurrent()) previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html";
+        if (isCurrent()) previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--extension";
       }).catch((error) => {
         if (isCurrent()) renderPreviewError(error instanceof Error ? error.message : String(error));
       });

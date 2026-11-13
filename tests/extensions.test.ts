@@ -180,7 +180,7 @@ describe("bundled extension path discovery", () => {
     await bridge.bind(session);
     ui.web.setArtifactPreview("gcode", {
       title: "G-code viewer", kinds: ["file"], extensions: [".gcode"],
-      render: ({ name }: { name: string }) => ({ html: `<!doctype html><title>${name}</title>` }),
+      render: ({ name }: { name: string }) => ({ html: `<!doctype html><title>${name}</title>`, artifactBytes: true }),
     });
 
     expect(bridge.entries(session).webContributions).toEqual([{
@@ -190,7 +190,11 @@ describe("bundled extension path discovery", () => {
     await expect(bridge.invokeContribution(session, {
       slot: "artifact-preview", key: "gcode",
       event: { context: { name: "part.gcode", path: "/api/session-artifacts/session/prints/part.gcode", kind: "file" } },
-    })).resolves.toMatchObject({ html: "<!doctype html><title>part.gcode</title>" });
+    })).resolves.toMatchObject({ html: "<!doctype html><title>part.gcode</title>", artifactBytes: true });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.gcode", path: "/api/session-artifacts/other/part.gcode", kind: "file" } },
+    })).rejects.toThrow();
     await expect(bridge.invokeContribution(session, {
       slot: "artifact-preview", key: "gcode",
       event: { context: { name: "part.stl", path: "/api/artifacts/part.stl", kind: "file" } },
