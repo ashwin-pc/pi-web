@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { stlEnvironment, stlFloorFactor, stlViewingBounds, stlViewingRotation } from "../examples/pi-web-extensions/3d-modeling/stl-environment.js";
 import { stlContribution } from "../examples/pi-web-extensions/3d-modeling/stl.js";
 
-async function harness(size: number, gpuError = 0, legacy = false) {
+async function harness(size: number, gpuError = 0, legacy = false, waitForIntent = false) {
   const result = await stlContribution(() => { throw Error("must not access file before consent"); }).render({ context: { name: "<mesh>.stl", path: "/api/artifacts/not-read.stl" } });
   expect(result).toHaveProperty("artifactBytes", true);
   const html = result.html;
@@ -34,6 +34,7 @@ async function harness(size: number, gpuError = 0, legacy = false) {
   vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)![1], { requestAnimationFrame: (fn: () => void) => {frame = fn;}, document: { createElement: element, body: { append() {} }, addEventListener() {}, querySelectorAll: () => [], querySelector: (s: string) => {if(s === "canvas") return canvas;if(s === "#status") return status;if(!controls.has(s)) controls.set(s,{value:s === '#material' ? 'ivory' : 'studio',checked:false,setAttribute() {}});return controls.get(s);} }, window: { addEventListener: (name: string, fn: any) => { events[name] = fn; if(name === "message") listeners.push(fn); } }, parent, devicePixelRatio: 1, ResizeObserver: class { observe() {} }, TextDecoder, Float32Array, Uint8Array, DataView, ArrayBuffer, performance });
   const dispatch = (data: any, ports: any[] = []) => { for(const listener of listeners)listener({source:parent,data,ports}); };
   dispatch({ type: "pi-artifact-stream", size, streamVersion: legacy ? 1 : 2 }, [port]);
+  if (!waitForIntent && size <= 20 * 1024 * 1024) uiElements[0].querySelector('.stl-load').onclick();
   let nextChunk = 0;
   return { dispatch, send: (data: any) => port.onmessage({ data: data.type === "chunk" ? {id:nextChunk++, ...data} : data }), messages, portEvents, uiElements, uploads, status, canvas, values, drawn, deleted, events, canvasEvents, controls, draw: () => { const fn = frame; frame = undefined; fn?.(); } };
 }
@@ -43,6 +44,15 @@ function binary(triangles: number) {
   return b;
 }
 describe("full-detail STL stream", () => {
+  it("small previews wait for explicit Load without a large-model warning or GPU setup", async () => {
+    const h = await harness(755084, 0, false, true);
+    expect(h.messages).toEqual([{ type: 'connected' }]);
+    expect(h.controls.has('#outlines')).toBe(false);
+    expect(h.uploads).toHaveLength(0);
+    expect(h.uiElements[0].querySelector('.stl-warning').hidden).toBe(true);
+    h.uiElements[0].querySelector('.stl-load').onclick();
+    expect(h.messages.at(-1)).toEqual({ type: 'ready', streamVersion: 2 });
+  });
   it("owns large-file consent and sends boot connection before an arbitrarily long user decision", async () => {
     const h = await harness(207486284);
     expect(h.messages).toEqual([{ type: "connected" }]);

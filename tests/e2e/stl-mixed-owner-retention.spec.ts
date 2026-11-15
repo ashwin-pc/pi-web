@@ -50,6 +50,9 @@ test('mixed thinking and artifact text retains its live document during real out
     await page.goto(origin + '/?sessionId=' + sessionId);
     const owner = page.locator('.message.assistant[data-entry-id="artifact-owner"]');
     const card = owner.locator('.artifactPreview'), iframe = card.locator('iframe'), runtime = iframe.contentFrame();
+    await card.locator('.artifactPreviewShield').click();
+    await runtime.getByRole('button', { name: 'Load 3D preview', exact: true }).click();
+    await page.locator('#prompt').click();
     await expect(runtime.locator('#status')).toHaveText('Full detail · 108 triangles');
     const identity = await iframe.elementHandle();
     await page.exposeFunction('recordPreviewLifecycle', (event: string) => {
@@ -102,6 +105,9 @@ test('mixed thinking and artifact text retains its live document during real out
     await expect(card.getByText('Preview closed', { exact: true })).toBeVisible();
     await expect(card.getByText(/GPU context lost/)).toHaveCount(0);
     await card.getByRole('button', { name: 'Open again', exact: true }).click();
+    await card.locator('.artifactPreviewShield').click();
+    await runtime.getByRole('button', { name: 'Load 3D preview', exact: true }).click();
+    await page.locator('#prompt').click();
     await expect(runtime.locator('#status')).toHaveText('Full detail · 108 triangles');
     expect(sources).toBe(2);
 

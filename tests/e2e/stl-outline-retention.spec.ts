@@ -6,8 +6,10 @@ import { AuthStore, hashSecret, randomSecret } from '../../server/auth/kernel.js
 import { bootstrapStlPage, isolatedStlEnv, reserveStlOrigin, startOwnedStlServer } from './helpers/owned-stl-server.js';
 import { stlViewingRotation } from '../../examples/pi-web-extensions/3d-modeling/stl-environment.js';
 
-test('real outline derivation and activity regrouping retain the iframe document, camera and source', async ({ browser }, info) => {
-  test.skip(info.project.name !== 'desktop');
+test.use({ launchOptions: { args: ['--max-active-webgl-contexts=8'] } });
+
+test('twelve on-demand previews and real outline derivation and activity regrouping retain the iframe document, camera and source', async ({ browser }, info) => {
+  test.skip(!['desktop', 'mobile'].includes(info.project.name));
   test.setTimeout(120_000);
   const { port, origin } = await reserveStlOrigin();
   const dir = await mkdtemp(join(tmpdir(), 'pi-web-outline-retention-'));
@@ -24,6 +26,14 @@ test('real outline derivation and activity regrouping retain the iframe document
   await writeFile(join(sessionDir, `2026-11-09T02-00-00-000Z_${sessionId}.jsonl`), [
     { type: 'session', version: 3, id: sessionId, timestamp: '2026-11-09T02:00:00.000Z', cwd: workspace }, ...entries,
   ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  const ownerEntry = entries.find((entry: any) => entry.id === 'artifact-owner');
+  for (let i = 1; i < 12; i++) {
+    await copyFile(join(fixture, 'hook-cover.stl'), join(workspace, `.pi/web/artifacts/idle-${i}.stl`));
+    ownerEntry.message.content.push({ type: 'text', text: `[idle-${i}.stl](/api/artifacts/idle-${i}.stl)` });
+  }
+  await writeFile(join(sessionDir, `2026-11-09T02-00-00-000Z_${sessionId}.jsonl`), [
+    { type: 'session', version: 3, id: sessionId, timestamp: '2026-11-09T02:00:00.000Z', cwd: workspace }, ...entries,
+  ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
   const settings = join(dir, 'settings.json');
   await writeFile(settings, JSON.stringify({ appearance: { density: 'minimal' } }));
   const token = randomSecret();
@@ -31,17 +41,38 @@ test('real outline derivation and activity regrouping retain the iframe document
     state.config = { policy: 'authenticated', methods: [] };
     state.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + 120_000 };
   });
-  const context = await browser.newContext({ viewport: { width: 1100, height: 1000 }, serviceWorkers: 'block' });
+  const context = await browser.newContext({ viewport: { width: info.project.name === 'mobile' ? 393 : 1100, height: 1000 }, isMobile: info.project.name === 'mobile', hasTouch: info.project.name === 'mobile', serviceWorkers: 'block' });
   const server = startOwnedStlServer({ ...await isolatedStlEnv(dir), PI_WEB_HOME: home, PI_CODING_AGENT_DIR: agent,
       PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin,
       PI_WEB_CWD: workspace, PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port),
       PI_WEB_SETTINGS_FILE: settings, PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, dir, Math.min(30_000, info.timeout / 3));
   try {
     await server.ready();
+    await context.addInitScript(() => {
+      const original = HTMLCanvasElement.prototype.getContext;
+      const contexts = new WeakSet<object>();
+      HTMLCanvasElement.prototype.getContext = function (...args: any[]) {
+        const result = (original as any).apply(this, args);
+        if (result && String(args[0]).startsWith('webgl') && !contexts.has(result)) {
+          contexts.add(result);
+          parent.postMessage({ stlContextProbe: true }, '*');
+          this.addEventListener('webglcontextlost', () => parent.postMessage({ stlContextLost: true }, '*'));
+        }
+        return result;
+      } as typeof original;
+      if (window === parent) {
+        (window as any).stlContexts = 0;
+        (window as any).stlContextLosses = 0;
+        window.addEventListener('message', event => {
+          if (event.data?.stlContextProbe) (window as any).stlContexts++;
+          if (event.data?.stlContextLost) (window as any).stlContextLosses++;
+        });
+      }
+    });
     const page = await context.newPage();
     let fullSources = 0, derivatives = 0, refreshes = 0;
     page.on('request', request => {
-      if (request.url().endsWith('/hook-cover.stl') && !request.headers().range) fullSources++;
+      if (request.url().endsWith('.stl') && !request.headers().range) fullSources++;
       if (request.url().endsWith('/api/web-contributions/artifact-derived')) derivatives++;
       if (request.url().includes('/api/messages?')) refreshes++;
     });
@@ -50,8 +81,21 @@ test('real outline derivation and activity regrouping retain the iframe document
     await page.goto(origin + '/?sessionId=' + sessionId);
     await expect(page.locator('html')).toHaveAttribute('data-density', 'minimal');
     const owner = page.locator('.message.assistant[data-entry-id="artifact-owner"]');
-    const card = owner.locator('.artifactPreview'), iframe = card.locator('iframe'), runtime = iframe.contentFrame();
+    await expect(owner.locator('.artifactPreview iframe')).toHaveCount(12);
+    const card = owner.locator('.artifactPreview').first(), iframe = card.locator('iframe'), runtime = iframe.contentFrame();
+    for (const preview of await owner.locator('.artifactPreview').all()) {
+      await expect(preview.locator('iframe').contentFrame().getByRole('button', { name: 'Load 3D preview', exact: true })).toBeVisible();
+    }
+    expect(await page.evaluate(() => (window as any).stlContexts)).toBe(0);
+    await mkdir('.pi/web/artifacts/mobile-on-demand', { recursive: true });
+    await card.screenshot({ path: `.pi/web/artifacts/mobile-on-demand/${info.project.name}-before-load.png` });
+    await expect(runtime.getByRole('button', { name: 'Load 3D preview', exact: true })).toBeVisible();
+    expect(fullSources).toBe(0);
+    await card.locator('.artifactPreviewShield').click();
+    await runtime.getByRole('button', { name: 'Load 3D preview', exact: true }).click();
+    await page.locator('#prompt').click();
     await expect(runtime.locator('#status')).toHaveText('Full detail · 108 triangles');
+    expect(await page.evaluate(() => (window as any).stlContexts)).toBe(1);
     const identity = await iframe.elementHandle();
     await identity!.evaluate(element => {
       (element as HTMLIFrameElement & { loads: number }).loads = 0;
@@ -100,6 +144,8 @@ test('real outline derivation and activity regrouping retain the iframe document
       await expect(runtime.getByRole('checkbox', { name: 'Feature outlines' })).toBeChecked();
       await expect(runtime.locator('#waiting')).toBeHidden();
       expect(fullSources).toBe(1); expect(derivatives).toBe(1);
+      expect(await page.evaluate(() => (window as any).stlContexts)).toBe(1);
+      expect(await page.evaluate(() => (window as any).stlContextLosses)).toBe(0);
     };
     await assertRetained();
     await runtime.getByRole('checkbox', { name: 'Feature outlines' }).uncheck();
@@ -114,6 +160,7 @@ test('real outline derivation and activity regrouping retain the iframe document
       await assertRetained();
       await expect(page.locator('.activitySummary')).toHaveCount(density === 'minimal' ? 1 : 0);
     }
+    await card.screenshot({ path: `.pi/web/artifacts/mobile-on-demand/${info.project.name}-loaded-outlines.png` });
     await mkdir('.pi/web/artifacts/stl-outline-reset-followup', { recursive: true });
     await card.screenshot({ path: '.pi/web/artifacts/stl-outline-reset-followup/real-derive-after.png' });
   } finally {

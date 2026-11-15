@@ -45,7 +45,7 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await page.locator('#prompt').fill('show gcode artifact');
     await page.locator('#promptForm').evaluate((f: HTMLFormElement) => f.requestSubmit());
     const card = page.locator('.artifactPreview--file').last();
-    if ((realSize || bytes.length) > 20 * 1024 * 1024) { await card.locator('.artifactPreviewShield').tap(); await card.locator('iframe').contentFrame().getByRole('button', { name: 'Load full model', exact: true }).click(); await page.locator('#prompt').tap(); }
+    { await card.locator('.artifactPreviewShield').tap(); await card.locator('iframe').contentFrame().getByRole('button', { name: 'Load 3D preview', exact: true }).click(); await page.locator('#prompt').tap(); }
     await expect(card.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/, { timeout: 90_000 });
     const shield = card.locator('.artifactPreviewShield');
     await expect(shield).toBeVisible();
@@ -102,13 +102,11 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     // Open in Artifacts is intentionally a separate mount today, not a cache.
     await card.getByRole('button', { name: 'Open in Artifacts panel' }).evaluate((button: HTMLButtonElement) => button.click());
     const panel = page.locator('#artifactBrowserPreviewBody');
-    if (realSize) {
-      await expect(panel.locator('iframe').contentFrame().getByRole('button', { name: 'Load full model', exact: true })).toBeVisible();
-      expect(full).toBe(1); // A second mount must still ask consent.
-    } else {
-      await expect(panel.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/);
-      expect(full).toBe(2);
-    }
+    await expect(panel.locator('iframe').contentFrame().getByRole('button', { name: 'Load 3D preview', exact: true })).toBeVisible();
+    expect(full).toBe(1); // Every separate mount requires intent, regardless of size.
+    await panel.locator('iframe').contentFrame().getByRole('button', { name: 'Load 3D preview', exact: true }).click();
+    await expect(panel.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/, { timeout: 90_000 });
+    expect(full).toBe(2);
     expect(probes).toBe(2);
     await panel.locator('iframe').contentFrame().getByRole('button', { name: 'Unload model', exact: true }).click();
     await expect(panel.locator('iframe')).toHaveCount(0);
@@ -125,6 +123,8 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     }
     await panel.getByRole('button', {name:'Open again',exact:true}).click();
     await expect(panel.locator('iframe')).toBeVisible();
+    await panel.locator('iframe').contentFrame().getByRole('button',{name:'Load 3D preview',exact:true}).click();
+    await expect(panel.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/);
     await page.screenshot({path:'.pi/web/artifacts/stl-panel-desktop-ready.png'});
     await page.setViewportSize({width:393,height:900}); await page.screenshot({path:'.pi/web/artifacts/stl-panel-mobile-ready.png'});
     await panel.locator('iframe').contentFrame().getByRole('button',{name:'Unload model',exact:true}).click();
@@ -134,7 +134,7 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     const fullBeforeDecision = full;
     // Boot is bounded, but a real user's consent decision may take >15s.
     await page.waitForTimeout(16_000);
-    await expect(panel.locator('iframe').contentFrame().getByRole('button', {name:'Load full model',exact:true})).toBeVisible();
+    await expect(panel.locator('iframe').contentFrame().getByRole('button', {name:'Load 3D preview',exact:true})).toBeVisible();
     expect(full).toBe(fullBeforeDecision);
 
     for(const width of [393,1440]) { await page.setViewportSize({width,height:900}); await page.screenshot({path:`.pi/web/artifacts/stl-panel-${width}-consent.png`}); const boxes=await panel.locator('iframe').contentFrame().locator('.stl-stream-card').evaluate(el=>{const b=el.getBoundingClientRect();return Math.abs((innerWidth-b.left-b.right)/2);});expect(boxes).toBeLessThan(2); }

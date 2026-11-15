@@ -10,7 +10,7 @@ test('original Y-up ground and grid disappear from the bottom without changing s
   await page.locator('iframe').evaluate((el: HTMLIFrameElement, html) => { el.srcdoc = html; }, html);
   const frame = page.frameLocator('iframe');
   await expect(frame.locator('canvas')).toBeVisible();
-  await page.evaluate(async () => {
+  const streamed = page.evaluate(async () => {
     const bytes = new ArrayBuffer(284), data = new DataView(bytes); data.setUint32(80, 4, true);
     const faces = [[0,0,0,1,0,0,0,1,0],[0,0,0,0,0,1,1,0,0],[0,0,0,0,1,0,0,0,1],[1,0,0,0,0,1,0,1,0]];
     faces.forEach((f,i) => f.forEach((v,j) => data.setFloat32(84+i*50+12+j*4,v,true)));
@@ -21,6 +21,8 @@ test('original Y-up ground and grid disappear from the bottom without changing s
     });
   });
   const canvas = frame.locator('canvas');
+  await frame.getByRole('button',{name:'Load 3D preview',exact:true}).click();
+  await streamed;
   await expect(frame.locator('#status')).toHaveText('Full detail · 4 triangles');
   await canvas.screenshot({path:'.pi/web/artifacts/stl-ground-isometric.png'});
   const cdp=await page.context().newCDPSession(page);

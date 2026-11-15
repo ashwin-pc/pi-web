@@ -2,7 +2,7 @@
 function createStlStreamUI(port, size) {
   const overlay = document.createElement("section");
   overlay.className = "stl-stream-overlay";
-  overlay.innerHTML = `<div class="stl-stream-card"><h2>Open full-detail 3D preview</h2><p>See the original mesh, without simplification.</p><p class="stl-size"></p><p class="stl-warning">This large model needs substantial GPU and browser memory—several times the source size. It may slow down or crash this tab. Only its size has been checked so far.</p><progress max="100" hidden aria-label="Source bytes decoded"></progress><div><button class="stl-load">Load full model</button><button class="stl-stop">Not now</button></div></div>`;
+  overlay.innerHTML = `<div class="stl-stream-card"><h2>Open full-detail 3D preview</h2><p>See the original mesh, without simplification.</p><p class="stl-size"></p><p class="stl-warning">This large model needs substantial GPU and browser memory—several times the source size. It may slow down or crash this tab. Only its size has been checked so far.</p><progress max="100" hidden aria-label="Source bytes decoded"></progress><div><button class="stl-load">Load 3D preview</button><button class="stl-stop">Not now</button></div></div>`;
   document.body.append(overlay);
   const title = overlay.querySelector("h2"),
     status = overlay.querySelector("p"),
@@ -12,6 +12,7 @@ function createStlStreamUI(port, size) {
     load = overlay.querySelector(".stl-load"),
     stop = overlay.querySelector(".stl-stop");
   meta.textContent = `${(size / 1048576).toFixed(1)} MiB · exact source geometry`;
+  warning.hidden = size <= 20 * 1024 * 1024;
   stop.onclick = () => port.postMessage({ type: "release" });
   let received = 0, started;
   return {
@@ -28,7 +29,8 @@ function createStlStreamUI(port, size) {
         ready();
       };
       load.onclick = begin;
-      if (size <= 20 * 1024 * 1024) begin();
+      // All previews require intent: historical cards must not allocate a GPU
+      // context or request the full source merely because they are visible.
     },
     progress(bytes, metrics) {
       received += bytes;
