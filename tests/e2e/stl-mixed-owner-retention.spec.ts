@@ -90,6 +90,31 @@ test('mixed thinking and artifact text retains its live document during real out
     expect({ sources, derivatives, pagehides, contextLosses }).toEqual({ sources: 1, derivatives: 1, pagehides: 0, contextLosses: 0 });
     await expect(page.locator('.toolCard').filter({ hasText: 'Fixture ordinary thinking before artifact' })).toHaveCount(1);
     console.log('mixed-outline-retention', JSON.stringify({ sources, derivatives, pagehides, contextLosses, refreshes }));
+
+    // Synthetic lifecycle coverage, not evidence of real-device BFCache behavior.
+    // Restored documents must offer a neutral reopen, not mislabel our own
+    // pagehide GPU disposal as an unsolicited graphics failure.
+    await runtime.locator('body').evaluate(() => {
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await expect(iframe).toHaveCount(0);
+    await expect(card.getByText('Preview closed', { exact: true })).toBeVisible();
+    await expect(card.getByText(/GPU context lost/)).toHaveCount(0);
+    await card.getByRole('button', { name: 'Open again', exact: true }).click();
+    await expect(runtime.locator('#status')).toHaveText('Full detail · 108 triangles');
+    expect(sources).toBe(2);
+
+    // Loss not initiated by runtime disposal must still reach visible recovery.
+    await runtime.locator('canvas').evaluate(canvas => {
+      const gl = (canvas as HTMLCanvasElement).getContext('webgl2')!;
+      const extension = gl.getExtension('WEBGL_lose_context');
+      if (!extension) throw Error('WEBGL_lose_context unavailable for loss injection');
+      extension.loseContext();
+    });
+    await expect(iframe).toHaveCount(0);
+    await expect(card.getByText('Preview could not be opened', { exact: true })).toBeVisible();
+    await expect(card.getByText('GPU context lost. Try opening the preview again, or download the original.', { exact: true })).toBeVisible();
   } finally {
     try { await context.close(); } finally { await server.close(); }
   }

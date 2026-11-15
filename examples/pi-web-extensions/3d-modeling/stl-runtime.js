@@ -27,6 +27,7 @@ function initializeStlRenderer(sourceEvent, streamUI) {
     render();
   };
   let failed = false,
+    disposed = false,
     scheduled = false;
   const error = (e) => {
     if (failed) return;
@@ -317,7 +318,7 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
 
   const draw = () => {
     scheduled = false;
-    if (!ended || failed) return;
+    if (!ended || failed || disposed) return;
     const { angle, pan, zoom } = camera.snapshot();
     const d = devicePixelRatio || 1,
       w = canvas.clientWidth,
@@ -547,6 +548,7 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
     port?.postMessage({ type: "derive" });
   };
   canvas.addEventListener("webglcontextlost", (event) => {
+    if (disposed) return;
     event.preventDefault();
     error(
       Error(
@@ -585,7 +587,12 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
     }
   }).observe(canvas);
   window.addEventListener("pagehide", () => {
+    if (disposed) return;
+    // Even a BFCache document releases its GPU resources. The host owns the
+    // neutral reopen state; our intentional loss is not a GPU failure.
+    disposed = true;
     port?.postMessage({ type: "derive-cancel" });
+    port?.postMessage({ type: "release" });
     clearEdges();
     for (const entry of buffers) gl.deleteBuffer(entry.buffer);
     for (const mesh of [box, ground, grid, shadow])

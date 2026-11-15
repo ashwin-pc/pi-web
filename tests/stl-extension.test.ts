@@ -10,20 +10,21 @@ async function harness(size: number, gpuError = 0, legacy = false) {
   const html = result.html;
   expect(html).toContain("&lt;mesh&gt;");
   expect(Buffer.byteLength(html)).toBeLessThan(1_000_000);
-  const messages: any[] = [], uploads: Float32Array[] = [], drawn: number[] = [], deleted: number[] = [];
+  const messages: any[] = [], uploads: Float32Array[] = [], drawn: number[] = [], deleted: number[] = [], portEvents: string[] = [];
   const values: Record<string, any> = {}, events: Record<string, any> = {}, canvasEvents: Record<string, any> = {}, controls = new Map<string, any>();
   const listeners: ((event: any) => void)[] = []; let frame: (() => void) | undefined, bufferId = 0;
   const gl = new Proxy({ getShaderParameter: () => true, getProgramParameter: () => true, getError: () => gpuError, isContextLost: () => false, NO_ERROR: 0,
     getUniformLocation: (_: any, name: string) => name, getUniform: (_: any, name: string) => values[name],
     uniformMatrix3fv: (name: string, _: boolean, value: Float32Array) => {values[name]=[...value];if(name==="r")(values.rCalls??=[]).push([...value]);}, uniform3f: (name: string,...value:number[])=>{values[name]=value;},
     uniform2fv: (name: string, value: number[]) => {values[name] = [...value];}, uniform1f: (name: string, value: number) => {values[name] = value;},
-    createBuffer: () => ++bufferId, deleteBuffer: (id: number) => deleted.push(id), getExtension: () => null,
+    createBuffer: () => ++bufferId, deleteBuffer: (id: number) => deleted.push(id),
+    getExtension: (name: string) => name === "WEBGL_lose_context" ? { loseContext: () => canvasEvents.webglcontextlost?.({ preventDefault() {} }) } : null,
     drawArrays: (_: any, __: any, count: number) => drawn.push(count),
     bufferData: (_: any, data: Float32Array) => uploads.push(new Float32Array(data)) }, { get(target, key) { return (target as any)[key] ?? (() => 1); } });
   const canvas = { getContext: () => gl, addEventListener(name: string, fn: any) {canvasEvents[name] = fn;}, clientWidth: 600, clientHeight: 400, focus() {}, setPointerCapture() {} } as any;
   const status = { textContent: "" };
   const parent = {};
-  const port = { close() {}, postMessage: (m: any) => messages.push(m), onmessage: undefined as any };
+  const port = { close() { portEvents.push("close"); }, postMessage: (m: any) => { portEvents.push(m.type); messages.push(m); }, onmessage: undefined as any };
   const uiElements: any[] = [];
   const element = () => {
     const children = new Map();
@@ -34,7 +35,7 @@ async function harness(size: number, gpuError = 0, legacy = false) {
   const dispatch = (data: any, ports: any[] = []) => { for(const listener of listeners)listener({source:parent,data,ports}); };
   dispatch({ type: "pi-artifact-stream", size, streamVersion: legacy ? 1 : 2 }, [port]);
   let nextChunk = 0;
-  return { dispatch, send: (data: any) => port.onmessage({ data: data.type === "chunk" ? {id:nextChunk++, ...data} : data }), messages, uiElements, uploads, status, canvas, values, drawn, deleted, events, canvasEvents, controls, draw: () => { const fn = frame; frame = undefined; fn?.(); } };
+  return { dispatch, send: (data: any) => port.onmessage({ data: data.type === "chunk" ? {id:nextChunk++, ...data} : data }), messages, portEvents, uiElements, uploads, status, canvas, values, drawn, deleted, events, canvasEvents, controls, draw: () => { const fn = frame; frame = undefined; fn?.(); } };
 }
 function binary(triangles: number) {
   const b = Buffer.alloc(84 + triangles * 50); b.writeUInt32LE(triangles, 80);
@@ -148,6 +149,24 @@ describe("full-detail STL stream", () => {
     const lastScale=h.values.scale;h.canvas.onpointermove({pointerId:2,clientX:500,clientY:500});h.draw();expect(h.values.scale).toBe(lastScale);
     expect(h.uploads).toHaveLength(uploads);
   });
+  it.each([false, true])("releases pagehide (persisted=%s) before closing without reporting intentional context loss", async persisted => {
+    const b = binary(1), h = await harness(b.length);
+    h.send({ type: 'chunk', bytes: Uint8Array.from(b).buffer }); h.send({ type: 'end' }); h.draw();
+    const status = h.status.textContent;
+    h.events.pagehide({ persisted });
+    // The mock loseContext dispatches synchronously: disposal must be marked first.
+    expect(h.messages.slice(-2)).toEqual([{ type: 'derive-cancel' }, { type: 'release' }]);
+    expect(h.portEvents.slice(-2)).toEqual(['release', 'close']);
+    expect(h.messages.some(message => message.type === 'error')).toBe(false);
+    expect(h.status.textContent).toBe(status);
+    expect(h.deleted).toHaveLength(9);
+    // A cached document is not resumed: the host owns neutral reopen recovery.
+    h.events.pageshow?.({ persisted: true });
+    h.events.pagehide({ persisted: false });
+    expect(h.messages.filter(message => message.type === 'release')).toHaveLength(1);
+    expect(h.deleted).toHaveLength(9);
+  });
+
   it("reports context loss as an error and deletes uploaded mesh buffers", async () => {
     const b=binary(1),h=await harness(b.length);h.send({type:'chunk',bytes:Uint8Array.from(b).buffer});h.send({type:'end'});
     h.canvasEvents.webglcontextlost({preventDefault() {}});expect(h.messages.at(-1)).toMatchObject({type:'error'});expect(h.status.textContent).toContain('GPU context lost');expect(h.deleted).toHaveLength(9);
