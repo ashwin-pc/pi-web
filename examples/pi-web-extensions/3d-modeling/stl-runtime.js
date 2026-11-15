@@ -95,7 +95,9 @@ void main() {
     color = vec4(.015, .015, .015, 1);
     return;
   }
-  float d = abs(dot(normalize(normal), normalize(vec3(.35, .55, .8))));
+  float normalLengthSquared = dot(normal, normal);
+  vec3 unitNormal = normalLengthSquared > 0.0 ? normal * inversesqrt(normalLengthSquared) : vec3(0.0);
+  float d = abs(dot(unitNormal, normalize(vec3(.35, .55, .8))));
   vec3 base = vec3(.68);
   color = vec4(base * (.58 + .42 * d), alpha);
 }`,
@@ -181,7 +183,15 @@ void main() {
     let nx = uy * vz - uz * vy,
       ny = uz * vx - ux * vz,
       nz = ux * vy - uy * vx;
-    // Preserve the original flat shader input: unnormalised face cross product.
+    // Normalize in CPU double precision before Float32 upload. Raw face areas
+    // can overflow/underflow mediump fragment arithmetic on mobile GPUs.
+    const normalLength = Math.hypot(nx, ny, nz);
+    if (normalLength > 0) {
+      nx /= normalLength;
+      ny /= normalLength;
+      nz /= normalLength;
+    }
+    // Zero-area triangles remain present with a zero normal.
     bounds[0] = Math.min(bounds[0], ax, bx, cx);
     bounds[1] = Math.min(bounds[1], ay, by, cy);
     bounds[2] = Math.min(bounds[2], az, bz, cz);

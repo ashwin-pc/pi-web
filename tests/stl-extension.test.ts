@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import vm from "node:vm";
+import { readFile } from "node:fs/promises";
 import { stlEnvironment, stlFloorFactor, stlViewingBounds, stlViewingRotation } from "../examples/pi-web-extensions/3d-modeling/stl-environment.js";
 import { stlContribution } from "../examples/pi-web-extensions/3d-modeling/stl.js";
 
@@ -67,6 +68,60 @@ describe("full-detail STL stream", () => {
     h.draw(); expect(h.drawn).toEqual([8192 * 3, 8 * 3, 8192 * 3, 8 * 3]);
     h.events.pagehide(); expect(h.deleted).toHaveLength(10);
   });
+  it("uploads unit face normals across large, tiny and coplanar areas without changing geometry", async () => {
+    const triangles = [
+      [0,0,0, 1e30,0,0, 0,1e30,0],
+      [0,0,0, 1e-30,0,0, 0,1e-30,0],
+      [0,0,0, 2,0,0, 0,3,0],
+      [0,0,0, 2000,0,0, 0,3000,0],
+      [0,0,0, 1e30,0,0, 0,1e30,1e30],
+      [0,0,0, 0,0,0, 0,0,0],
+    ];
+    const b = binary(triangles.length);
+    triangles.forEach((vertices, i) => vertices.forEach((v, k) => b.writeFloatLE(v, 96 + i * 50 + k * 4)));
+    const h = await harness(b.length);
+    h.send({ type: "chunk", bytes: Uint8Array.from(b).buffer }); h.send({ type: "end" });
+    expect(h.messages.at(-1)).toMatchObject({ type: "complete", triangles: triangles.length });
+    const uploaded = h.uploads[0];
+    expect(uploaded.length).toBe(triangles.length * 18);
+    triangles.forEach((_, i) => {
+      for (let vertex = 0; vertex < 3; vertex++) {
+        const offset = i * 18 + vertex * 6;
+        expect([...uploaded.slice(offset, offset + 3)]).toEqual([0,1,2].map(axis => b.readFloatLE(96 + i * 50 + (vertex * 3 + axis) * 4)));
+        const normal = [...uploaded.slice(offset + 3, offset + 6)];
+        expect(normal.every(Number.isFinite)).toBe(true);
+        if (i === triangles.length - 1) expect(normal).toEqual([0,0,0]);
+        else expect(Math.hypot(...normal)).toBeCloseTo(1, 6);
+        if (i < 4) expect(normal).toEqual([0,0,1]);
+      }
+    });
+  });
+
+  it("preserves hook fixture face directions while bounding mobile fragment normalization inputs", async () => {
+    const b = await readFile(new URL("./fixtures/stl-outline-reset/hook-cover.stl", import.meta.url));
+    const h = await harness(b.length);
+    h.send({ type: "chunk", bytes: Uint8Array.from(b).buffer }); h.send({ type: "end" });
+    const count = b.readUInt32LE(80), uploaded = h.uploads[0];
+    expect(count).toBe(108);
+    let oldSquaredLengthOverBinary16Max = 0;
+    for (let i = 0; i < count; i++) {
+      const v = Array.from({ length: 9 }, (_, k) => b.readFloatLE(96 + i * 50 + k * 4));
+      const u = [0,1,2].map(k => v[k+3] - v[k]), w = [0,1,2].map(k => v[k+6] - v[k]);
+      const raw = [u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0]];
+      // IEEE binary16 finite-range proxy, not a claim about actual device precision.
+      if (raw.reduce((sum, n) => sum + n*n, 0) > 65504) oldSquaredLengthOverBinary16Max++;
+      for (let vertex = 0; vertex < 3; vertex++) {
+        const offset = i * 18 + vertex * 6;
+        expect([...uploaded.slice(offset, offset + 3)]).toEqual(v.slice(vertex * 3, vertex * 3 + 3));
+        const normal = [...uploaded.slice(offset + 3, offset + 6)];
+        normal.forEach((n, k) => expect(n).toBeCloseTo(raw[k] / Math.hypot(...raw), 6));
+        expect(normal.reduce((sum, n) => sum + n*n, 0)).toBeCloseTo(1, 6);
+      }
+    }
+    expect(oldSquaredLengthOverBinary16Max).toBe(42);
+    expect(h.messages.at(-1)).toMatchObject({ type: "complete", triangles: 108 });
+  });
+
   it("handles ASCII without a final newline", async () => {
     const b = Buffer.from("solid a\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0");
     const h = await harness(b.length);
