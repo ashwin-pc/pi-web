@@ -14,7 +14,7 @@ test('streamed STL becomes touch interactive only when ready and remains active 
   const authPath = join(dir, 'auth.json'), token = randomSecret();
   await new AuthStore(authPath).update(state => { state.config = { policy: 'authenticated', methods: [] }; state.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + 120_000 }; });
   const context = await browser.newContext({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
-  const server = startOwnedStlServer({ ...await isolatedStlEnv(dir), PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin, PI_WEB_MOCK: '1', PI_WEB_CWD: process.cwd(), PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port), PI_WEB_SETTINGS_FILE: join(dir, 'settings.json'), PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, dir, Math.min(30_000, info.timeout / 3));
+  const server = startOwnedStlServer({ ...await isolatedStlEnv(dir), PI_WEB_AUTH_STORE: authPath, PI_WEB_AUTH_POLICY: 'authenticated', PI_WEB_AUTH_ORIGIN: origin, PI_WEB_MOCK: '1', PI_WEB_CWD: dir, PI_WEB_DEV: '0', NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port), PI_WEB_SETTINGS_FILE: join(dir, 'settings.json'), PI_WEB_SESSION_UI_STATE_FILE: join(dir, 'sessions.json') }, dir, Math.min(30_000, info.timeout / 3));
   try {
     await server.ready();
     const page = await context.newPage();

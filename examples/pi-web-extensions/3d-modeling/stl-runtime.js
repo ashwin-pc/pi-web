@@ -75,7 +75,8 @@ out vec3 normal;
 
 void main() {
   vec3 q = r * (p - center) * scale;
-  gl_Position = vec4(q.x / aspect + pan.x, q.y + pan.y, q.z * .45, 1);
+  // Camera +Z points toward the eye; WebGL LESS requires nearer = smaller.
+  gl_Position = vec4(q.x / aspect + pan.x, q.y + pan.y, -q.z * .45, 1);
   normal = r * n;
 }`,
       ),
@@ -238,7 +239,7 @@ void main() {
       gl.VERTEX_SHADER,
       `#version 300 es
 in vec3 p;in float a;uniform mat3 r;uniform vec3 center;uniform float scale,aspect;uniform vec2 pan;out float fade;
-void main(){vec3 q=r*(p-center)*scale;gl_Position=vec4(q.x/aspect+pan.x,q.y+pan.y,q.z*.45,1);fade=a;}`,
+void main(){vec3 q=r*(p-center)*scale;gl_Position=vec4(q.x/aspect+pan.x,q.y+pan.y,-q.z*.45,1);fade=a;}`,
     ),
   );
   gl.attachShader(

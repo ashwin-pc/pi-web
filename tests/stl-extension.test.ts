@@ -232,16 +232,16 @@ describe("PR277 scene contract", () => {
     expect(e.grid).toHaveLength(15*32*2*2*3);expect(e.box).toHaveLength(24*3);
     expect(e.ground.slice(0,6)).toEqual([5,e.floorY,15,5+30*.95*1.5,e.floorY,15]);
     expect(e.shadow[1]).toBe(e.floorY+30*.0006);expect(e.grid[1]).toBe(e.floorY+30*.0003);
-    expect(stlFloorFactor(Math.sin(-.58))).toBe(1);expect(stlFloorFactor(0)).toBe(0);expect(stlFloorFactor(.5)).toBe(0);
-    expect(stlFloorFactor(-.11)).toBe(.5);
+    expect(stlFloorFactor(Math.sin(.58))).toBe(1);expect(stlFloorFactor(0)).toBe(0);expect(stlFloorFactor(-.5)).toBe(0);
+    expect(stlFloorFactor(.11)).toBe(.5);
   });
   it("retains default view, uses viewport-safe fit and grab-model drag without orbit clamps", async()=>{
     const b=binary(1),h=await harness(b.length);h.send({type:'chunk',bytes:Uint8Array.from(b).buffer});h.send({type:'end'});h.draw();
     const matrix=(a:number,b:number)=>[Math.cos(b),Math.sin(a)*Math.sin(b),-Math.cos(a)*Math.sin(b),0,Math.cos(a),Math.sin(a),Math.sin(b),-Math.sin(a)*Math.cos(b),Math.cos(a)*Math.cos(b)].map(Math.fround);
-    expect(h.values.r).toEqual(matrix(-.58,2.4));expect(h.values.scale).toBeCloseTo(1.55/Math.sqrt(2));
+    expect(h.values.r).toEqual(matrix(.58,2.4));expect(h.values.scale).toBeCloseTo(1.55/Math.sqrt(2));
     h.canvas.onpointerdown({pointerId:1,clientX:10,clientY:10,pointerType:'mouse',button:0});
-    h.canvas.onpointermove({pointerId:1,clientX:110,clientY:210});h.draw();expect(h.values.r).toEqual(matrix(-.58-200*.009,2.4-100*.009));
-    h.controls.get('#reset').onclick();h.draw();expect(h.values.r).toEqual(matrix(-.58,2.4));
+    h.canvas.onpointermove({pointerId:1,clientX:110,clientY:210});h.draw();expect(h.values.r).toEqual(matrix(.58+200*.009,2.4+100*.009));
+    h.controls.get('#reset').onclick();h.draw();expect(h.values.r).toEqual(matrix(.58,2.4));
     const fitted={r:[...h.values.r],pan:[...h.values.pan],scale:h.values.scale};
     h.canvas.onkeydown({key:'ArrowRight',preventDefault(){}});h.canvas.onkeydown({key:'ArrowUp',shiftKey:true,preventDefault(){}});h.canvas.onkeydown({key:'+',preventDefault(){}});h.draw();
     expect(h.values.r).not.toEqual(fitted.r);expect(h.values.pan).not.toEqual(fitted.pan);expect(h.values.scale).not.toBe(fitted.scale);

@@ -1,6 +1,8 @@
 // Camera/navigation owns its state; rendering consumes snapshots on demand.
+// +camera-Z is toward the eye. Positive pitch views the Y-up scene from above;
+// orbit deltas move the visible (+Z) surface with the pointer on both axes.
 function createStlCamera(canvas, render) {
-  let angle = [-0.58, 2.4],
+  let angle = [0.58, 2.4],
     pan = [0, 0],
     zoom = 1;
   const markView = (view) => {
@@ -12,7 +14,7 @@ function createStlCamera(canvas, render) {
     zoom = 1;
   };
   const resetView = () => {
-    angle = [-0.58, 2.4];
+    angle = [0.58, 2.4];
     fit();
     markView("iso");
   };
@@ -56,8 +58,8 @@ function createStlCamera(canvas, render) {
         pan[0] += (dx / canvas.clientWidth) * 2;
         pan[1] -= (dy / canvas.clientHeight) * 2;
       } else {
-        angle[1] -= dx * 0.009;
-        angle[0] -= dy * 0.009;
+        angle[1] += dx * 0.009;
+        angle[0] += dy * 0.009;
         markView(null);
       }
     }
@@ -99,7 +101,7 @@ function createStlCamera(canvas, render) {
         pan[1] += dy * 0.06;
       } else {
         angle[1] += dx * step;
-        angle[0] += dy * step;
+        angle[0] -= dy * step;
         markView(null);
       }
     } else return;
@@ -113,13 +115,13 @@ function createStlCamera(canvas, render) {
   for (const button of document.querySelectorAll("[data-view]"))
     button.onclick = () => {
       angle = {
-        iso: [-0.58, 2.4],
+        iso: [0.58, 2.4],
         front: [0, 0],
         back: [0, Math.PI],
-        left: [0, -Math.PI / 2],
-        right: [0, Math.PI / 2],
-        top: [-Math.PI / 2, 0],
-        bottom: [Math.PI / 2, 0],
+        left: [0, Math.PI / 2],
+        right: [0, -Math.PI / 2],
+        top: [Math.PI / 2, 0],
+        bottom: [-Math.PI / 2, 0],
       }[button.dataset.view];
       fit();
       markView(button.dataset.view);

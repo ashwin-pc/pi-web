@@ -81,10 +81,11 @@ export function stlEnvironment(bounds: number[]) {
     box,
   };
 }
-// Orthographic eye direction is -camera-depth, independent of pan and zoom.
+// Orthographic eye direction is +camera-Z, independent of pan and zoom.
+// Projection negates camera Z for WebGL LESS; the floor faces the eye above Y=0.
 // Fade before the horizon and skip all floor draws on/below it (no depth writes).
 export function stlFloorFactor(depthY: number) {
-  const t = Math.max(0, Math.min(1, -depthY / 0.22));
+  const t = Math.max(0, Math.min(1, depthY / 0.22));
   return t * t * (3 - 2 * t);
 }
 

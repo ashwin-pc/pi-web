@@ -118,7 +118,7 @@ test('twelve on-demand previews and real outline derivation and activity regroup
       });
     });
     // Real shader uniforms, not a CSS-only selected-state assertion.
-    const presets: Record<string, [number,number]> = { iso:[-.58,2.4],front:[0,0],back:[0,Math.PI],left:[0,-Math.PI/2],right:[0,Math.PI/2],top:[-Math.PI/2,0],bottom:[Math.PI/2,0] };
+    const presets: Record<string, [number,number]> = { iso:[.58,2.4],front:[0,0],back:[0,Math.PI],left:[0,Math.PI/2],right:[0,-Math.PI/2],top:[Math.PI/2,0],bottom:[-Math.PI/2,0] };
     for (const axis of ['y','z']) {
       await runtime.locator('.info-menu summary').click(); await runtime.getByLabel('Model up axis').selectOption(axis); await runtime.locator('.info-menu summary').click();
       for (const [name,[a,b]] of Object.entries(presets)) {

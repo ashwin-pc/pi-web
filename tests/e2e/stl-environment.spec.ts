@@ -42,7 +42,7 @@ test('original Y-up ground and grid disappear from the bottom without changing s
       await expect(frame.locator('#info-count')).toHaveText('4 source triangles · 100% retained');
     }
     await frame.locator('#view-menu summary').click();await frame.locator('[data-view="front"]').click();
-    const landmark=axis==='z'?[-.5,.5,-.5]:[-.5,-.5,-.5];
+    const landmark=axis==='z'?[-.5,-.5,-.5]:[-.5,-.5,.5];
     const projectedY=()=>canvas.evaluate((_el,v:number[])=>{const r=(window as any).sceneMatrices.at(-3);return -(r[1]*v[0]+r[4]*v[1]+r[7]*v[2]);},landmark);
     const box=await canvas.boundingBox();if(!box)throw Error('canvas missing');
     const x=box.x+box.width*.5,y=box.y+box.height*.5;
