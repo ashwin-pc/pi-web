@@ -31,7 +31,7 @@ test('retained artifact owners replay response grouping, including changed prede
   expect(await frame!.evaluate(el => el.isConnected)).toBe(true);
 });
 
-test('unchanged artifact plus tool-call DTO rebuilds pending toolcards when runtime becomes streaming', async ({ page }) => {
+test('mixed artifact text retains its iframe while rebuilding pending toolcards when runtime becomes streaming', async ({ page }) => {
   await page.request.post('/api/mock/reset');
   const message = { role: 'assistant', entryId: 'mixed-owner', text: artifactText, raw: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'text', text: artifactText }, { type: 'toolCall', id: 'pending-read', name: 'read', arguments: { path: '/tmp/pending.txt' } }] } };
   await page.route('**/api/messages?*', route => route.fulfill({ json: { messages: [message] } }));
@@ -44,5 +44,5 @@ test('unchanged artifact plus tool-call DTO rebuilds pending toolcards when runt
   await page.request.post('/api/mock/event', { data: { type: 'state_changed', sessionId: 'mock-current' } });
   await response;
   await expect(page.locator('.toolCard--running[data-tool-name="read"]')).toHaveCount(1);
-  expect(await original!.evaluate(el => el.isConnected)).toBe(false);
+  expect(await original!.evaluate(el => el.isConnected)).toBe(true);
 });

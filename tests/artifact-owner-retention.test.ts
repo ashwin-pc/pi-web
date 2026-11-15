@@ -4,6 +4,7 @@ import {
   placeNodes,
   planRetention,
   recordOwner,
+  textBlockOwner,
 } from "../src/messages/artifactOwnerRetention.js";
 
 class FakeNode {
@@ -46,6 +47,45 @@ function setup() {
 }
 
 describe("artifact owner retention", () => {
+  it("keys each text part and entry independently while ignoring sibling rendering changes", () => {
+    const message = { entryId: "mixed", timestamp: 10, text: "aggregate", raw: { role: "assistant", content: [{ type: "thinking", thinking: "before" }] } };
+    const block = textBlockOwner(message, "part:1", "[Preview](one.html)");
+    expect(textBlockOwner({ ...message, text: "different aggregate", raw: { role: "assistant", content: [{ type: "toolCall", id: "new" }] } }, "part:1", "[Preview](one.html)")).toEqual(block);
+    expect(textBlockOwner(message, "part:2", "[Preview](one.html)").entryId).not.toBe(block.entryId);
+    expect(textBlockOwner({ ...message, entryId: "other" }, "part:1", "[Preview](one.html)").entryId).not.toBe(block.entryId);
+    expect(textBlockOwner({ ...message, timestamp: 11 }, "part:1", "[Preview](one.html)")).not.toEqual(block);
+    expect(textBlockOwner(message, "part:1", "changed")).not.toEqual(block);
+    expect(textBlockOwner({}, "fallback", "anonymous").entryId).toBeUndefined();
+  });
+
+  it("retains only mounted preview blocks, independently of non-artifact siblings", () => {
+    const container = new FakeContainer();
+    const registry = createArtifactOwnerRegistry("session-a");
+    const preview = new FakeNode("preview"), prose = new FakeNode("prose", false);
+    container.append(preview, prose);
+    const message = { entryId: "mixed" };
+    const first = textBlockOwner(message, "part:1", "preview");
+    const second = textBlockOwner(message, "part:3", "prose");
+    recordOwner(registry, first, [element(preview)]);
+    recordOwner(registry, second, [element(prose)]);
+    const plan = planRetention([first, second], registry, "session-a", containerElement(container));
+    expect(plan.retained).toEqual(new Set([element(preview)]));
+    expect(plan.reusable.has(second.entryId!)).toBe(false);
+    expect(planRetention([first], registry, "session-b", containerElement(container)).retained.size).toBe(0);
+  });
+
+  it("invalidates an edited block without losing its unchanged sibling, and rejects reordered blocks", () => {
+    const container = new FakeContainer(), registry = createArtifactOwnerRegistry("session-a");
+    const first = new FakeNode("first"), second = new FakeNode("second");
+    container.append(first, second);
+    const a = textBlockOwner({ entryId: "mixed" }, "part:1", "first");
+    const b = textBlockOwner({ entryId: "mixed" }, "part:3", "second");
+    recordOwner(registry, a, [element(first)]);
+    recordOwner(registry, b, [element(second)]);
+    expect(planRetention([{ ...a, text: "edited" }, b], registry, "session-a", containerElement(container)).retained).toEqual(new Set([element(second)]));
+    expect(planRetention([b, a], registry, "session-a", containerElement(container)).retained.size).toBe(0);
+  });
+
   it("excludes owners from another session and changed messages", () => {
     const { container, registry } = setup();
     expect(planRetention([{ entryId: "one", text: "one" }], registry, "session-b", containerElement(container)).retained).toHaveLength(0);

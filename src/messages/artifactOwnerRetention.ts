@@ -10,6 +10,22 @@ export type ArtifactOwnerRegistry = {
 
 type MessageWithEntryId = { entryId?: string };
 
+/** A text block owns its preview, not the surrounding thinking/tool rendering.
+ * Keep metadata in the fingerprint (timestamps, errors, etc.), but sibling content
+ * and projected aggregate text must not invalidate an otherwise unchanged block.
+ */
+export function textBlockOwner(message: { entryId?: string; [key: string]: unknown }, block: string, text: string) {
+  const { content: _content, text: _text, raw, ...metadata } = message;
+  const { content: _rawContent, ...rawMetadata } = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  return {
+    ...metadata,
+    raw: rawMetadata,
+    entryId: message.entryId ? JSON.stringify([message.entryId, block]) : undefined,
+    block,
+    text,
+  };
+}
+
 export function createArtifactOwnerRegistry(sessionId = ""): ArtifactOwnerRegistry {
   return { sessionId, entries: new Map() };
 }

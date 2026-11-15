@@ -14,7 +14,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
 import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
-import { createArtifactOwnerRegistry, placeNodes, planRetention, recordOwner } from "./artifactOwnerRetention.js";
+import { createArtifactOwnerRegistry, placeNodes, planRetention, recordOwner, textBlockOwner } from "./artifactOwnerRetention.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -1396,50 +1396,63 @@ export function createMessageList(options: {
     addToolHistoryCard(toolName, isError, message, argsOverride || message.toolArgs);
   }
 
-  function renderAssistantMessageParts(message: any, options: {
+  type AssistantPart =
+    | { kind: "text"; key: string; text: string }
+    | { kind: "thinking"; text: string }
+    | { kind: "tool"; call: ToolCallSummary };
+
+  // One canonical part plan drives both retention selection and actual rendering.
+  function assistantParts(message: MessageDto): AssistantPart[] {
+    if (message.role !== "assistant" || message.isError) return [];
+    const content = rawContent(message);
+    const text = messageText(message);
+    if (!Array.isArray(content)) return text ? [{ kind: "text", key: "fallback", text }] : [];
+    const parts: AssistantPart[] = [];
+    content.forEach((part, index) => {
+      const thinking = partThinkingText(part);
+      const textPart = partText(part);
+      const call = toolCallFromPart(part);
+      if (thinking) parts.push({ kind: "thinking", text: thinking });
+      else if (textPart) parts.push({ kind: "text", key: `part:${index}`, text: textPart });
+      else if (call) parts.push({ kind: "tool", call });
+    });
+    const joined = content.map(partText).filter(Boolean).join("\n");
+    if (!parts.length && text) parts.push({ kind: "text", key: "fallback", text });
+    else if (text && joined && text !== joined && text.startsWith(joined)) {
+      const suffix = text.slice(joined.length).trim();
+      if (suffix) parts.push({ kind: "text", key: "suffix", text: suffix });
+    }
+    return parts;
+  }
+
+  function renderAssistantMessageParts(message: Extract<MessageDto, { role: "assistant" }>, options: {
     addToolHistoryCard: AddToolHistoryCard;
     addPendingToolCard: AddPendingToolCard;
     addRuntimeErrorCard: AddRuntimeErrorCard;
-    completedToolResults: Map<string, any>;
+    completedToolResults: Map<string, MessageDto>;
     renderedToolResultIds: Set<string>;
     isStreaming?: boolean;
+    renderText?: (text: string, key: string) => void;
   }) {
-    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
-    const content = rawContent(message);
+    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming, renderText } = options;
     const text = messageText(message);
 
     if (message.isError) {
-      const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
+      const raw = message.raw && typeof message.raw === "object" ? message.raw as Record<string, unknown> : undefined;
+      const errorMessage = (message as unknown as Record<string, unknown>).errorMessage;
+      const rawError = typeof raw?.errorMessage === "string" ? raw.errorMessage : typeof errorMessage === "string" ? errorMessage : text;
       addRuntimeErrorCard({ title: "assistant error", subtitle: text, technicalDetails: distinctAssistantErrorBody(rawError, text) });
       return;
     }
 
-    if (!Array.isArray(content)) {
-      if (text) addMessage("assistant", text, message.isError ? "error" : "", [], { entryId: message.entryId });
-      return;
-    }
-
-    const textParts = content.map(partText).filter(Boolean);
-    const textPartsJoined = textParts.join("\n");
-    let renderedAnyPart = false;
-    for (const part of content) {
-      const thinking = partThinkingText(part);
-      if (thinking) {
-        addThinkingCard(thinking);
-        renderedAnyPart = true;
-        continue;
-      }
-
-      const textPart = partText(part);
-      if (textPart) {
-        addMessage("assistant", textPart, "", [], { entryId: message.entryId });
-        renderedAnyPart = true;
-        continue;
-      }
-
-      const call = toolCallFromPart(part);
-      if (call) {
-        renderedAnyPart = true;
+    for (const part of assistantParts(message)) {
+      if (part.kind === "thinking") {
+        addThinkingCard(part.text);
+      } else if (part.kind === "text") {
+        if (renderText) renderText(part.text, part.key);
+        else addMessage("assistant", part.text, "", [], { entryId: message.entryId });
+      } else {
+        const { call } = part;
         const result = call.id ? completedToolResults.get(call.id) : undefined;
         if (result) {
           renderToolResultMessage(result, addToolHistoryCard, call.args);
@@ -1448,15 +1461,6 @@ export function createMessageList(options: {
           addPendingToolCard(call.id, call.toolName, call.args, call.startedAt);
         }
       }
-    }
-
-    // If the server supplied text that did not correspond to individual text
-    // parts (for example a stop-reason summary), keep it visible without
-    // duplicating normal assistant text parts.
-    if (!renderedAnyPart && text) addMessage("assistant", text, message.isError ? "error" : "", [], { entryId: message.entryId });
-    else if (text && textPartsJoined && text !== textPartsJoined && text.startsWith(textPartsJoined)) {
-      const suffix = text.slice(textPartsJoined.length).trim();
-      if (suffix) addMessage("assistant", suffix, message.isError ? "error" : "", [], { entryId: message.entryId });
     }
   }
 
@@ -1471,8 +1475,9 @@ export function createMessageList(options: {
     completedToolResults: Map<string, MessageDto>;
     renderedToolResultIds: Set<string>;
     isStreaming?: boolean;
+    renderText?: (text: string, key: string) => void;
   }) {
-    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
+    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming, renderText } = options;
     switch (message.role) {
       case "toolResult": {
         const id = message.toolCallId;
@@ -1486,7 +1491,7 @@ export function createMessageList(options: {
         return;
       }
       case "assistant":
-        renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
+        renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming, renderText });
         return;
       case "user": {
         const text = messageText(message);
@@ -1565,7 +1570,9 @@ export function createMessageList(options: {
     try {
       isStreaming = Boolean(historyIsStreaming);
       const allMessages = (data.messages || []) as MessageDto[];
-      const { reusable, retained } = planRetention(allMessages, artifactOwners, sessionId, messagesEl);
+      const blocks = allMessages.flatMap(message => assistantParts(message).flatMap(part =>
+        part.kind === "text" ? [textBlockOwner(message, part.key, part.text)] : []));
+      const { reusable, retained } = planRetention(blocks, artifactOwners, sessionId, messagesEl);
       clearInternal(false, retained);
       clearActiveToolCards();
       artifactOwners = createArtifactOwnerRegistry(sessionId);
@@ -1591,32 +1598,42 @@ export function createMessageList(options: {
           continue;
         }
 
-        const owner = message.entryId && reusable.get(message.entryId);
-        if (owner) {
-          owner.nodes.forEach(node => assignAssistantResponseKey(node, message.entryId));
-          recordOwner(artifactOwners, message, owner.nodes);
-          orderedNodes.push(...owner.nodes);
-          continue;
-        }
-        const previousLast = messagesEl.lastElementChild;
-        renderMessage(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming: historyIsStreaming });
-        let added = previousLast ? previousLast.nextElementSibling : messagesEl.firstElementChild;
+        let previousLast = messagesEl.lastElementChild;
         let partIndex = 0;
-        const nodes: HTMLElement[] = [];
-        while (added) {
-          if (added instanceof HTMLElement) nodes.push(added);
-          if (added instanceof HTMLElement && added.matches(".toolCard")) added.dataset.activityKey = `history:${message.entryId || index}:${partIndex}`;
-          partIndex++;
-          added = added.nextElementSibling;
-        }
-        orderedNodes.push(...nodes);
-        const content = rawContent(message);
-        const pureText = message.role === 'assistant' && (!Array.isArray(content) || content.every(part => part?.type === 'text'));
-        // Long prose renders Markdown lazily. Record pure-text candidates now;
-        // require an actual artifact card when deciding reuse on the next refresh.
-        if (pureText && message.entryId && nodes.every(node => node.matches('.message.assistant'))) {
-          recordOwner(artifactOwners, message, nodes);
-        }
+        const collectFreshNodes = () => {
+          const nodes: HTMLElement[] = [];
+          let added = previousLast ? previousLast.nextElementSibling : messagesEl.firstElementChild;
+          while (added) {
+            if (added instanceof HTMLElement) {
+              nodes.push(added);
+              if (added.matches(".toolCard")) added.dataset.activityKey = `history:${message.entryId || index}:${partIndex}`;
+            }
+            partIndex++;
+            added = added.nextElementSibling;
+          }
+          previousLast = messagesEl.lastElementChild;
+          orderedNodes.push(...nodes);
+          return nodes;
+        };
+        renderMessage(message, {
+          addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming: historyIsStreaming,
+          renderText: (text, key) => {
+            collectFreshNodes();
+            const block = textBlockOwner(message, key, text);
+            const owner = block.entryId ? reusable.get(block.entryId) : undefined;
+            if (owner) {
+              owner.nodes.forEach(node => assignAssistantResponseKey(node, message.entryId));
+              orderedNodes.push(...owner.nodes);
+              partIndex += owner.nodes.length;
+              recordOwner(artifactOwners, block, owner.nodes);
+            } else {
+              addMessage("assistant", text, "", [], { entryId: message.entryId });
+              // Record lazy Markdown candidates; selection requires a mounted preview.
+              recordOwner(artifactOwners, block, collectFreshNodes());
+            }
+          },
+        });
+        collectFreshNodes();
       }
       // Insert newly rendered nodes around connected owners; never move owners.
       placeNodes(messagesEl, orderedNodes, retained);
