@@ -2,12 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, access } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { createCliProcessHarness, cliTestTimeout } from "./cad-cli-process.js";
 import { CadError, runCad } from "../examples/pi-web-extensions/3d-modeling/cad/core.js";
 import { fusionMcpUrl } from "../examples/pi-web-extensions/3d-modeling/fusion/client.js";
 
 const directories: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+const cliProcesses = createCliProcessHarness();
+afterEach(async () => {
+  await cliProcesses.dispose();
+  vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
+  await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 async function workspace() {
   const cwd = await mkdtemp(join(tmpdir(), "cad-cli-")); directories.push(cwd);
   const root = join(cwd, ".pi/web/artifacts"); await mkdir(root, { recursive: true });
@@ -29,31 +34,9 @@ function fusion(result: unknown, list?: any) {
 }
 const entry = resolve("examples/pi-web-extensions/3d-modeling/cad/cli.ts");
 async function cli(args: string[], cwd?: string, signalWhenReady?: string, launcher = false) {
-  return new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
-    const child = spawn(process.execPath, launcher ? [resolve("examples/pi-web-extensions/3d-modeling/cad.mjs"), ...args] : ["--import", resolve("node_modules/tsx/dist/loader.mjs"), entry, ...args], { cwd, env: { ...process.env, PI_MODELING_CONFIG: process.env.PI_MODELING_CONFIG ?? join(tmpdir(), "cad-no-config.json") }, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
-    let readinessTimer: ReturnType<typeof setInterval> | undefined;
-    let readinessDeadline: ReturnType<typeof setTimeout> | undefined;
-    let readinessFinished = false;
-    const clearReadiness = () => { readinessFinished = true; clearInterval(readinessTimer); clearTimeout(readinessDeadline); };
-    child.once("error", error => { clearReadiness(); reject(error); });
-    child.once("close", code => { clearReadiness(); done({ code, stdout, stderr }); });
-    if (signalWhenReady) {
-      // Node/tsx startup is unbounded under CI contention. Signal only after the
-      // owned backend has installed its cleanup handler, not after a guessed delay.
-      readinessTimer = setInterval(() => {
-        void access(signalWhenReady).then(() => {
-          if (readinessFinished) return;
-          clearReadiness(); child.kill("SIGTERM");
-        }, () => {});
-      }, 10);
-      readinessDeadline = setTimeout(() => {
-        clearReadiness(); child.kill("SIGKILL");
-        reject(new Error(`CLI backend did not become ready: ${stderr}`));
-      }, 15_000);
-    }
-  });
+  return cliProcesses.run(process.execPath,
+    launcher ? [resolve("examples/pi-web-extensions/3d-modeling/cad.mjs"), ...args] : ["--import", resolve("node_modules/tsx/dist/loader.mjs"), entry, ...args],
+    { cwd, signalWhenReady, env: { ...process.env, PI_MODELING_CONFIG: process.env.PI_MODELING_CONFIG ?? join(tmpdir(), "cad-no-config.json") } });
 }
 
  describe("shared modeling CLI", () => {
@@ -73,14 +56,14 @@ async function cli(args: string[], cwd?: string, signalWhenReady?: string, launc
     expect(ok.code).toBe(0); expect(ok.stderr).toBe(""); expect(JSON.parse(ok.stdout).result.name).toBe("modeling");
     const bad = await cli(["fusion", "undo"], cwd);
     expect(bad.code).toBe(2); expect(bad.stdout).toBe(""); expect(JSON.parse(bad.stderr)).toMatchObject({ ok: false, exitCode: 2 });
-  });
+  }, cliTestTimeout(2));
   it("runs the extension-local mjs launcher from an unrelated working directory", async () => {
     const { cwd } = await workspace();
     for (const command of ["help", "discover"]) {
       const result = await cli([command], cwd, undefined, true);
       expect(result.code).toBe(0); expect(result.stderr).toBe(""); expect(JSON.parse(result.stdout).ok).toBe(true);
     }
-  });
+  }, cliTestTimeout(2));
   it.each(["http://example.com/mcp", "https://127.0.0.1/mcp", "http://127.0.0.1@evil.example/mcp", "http://secret@localhost/mcp", "http://localhost/mcp?token=secret"])("rejects nonloopback or credentialed endpoint %s", url => {
     expect(() => fusionMcpUrl(url)).toThrow(/HTTP loopback/);
   });
@@ -318,7 +301,7 @@ describe("configured local runtime and CLI lifecycle", () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
     const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs","timeoutMs":50}', "--allow-mutation"], cwd);
     expect(result.code).toBe(124); expect(result.stdout).toBe(""); expect(JSON.parse(result.stderr).result.status).toBe("timed-out");
-  });
+  }, cliTestTimeout());
   it.each([false, true])("propagates SIGTERM, waits for owned cleanup and returns exit130 (launcher=%s)", async launcher => {
     const { cwd, root } = await runtimeWorkspace();
     const ready = join(root, "ready.json"), cleaned = join(root, "cleaned.json");
@@ -345,7 +328,7 @@ writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
     expect(JSON.parse(await readFile(cleaned, "utf8"))).toEqual({ pid });
     expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
     expect(() => process.kill(-pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
-  }, 30_000);
+  }, cliTestTimeout());
   it("preserves retained runtime evidence when global timeout translates cancellation", async () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
     const result = await cli(["runtime", "exec", "--json", '{"runtime":"node","script":"wait.mjs"}', "--allow-mutation", "--timeout-ms", "100"], cwd);
@@ -353,7 +336,7 @@ writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
     expect(result.code).toBe(124); expect(response.result.status).toBe("cancelled");
     expect(response.result.log).toContain("execution.log");
     expect(JSON.parse(await readFile(join(root, "modeling-runs", response.result.id, "result.json"), "utf8")).status).toBe("cancelled");
-  });
+  }, cliTestTimeout());
   it("preserves retained runtime evidence when caller cancellation is translated", async () => {
     const { cwd, root } = await runtimeWorkspace(); await writeFile(join(root, "wait.mjs"), "setInterval(() => {}, 1000);\n");
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 100);
