@@ -2,26 +2,26 @@ import { awaitPortReply } from "./artifactPortReply.js";
 import { transferArtifact } from "./artifactStreamTransport.js";
 import type { ArtifactStreamOptions } from "./artifactStream.js";
 
-export function createOutlineController({
+export function createDerivedStreamController({
   frame,
   derivation,
   headers,
   current,
   getPort,
-  isModelComplete,
+  isStreamComplete,
 }: {
   frame: HTMLIFrameElement;
   derivation: ArtifactStreamOptions["derivation"];
   headers: ArtifactStreamOptions["headers"];
   current: () => boolean;
   getPort: () => MessagePort | undefined;
-  isModelComplete: () => boolean;
+  isStreamComplete: () => boolean;
 }) {
   let derivedController: AbortController | undefined;
   let derivedPort: MessagePort | undefined;
   let queuedDerivation = false;
   const derive = async () => {
-    if (!derivation || !isModelComplete() || !current()) return;
+    if (!derivation || !isStreamComplete() || !current()) return;
     if (derivedController) {
       // ON after OFF is a new intent, not a duplicate of the cancelled job.
       // Wait for the old operation to settle rather than overlap generations.
@@ -43,7 +43,7 @@ export function createOutlineController({
       });
       if (!response.ok || !response.body) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || "Outline generation failed");
+        throw new Error(error.error || "Derived artifact generation failed");
       }
       const size = Number(response.headers.get("content-length"));
       if (!Number.isSafeInteger(size) || size < 0 || size > 128 * 1024 * 1024)
@@ -54,13 +54,13 @@ export function createOutlineController({
       const port = derivedPort;
       const pipelined = await awaitPortReply({
         port, signal: active.signal, timeout: 15000,
-        timeoutMessage: "Outline renderer did not initialize",
+        timeoutMessage: "Derived renderer did not initialize",
         start: () => frame.contentWindow?.postMessage(
           { type: "pi-artifact-derived", size, streamVersion: 2 }, "*", [channel.port2],
         ),
         accept: (data) => {
           if (data?.type === "ready") return { value: data.streamVersion === 2 };
-          throw new Error(data?.error || "Outline renderer failed");
+          throw new Error(data?.error || "Derived renderer failed");
         },
       });
       await transferArtifact(
@@ -73,11 +73,11 @@ export function createOutlineController({
       );
       await awaitPortReply({
         port, signal: active.signal, timeout: 30000,
-        timeoutMessage: "Outline renderer did not complete",
+        timeoutMessage: "Derived renderer did not complete",
         start: () => port.postMessage({ type: "end" }),
         accept: (data) => {
           if (data?.type === "complete") return { value: undefined };
-          throw new Error(data?.error || "Outline renderer failed");
+          throw new Error(data?.error || "Derived renderer failed");
         },
       });
     } catch (error) {

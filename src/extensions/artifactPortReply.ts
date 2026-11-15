@@ -1,6 +1,6 @@
 // One bounded wait; the caller retains ownership of the port.
 export function awaitPortReply<T>({
-  port, signal, timeout, timeoutMessage, start, accept, cleanup: cleanupStart,
+  port, signal, timeout, timeoutMessage, start, accept, cleanup: cleanupStart, suspendTimeout,
 }: {
   port: MessagePort;
   signal: AbortSignal;
@@ -9,6 +9,7 @@ export function awaitPortReply<T>({
   start: (fail: (error: unknown) => void) => void;
   accept: (data: any) => { value: T } | undefined;
   cleanup?: () => void;
+  suspendTimeout?: (data: any) => boolean;
 }): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -28,6 +29,7 @@ export function awaitPortReply<T>({
     const abort = () => settle(new Error("Cancelled"));
     const receive = (event: MessageEvent) => {
       try {
+        if (suspendTimeout?.(event.data)) clearTimeout(timer);
         const result = accept(event.data);
         if (result) settle(undefined, result);
       } catch (error) { settle(error); }

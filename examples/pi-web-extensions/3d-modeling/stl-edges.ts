@@ -60,7 +60,7 @@ async function validCache(path: string, hash: string, signal: AbortSignal) {
   } catch (e) { check(signal); return false; }
 }
 export async function deriveStlEdges(source: string, destination: string, signal: AbortSignal) {
-  if (state.busy) throw new Error("Another feature-outline job is running. Try again after it completes.");
+  if (state.busy) throw Object.assign(new Error("Another feature-outline job is running. Try again after it completes."), { code: "ARTIFACT_BUSY" });
   state.busy = true; let job: string | undefined;
   try {
     check(signal); await initialize(); await prune(); const before = await sourceIdentity(source);
@@ -86,5 +86,5 @@ export async function deriveStlEdges(source: string, destination: string, signal
     check(signal); await copyFile(cached, destination); await chmod(destination, 0o600);
     if (before !== await sourceIdentity(source)) throw new Error("The source changed; reopen the model.");
     const now = new Date(); await utimes(cached, now, now);
-  } finally { if (job) await rm(job, { recursive: true, force: true }); state.busy = false; }
+  } finally { try { if (job) await rm(job, { recursive: true, force: true }); } finally { state.busy = false; } }
 }

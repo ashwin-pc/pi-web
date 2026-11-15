@@ -4,10 +4,15 @@ vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, statSync: vi.fn(actual.statSync) };
 });
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rm: vi.fn(actual.rm) };
+});
 import { mkdtemp, writeFile, rm, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ArtifactDerivations } from "../server/extensions/artifactDerived.js";
+import { deriveStlEdges } from "../examples/pi-web-extensions/3d-modeling/stl-edges.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 
 const directories: string[] = [];
@@ -22,7 +27,7 @@ async function setup(timeout = 1000, maxBytes = 100) {
   return { store, token, source, bind, derive };
 }
 describe("derived preview registrations", () => {
-  it("rejects a second selected source with typed server-wide busy admission", async () => {
+  it("rejects a second selected source for the same registration", async () => {
     const s = await setup(); s.bind();
     const token = s.store.select({ sessionId: "two", key: "stl", registration: "revision", artifact: { name: "model.stl", path: "/api/artifacts/model.stl", kind: "file" }, url: "/api/session-artifacts/two/model.stl" });
     s.store.bind(token, "two", "/api/session-artifacts/two/model.stl", s.source);
@@ -35,6 +40,55 @@ describe("derived preview registrations", () => {
     try {
       await expect(s.store.derive(token, "two", "stl", new AbortController().signal, async () => {})).rejects.toMatchObject({ status: 429, message: "Artifact generation is busy" });
     } finally { finish(); await (await first).cleanup(); }
+  });
+  it("allows another registration while enforcing the global two-job bound", async () => {
+    const s = await setup(); s.bind();
+    const select = (registration: string) => {
+      const token = s.store.select({ sessionId: "one", key: "stl", registration, artifact: { name: "model.stl", path: "/api/artifacts/model.stl", kind: "file" }, url: "/selected" });
+      s.store.bind(token, "one", "/selected", s.source);
+      return (invoke: Parameters<ArtifactDerivations["derive"]>[4]) => s.store.derive(token, "one", "stl", new AbortController().signal, invoke);
+    };
+    const second = select("second"), third = select("third");
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const handler: Parameters<ArtifactDerivations["derive"]>[4] = async (_, options) => { await gate; await writeFile(options.destination, "ok"); };
+    const first = s.derive(handler), other = second(handler);
+    try { await expect(third(handler)).rejects.toMatchObject({ status: 429 }); }
+    finally { finish(); await (await first).cleanup(); await (await other).cleanup(); }
+    await (await third(handler)).cleanup();
+  });
+  it("maps only typed adapter busy errors to a safe 429", async () => {
+    const s = await setup(); s.bind();
+    const state = (globalThis as any)[Symbol.for("pi-web.stl-edge-derive.v1")];
+    state.busy = true;
+    try {
+      await expect(s.derive(async (_, options) => deriveStlEdges(options.source, options.destination, options.signal))).rejects.toMatchObject({ status: 429, message: "Artifact generation is busy" });
+    } finally { state.busy = false; }
+    await expect(s.derive(async () => { throw new Error("ARTIFACT_BUSY /private/secret"); })).rejects.toMatchObject({ status: 422, message: "Artifact generation failed" });
+    await (await s.derive(async (_, options) => { await writeFile(options.destination, "ok"); })).cleanup();
+  });
+  it("does not leak admission when failure cleanup itself fails", async () => {
+    const s = await setup(); s.bind();
+    let directory = "";
+    vi.mocked(rm).mockRejectedValueOnce(new Error("cleanup failed"));
+    await expect(s.derive(async (_, options) => {
+      directory = join(options.destination, "..");
+      throw new Error("handler failed");
+    })).rejects.toMatchObject({ status: 422, message: "Artifact generation failed" });
+    if (directory) directories.push(directory);
+    await (await s.derive(async (_, options) => { await writeFile(options.destination, "ok"); })).cleanup();
+  });
+  it("retains registration admission for a noncooperating cancelled handler until settled", async () => {
+    const s = await setup(); s.bind();
+    let finish!: () => void, entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const controller = new AbortController();
+    const running = s.derive(async () => { entered(); await gate; }, controller.signal);
+    await ready; controller.abort(); await expect(running).rejects.toThrow("cancelled");
+    await expect(s.derive(async () => {})).rejects.toMatchObject({ status: 429 });
+    finish();
+    await vi.waitFor(async () => { const output = await s.derive(async (_, options) => { await writeFile(options.destination, "ok"); }); await output.cleanup(); });
   });
   it("requires opt-in and rejects replaced registrations or mismatched contexts", async () => {
     let ui: any; let calls = 0;
@@ -111,7 +165,7 @@ describe("selected artifact derivations", () => {
     let invoked = false;
     const error = await s.derive(async () => { invoked = true; }).catch(error => error);
     expect(invoked).toBe(false); expect(error.status).toBe(409);
-    expect(error.message).toBe("Source unavailable or changed; reopen the model");
+    expect(error.message).toBe("Source unavailable or changed; reopen the preview");
     expect(error.message).not.toContain(s.source);
     expect(error.message).not.toMatch(/ENOENT|EACCES/);
   });

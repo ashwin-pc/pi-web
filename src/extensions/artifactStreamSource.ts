@@ -59,43 +59,21 @@ export function createArtifactSource(
   };
 }
 
-export interface StreamMetrics extends StreamProgress {
-  totalMs: number;
-}
 interface RendererStreamOptions {
   source: ReturnType<typeof createArtifactSource>;
   frame: HTMLIFrameElement;
   signal: AbortSignal;
   current: () => boolean;
-  phase: (phase: "receiving" | "finalizing") => void;
-  progress: (stats: StreamProgress) => void;
-  ready: (metrics: StreamMetrics) => void;
+  ready: () => void;
   derive: () => void;
   cancelDerivation: () => void;
+  release: () => void;
+  reopen: () => void;
   error: (error: unknown) => void;
 }
 
-function completionMetrics(
-  stats: StreamProgress,
-  message: Record<string, unknown>,
-  started: number,
-): StreamMetrics {
-  const timing = (key: "decodeMs" | "uploadMs") =>
-    typeof message[key] === "number" &&
-    Number.isFinite(message[key]) &&
-    message[key] >= (stats[key] ?? 0)
-      ? message[key]
-      : stats[key];
-  return {
-    ...stats,
-    totalMs: performance.now() - started,
-    decodeMs: timing("decodeMs"),
-    uploadMs: timing("uploadMs"),
-  };
-}
-
-// Owns the source port from initialization through GPU completion and subsequent
-// outline intents. No renderer-visible URL, selection, or authentication headers.
+// Owns the source port from initialization through completion and subsequent
+// derived-stream intents. No renderer-visible URL, selection, or authentication headers.
 export function streamArtifactIntoRenderer(options: RendererStreamOptions) {
   const { source, frame, signal, current } = options;
   let port: MessagePort | undefined;
@@ -104,26 +82,28 @@ export function streamArtifactIntoRenderer(options: RendererStreamOptions) {
     data?.error || "The renderer failed. Open again or download the original.",
   );
   const intent = (data: any) => {
+    if (data?.type === "release") { options.release(); return true; }
+    if (data?.type === "reopen") { options.reopen(); return true; }
     if (data?.type === "derive") { options.derive(); return true; }
     if (data?.type === "derive-cancel") { options.cancelDerivation(); return true; }
     return false;
   };
-  // The completed wait relinquishes its listener, but outline intents remain live.
+  // The completed wait relinquishes its listener, but derived-stream intents remain live.
   const receiveIntent = (event: MessageEvent) => {
     if (!current() || intent(event.data) || event.data?.type === "complete") return;
     options.error(rendererError(event.data));
   };
-  const finish = async (stats: StreamProgress, started: number) => {
+  const finish = async (stats: StreamProgress) => {
     const completion = new AbortController();
     const abort = () => completion.abort();
     cancelCompletion = abort;
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     try {
-      const message = await awaitPortReply<Record<string, unknown>>({
+      await awaitPortReply<Record<string, unknown>>({
         port: port!, signal: completion.signal, timeout: 30000,
-        timeoutMessage: "The full model did not finish decoding. Try a larger-memory device.",
-        start: () => port!.postMessage({ type: "end" }),
+        timeoutMessage: "The renderer did not finish processing the artifact. Open again to retry.",
+        start: () => port!.postMessage({ type: "end", stats }),
         accept: (data) => {
           if (!current() || intent(data)) return undefined;
           if (data?.type === "complete") {
@@ -133,7 +113,7 @@ export function streamArtifactIntoRenderer(options: RendererStreamOptions) {
           throw rendererError(data);
         },
       });
-      options.ready(completionMetrics(stats, message, started));
+      options.ready();
     } finally {
       signal.removeEventListener("abort", abort);
       cancelCompletion = () => {};
@@ -142,32 +122,16 @@ export function streamArtifactIntoRenderer(options: RendererStreamOptions) {
   return {
     getPort: () => port,
     async run(size: number) {
-      const started = performance.now();
-      const renderer = await openRendererPort(frame, size, signal);
+      const renderer = await openRendererPort(frame, size, signal, intent);
       port = renderer.port;
       if (!current()) {
         port.close();
         return;
       }
       const reader = await source.open(size);
-      options.phase("receiving");
-      let lastProgress = -Infinity;
-      const stats = await transferArtifact(
-        reader,
-        port,
-        size,
-        signal,
-        renderer.pipelined,
-        (stats) => {
-          const now = performance.now();
-          if (now - lastProgress < 100 && stats.processedBytes !== size) return;
-          lastProgress = now;
-          options.progress(stats);
-        },
-      );
+      const stats = await transferArtifact(reader, port, size, signal, renderer.pipelined, () => {}, intent);
       if (!current()) return;
-      options.phase("finalizing");
-      await finish(stats, started);
+      await finish(stats);
     },
     dispose() {
       cancelCompletion();

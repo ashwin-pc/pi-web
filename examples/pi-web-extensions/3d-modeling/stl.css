@@ -319,3 +319,16 @@ details { position: relative; }
 @media (prefers-reduced-motion: reduce) {
   .loader { animation: none; }
 }
+
+/* Consent must be inside the renderer, never an STL-specific host surface. */
+.stl-stream-overlay {position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 40%,#373735,#20201f 65%,#171716);padding:24px;overflow:auto}
+.stl-stream-card {max-width:440px;color:#eee;font:13px/1.5 system-ui,sans-serif}
+.stl-stream-card h2 {font-size:21px;font-weight:500}
+.stl-stream-card .stl-size {color:#e9cc8a}
+.stl-stream-card .stl-warning {color:#b9b9b4}
+.stl-stream-card button,.stl-unload {background:#353532;border:1px solid #69685f;border-radius:7px;color:#eee;padding:9px 14px;cursor:pointer;font:inherit}
+.stl-stream-card .stl-load {background:#e9cc8a;color:#24231f;margin-right:10px}
+.stl-stream-card progress {width:100%;accent-color:#e9cc8a;margin:12px 0}
+.stl-unload {position:absolute;right:104px;top:18px;height:36px;z-index:4}
+.stl-stream-overlay [hidden] {display:none!important}
+@media(max-width:480px){.stl-stream-overlay{padding:20px}.stl-unload{top:18px;right:98px}}

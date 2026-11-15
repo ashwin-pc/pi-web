@@ -15,14 +15,15 @@ export function artifactIdentity(path: string) {
   } catch {
     // Filesystem errors contain absolute private paths. Fail closed without
     // forwarding those messages through the host into the renderer iframe.
-    throw new HttpError("Source unavailable or changed; reopen the model", 409);
+    throw new HttpError("Source unavailable or changed; reopen the preview", 409);
   }
 }
-type Selection = { sessionId: string; key: string; registration: string; artifact: { name: string; path: string; kind: string }; url: string; expires: number; source?: string; identity?: string; running: boolean; controller?: AbortController };
+type Selection = { owner?: string; bridge?: boolean; derived?: boolean; sessionId: string; key: string; registration: string; artifact: { name: string; path: string; kind: string }; url: string; expires: number; source?: string; identity?: string; running: boolean; controller?: AbortController };
 /** Tokens are selected-source authority, never filesystem paths or browser credentials. */
 export class ArtifactDerivations {
   private selections = new Map<string, Selection>();
   private running = 0;
+  private registrations = new Set<string>();
   constructor(private timeoutMs = 180_000, private maxBytes = MAX_DERIVED_BYTES) {}
   select(input: Omit<Selection, "expires" | "running">) {
     for (const [token, value] of this.selections) if (value.expires < Date.now() && !value.running) this.selections.delete(token);
@@ -48,9 +49,16 @@ export class ArtifactDerivations {
     const value = this.get(token, sessionId);
     if (value.url !== url) throw new HttpError("Unselected artifact", 403);
     const identity = artifactIdentity(source);
-    if (value.identity && (value.identity !== identity || value.source !== source)) throw new HttpError("Source changed; reopen the model", 409);
+    if (value.identity && (value.identity !== identity || value.source !== source)) throw new HttpError("Source changed; reopen the preview", 409);
     value.source = source; value.identity = identity;
-    return () => { if (artifactIdentity(source) !== identity) throw new HttpError("Source changed; reopen the model", 409); };
+    return () => { if (artifactIdentity(source) !== identity) throw new HttpError("Source changed; reopen the preview", 409); };
+  }
+  /** Shared selected-source authority for preview interactions; never resolves a second path. */
+  selected(token: string, sessionId: string, key: string) {
+    const value = this.get(token, sessionId);
+    if (value.key !== key || !value.source || !value.identity) throw new HttpError("Unselected artifact renderer", 403);
+    if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the preview", 409);
+    return value as typeof value & { source: string; identity: string };
   }
   private get(token: string, sessionId: string) {
     const value = this.selections.get(token);
@@ -62,13 +70,13 @@ export class ArtifactDerivations {
   async derive(token: string, sessionId: string, key: string, signal: AbortSignal,
     invoke: (value: Selection, options: PiWebArtifactDeriveOptions) => Promise<void>) {
     const value = this.get(token, sessionId);
-    if (value.key !== key || !value.source || !value.identity) throw new HttpError("Unselected artifact renderer", 403);
-    // The current STL adapter admits one job per server; reject at the host
-    // boundary with a typed busy response rather than an opaque adapter failure.
-    if (value.running || this.running >= 1) throw new HttpError("Artifact generation is busy", 429);
-    if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the model", 409);
+    if (value.derived === false || value.key !== key || !value.source || !value.identity) throw new HttpError("Unselected artifact renderer", 403);
+    // Generic host budget: two jobs total, one per registration. Adapters may
+    // impose tighter resource limits independently of the selected renderer.
+    if (value.running || this.running >= 2 || this.registrations.has(value.registration)) throw new HttpError("Artifact generation is busy", 429);
+    if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the preview", 409);
     signal.throwIfAborted();
-    value.running = true; this.running++;
+    value.running = true; this.running++; this.registrations.add(value.registration);
     const controller = new AbortController(); value.controller = controller;
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -76,14 +84,17 @@ export class ArtifactDerivations {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let quota: ReturnType<typeof setInterval> | undefined;
     let work: Promise<void> | undefined;
+    let settled = false;
     let released = false;
-    const release = () => { if (!released) { released = true; value.running = false; this.running--; } };
+    const release = () => { if (!released) { released = true; value.running = false; this.running--; this.registrations.delete(value.registration); } };
+    // Cleanup failure must never leak admission or create an unhandled rejection.
+    const discard = async () => { if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {}); };
     try {
       directory = await mkdtemp(join(tmpdir(), "pi-artifact-derived-"));
       const destination = join(directory, "output");
       timer = setTimeout(() => controller.abort(new Error("Artifact generation timed out")), this.timeoutMs);
       quota = setInterval(() => { void lstat(destination).then(s => { if (s.size > this.maxBytes) controller.abort(new Error("Derived artifact exceeds size limit")); }).catch(() => {}); }, 100);
-      work = Promise.resolve().then(() => invoke(value, { signal: controller.signal, source: value.source!, destination }));
+      work = Promise.resolve().then(() => invoke(value, { signal: controller.signal, source: value.source!, destination })).finally(() => { settled = true; });
       const cancelled = new Promise<never>((_, reject) => {
         const fail = () => reject(controller.signal.reason || new Error("Artifact generation cancelled"));
         controller.signal.addEventListener("abort", fail, { once: true });
@@ -91,7 +102,7 @@ export class ArtifactDerivations {
       });
       await Promise.race([work, cancelled]);
       controller.signal.throwIfAborted();
-      if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the model", 409);
+      if (artifactIdentity(value.source) !== value.identity) throw new HttpError("Source changed; reopen the preview", 409);
       const metadata = await lstat(destination);
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 0 || metadata.size > this.maxBytes) throw new HttpError("Invalid derived output", 422);
       const file = await open(destination, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -102,7 +113,9 @@ export class ArtifactDerivations {
       controller.abort(error);
       // Non-cooperating trusted handlers cannot be killed in-process. Retain the
       // concurrency slot until they settle; remove any late output again.
-      if (work) void work.catch(() => {}).finally(async () => { await rm(directory, { recursive: true, force: true }); release(); });
+      if (settled) { try { await discard(); } finally { release(); } }
+      else if (work) void work.catch(() => {}).then(async () => { try { await discard(); } finally { release(); } });
+      if (error && typeof error === "object" && "code" in error && error.code === "ARTIFACT_BUSY") throw new HttpError("Artifact generation is busy", 429);
       if (error instanceof HttpError) throw error;
       const message = error instanceof Error ? error.message : "";
       if (["Artifact generation timed out", "Derived artifact exceeds size limit", "Preview session closed"].includes(message)) throw new HttpError(message, 422);
@@ -111,7 +124,7 @@ export class ArtifactDerivations {
       clearTimeout(timer); clearInterval(quota); signal.removeEventListener("abort", abort);
       value.controller = undefined;
       if (!controller.signal.aborted) release();
-      else { await rm(directory, { recursive: true, force: true }); if (!work) release(); }
+      else { try { await discard(); } finally { if (!work) release(); } }
     }
   }
 }

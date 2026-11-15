@@ -4,7 +4,7 @@ import type { PiWebArtifactDeriveOptions } from "@ashwin-pc/pi-web/extensions";
 import { esc, errorView } from "./shared.js";
 import { deriveStlEdges } from "./stl-edges.js";
 // Embed classic-script helpers into the same opaque iframe; no runtime imports.
-const runtime = ["stl-decoder.js", "stl-port-protocol.js", "stl-camera.js", "stl-runtime.js"]
+const runtime = ["stl-stream-ui.js", "stl-decoder.js", "stl-port-protocol.js", "stl-camera.js", "stl-runtime.js"]
   .map((name) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8"))
   .join("\n");
 const stylesheet = readFileSync(new URL("./stl.css", import.meta.url), "utf8");

@@ -87,6 +87,7 @@ export type PiWebContribution =
       label?: string;
       match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
       derive?: PiWebArtifactDerive;
+      connect?: PiWebArtifactConnect;
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
     }
   | {
@@ -126,6 +127,8 @@ export type PiWebArtifactPreviewView = {
   artifactBytes?: true;
   /** Opt into on-demand derived bytes; requires a registered derive handler. */
   artifactDerived?: true;
+  /** Enable a private command/event bridge; requires a registered connect handler. */
+  artifactBridge?: true;
 };
 
 export type PiWebArtifactDeriveOptions = {
@@ -137,6 +140,18 @@ export type PiWebArtifactDeriveOptions = {
 };
 export type PiWebArtifactDerive = (artifact: PiWebArtifactContext, options: PiWebArtifactDeriveOptions) => Promise<void>;
 
+export type PiWebJson = null | boolean | number | string | PiWebJson[] | { [key: string]: PiWebJson };
+export type PiWebArtifactConnection = {
+  request(request: { command: string; payload?: PiWebJson }, options: { signal: AbortSignal }): PiWebJson | Promise<PiWebJson>;
+};
+/** Preview-lifetime connection. JSON messages are limited to 64 KiB; 16 requests and 32 events/second. */
+export type PiWebArtifactConnect = (artifact: PiWebArtifactContext, options: {
+  signal: AbortSignal;
+  /** Core-selected source, server-only. Never independently resolve artifact.path. */
+  source: string;
+  emit(event: PiWebJson): boolean;
+}) => PiWebArtifactConnection | Promise<PiWebArtifactConnection>;
+
 export type PiWebArtifactPreview = {
   title: string;
   label?: string;
@@ -144,6 +159,7 @@ export type PiWebArtifactPreview = {
   kinds?: PiWebArtifactContext["kind"][];
   extensions?: string[];
   derive?: PiWebArtifactDerive;
+  connect?: PiWebArtifactConnect;
   render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
 };
 

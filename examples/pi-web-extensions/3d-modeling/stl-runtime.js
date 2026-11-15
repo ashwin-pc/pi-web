@@ -1,4 +1,4 @@
-function initializeStlRenderer() {
+function initializeStlRenderer(sourceEvent, streamUI) {
   const canvas = document.querySelector("canvas"),
     status = document.querySelector("#status");
   const gl = canvas.getContext("webgl2", { antialias: true });
@@ -46,18 +46,7 @@ function initializeStlRenderer() {
     port?.postMessage({ type: "error", error: status.textContent });
   };
   if (!gl) {
-    window.addEventListener("message", (event) => {
-      if (
-        event.source === parent &&
-        event.data?.type === "pi-artifact-stream" &&
-        event.ports.length === 1
-      )
-        event.ports[0].postMessage({
-          type: "error",
-          error:
-            "WebGL 2 is unavailable. Enable browser hardware acceleration or download the original for a desktop viewer.",
-        });
-    });
+    sourceEvent.ports[0].postMessage({ type: "error", error: "WebGL 2 is unavailable. Enable browser hardware acceleration or download the original for a desktop viewer." });
     return;
   }
   const shader = (type, source) => {
@@ -412,7 +401,7 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
     }
   };
   const camera = createStlCamera(canvas, render);
-  listenForStlSource({
+  consumeStlSource(sourceEvent, {
     onOpen(sourcePort, sourceSize) {
       port = sourcePort;
       size = sourceSize;
@@ -465,7 +454,7 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
       render();
       return { triangles: sourceDecoder.count, decodeMs, uploadMs };
     },
-  });
+  }, streamUI);
   window.addEventListener("message", (event) => {
     if (
       event.source !== parent ||
@@ -598,4 +587,16 @@ void main(){color=vec4(ink.rgb,ink.a*fade);}`,
     gl.getExtension("WEBGL_lose_context")?.loseContext();
   });
 }
-initializeStlRenderer();
+// Boot is bounded by the host; the subsequent explicit user decision is not.
+let stlSourceAccepted = false;
+window.addEventListener("message", (event) => {
+  if (stlSourceAccepted || event.source !== parent || event.data?.type !== "pi-artifact-stream" || event.ports.length !== 1) return;
+  stlSourceAccepted = true;
+  const sourcePort = event.ports[0];
+  sourcePort.postMessage({ type: "connected" });
+  const ui = createStlStreamUI(sourcePort, event.data.size);
+  ui.start(() => {
+    try { initializeStlRenderer(event, ui); }
+    catch (error) { sourcePort.postMessage({ type: "error", error: error.message || String(error) }); }
+  });
+});

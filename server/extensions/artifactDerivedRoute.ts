@@ -46,12 +46,12 @@ export async function handleArtifactDerivedRoute(req: IncomingMessage, res: Serv
 }
 
 /** Convert host-only registration identity to bounded selected-source authority. */
-export function mintArtifactDerivedSelection(derivations: ArtifactDerivations, sessionId: string | undefined, body: Record<string, unknown>, result: Record<string, unknown>): void {
-  if (!sessionId || result.artifactDerived !== true || typeof result.registration !== "string" || typeof body.key !== "string") return;
+export function mintArtifactDerivedSelection(derivations: ArtifactDerivations, sessionId: string | undefined, body: Record<string, unknown>, result: Record<string, unknown>, owner?: string): void {
+  if (!sessionId || (result.artifactDerived !== true && result.artifactBridge !== true) || typeof result.registration !== "string" || typeof body.key !== "string") return;
   const context = (body.event as { context?: SelectedArtifact["artifact"] })?.context;
   if (!context) throw new HttpError("Missing selected artifact", 400);
   const prefix = `/api/session-artifacts/${encodeURIComponent(sessionId)}/`;
   const selectedUrl = context.path.startsWith("/api/artifacts/") ? prefix + context.path.slice("/api/artifacts/".length) : context.path;
-  result.selection = derivations.select({ sessionId, key: body.key, registration: result.registration, artifact: context, url: selectedUrl });
+  result.selection = derivations.select({ owner, bridge: result.artifactBridge === true, derived: result.artifactDerived === true, sessionId, key: body.key, registration: result.registration, artifact: context, url: selectedUrl });
   delete result.registration;
 }

@@ -1,4 +1,5 @@
 import { mountArtifactStream, selectedArtifactUrl } from "./artifactStream.js";
+import { mountArtifactBridge } from "./artifactBridge.js";
 
 export type ArtifactPreviewKind = "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
 
@@ -66,7 +67,10 @@ export async function renderArtifactPreview(descriptor: ArtifactPreviewDescripto
     throw new Error(data.error || response.statusText || "Artifact preview failed");
   }
   return { html: data.html as string, artifactBytes: data.artifactBytes === true,
-    derivation: data.artifactDerived === true && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key, sessionId: sessionId() } : undefined, label: typeof data.label === "string" ? data.label : undefined };
+    bridge: data.artifactBridge === true && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key } : undefined,
+    // The stream's existing selection carrier also guards original bytes for bridge-only handlers.
+    // Server-side derived:false prevents this authority from enabling a derivation handler.
+    derivation: (data.artifactDerived === true || data.artifactBridge === true) && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key, sessionId: sessionId() } : undefined, label: typeof data.label === "string" ? data.label : undefined };
 }
 
 export async function mountArtifactPreview(
@@ -77,13 +81,16 @@ export async function mountArtifactPreview(
   const descriptor = matchingArtifactPreview(artifact.name, artifact.kind);
   if (!descriptor) return false;
   const invokingSession = sessionId();
-  const { html, artifactBytes, derivation } = await renderArtifactPreview(descriptor, artifact);
+  const { html, artifactBytes, derivation, bridge } = await renderArtifactPreview(descriptor, artifact);
   if (sessionId() !== invokingSession || (options.isCurrent && !options.isCurrent())) return true;
   const frame = document.createElement("iframe");
   if (options.className) frame.className = options.className;
   frame.srcdoc = html;
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
+  if (bridge) mountArtifactBridge({ frame, ...bridge, sessionId: invokingSession,
+    url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
+    current: () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()) });
   if (artifactBytes) {
     mountArtifactStream({ host, frame, url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
       isCurrent: () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()), onFrameReady: options.onFrameReady, layout: options.layout, derivation, onRetry: () => {

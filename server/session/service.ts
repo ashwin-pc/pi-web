@@ -735,6 +735,11 @@ export class LocalSessionService implements SessionService {
       : invoke();
   }
 
+  async connectArtifactPreview(sessionId: string, input: Parameters<ReturnType<typeof createWebUiBridge>["connectArtifactPreview"]>[1], options: Parameters<ReturnType<typeof createWebUiBridge>["connectArtifactPreview"]>[2]) {
+    const value = await this.require(sessionId);
+    return this.webUiBridge.connectArtifactPreview(value, input, options);
+  }
+
   async deriveArtifactPreview(sessionId: string, input: Parameters<ReturnType<typeof createWebUiBridge>["deriveArtifactPreview"]>[1], options: Parameters<ReturnType<typeof createWebUiBridge>["deriveArtifactPreview"]>[2]) {
     const value = await this.require(sessionId);
     return this.withWorkLease(value, "artifact-derive", "general", () => this.webUiBridge.deriveArtifactPreview(value, input, options));

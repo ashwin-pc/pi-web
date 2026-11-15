@@ -3,8 +3,8 @@ import {
   streamArtifactIntoRenderer,
 } from "./artifactStreamSource.js";
 import { createStreamShell } from "./artifactStreamShell.js";
-import { createOutlineController } from "./artifactOutlineController.js";
-import { watchStreamConnection } from "./artifactStreamLifecycle.js";
+import { createDerivedStreamController } from "./artifactDerivedStreamController.js";
+import { watchArtifactConnection } from "./artifactStreamLifecycle.js";
 // Only the selected session artifact crosses a private, backpressured port.
 export function selectedArtifactUrl(path: string, session: string): string {
   const url = new URL(path, location.origin);
@@ -33,7 +33,6 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
   const {
     host,
     frame,
-    url,
     headers,
     isCurrent,
     onFrameReady,
@@ -42,40 +41,37 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
     onRetry,
   } = options;
   const controller = new AbortController();
-  const shell = createStreamShell(host, url, layout);
+  const shell = createStreamShell(host, layout);
   let unwatch = () => {};
-  let modelComplete = false;
+  let streamComplete = false;
   const current = () =>
     !controller.signal.aborted && shell.ownsPanel() && isCurrent();
   const source = createArtifactSource(options, controller.signal);
-  const outline = createOutlineController({
+  const derived = createDerivedStreamController({
     frame,
     derivation,
     headers,
     current,
     getPort: () => stream.getPort(),
-    isModelComplete: () => modelComplete,
+    isStreamComplete: () => streamComplete,
   });
   const stream = streamArtifactIntoRenderer({
     source,
     frame,
     signal: controller.signal,
     current,
-    phase: shell.phase,
-    progress: shell.progress,
-    ready: (metrics) => {
-      modelComplete = true;
-      shell.complete(frame, metrics, onFrameReady);
-    },
+    ready: () => { streamComplete = true; },
+    release: () => recover("Preview closed", "The preview has been unloaded to release its resources."),
+    reopen: () => { stop(); retry(); },
     derive: () => {
-      void outline.derive();
+      void derived.derive();
     },
-    cancelDerivation: () => outline.cancel(),
+    cancelDerivation: () => derived.cancel(),
     error: (error) => fail(error),
   });
   const stop = () => {
     controller.abort();
-    outline.dispose();
+    derived.dispose();
     stream.dispose();
     unwatch();
     frame.remove();
@@ -111,30 +107,16 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
           : String(error);
     recover("Preview could not be opened", message);
   };
-  shell.actions({
-    cancel: () =>
-      recover(
-        "Loading stopped",
-        "No model is loaded. Open again to restart loading.",
-      ),
-    close: () =>
-      recover(
-        "Model closed",
-        "The preview has been unloaded to release its resources.",
-      ),
-  });
-  unwatch = watchStreamConnection(() => {
+  unwatch = watchArtifactConnection(() => {
     if (!host.isConnected || !shell.ownsPanel() || !isCurrent()) stop();
   });
   void source
     .probe()
     .then((size) => {
       if (!current()) return;
-      shell.source(size, () => {
-        if (!current()) return;
-        shell.prepare(frame);
-        void stream.run(size).catch(fail);
-      });
+      // Install the load listener before attaching; consent belongs to the renderer.
+      void stream.run(size).catch(fail);
+      shell.prepare(frame, onFrameReady);
     })
     .catch(fail);
 }

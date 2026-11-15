@@ -23,11 +23,17 @@ async function harness(size: number, gpuError = 0, legacy = false) {
   const status = { textContent: "" };
   const parent = {};
   const port = { close() {}, postMessage: (m: any) => messages.push(m), onmessage: undefined as any };
-  vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)![1], { requestAnimationFrame: (fn: () => void) => {frame = fn;}, document: { addEventListener() {}, querySelectorAll: () => [], querySelector: (s: string) => {if(s === "canvas") return canvas;if(s === "#status") return status;if(!controls.has(s)) controls.set(s,{value:s === '#material' ? 'ivory' : 'studio',checked:false,setAttribute() {}});return controls.get(s);} }, window: { addEventListener: (name: string, fn: any) => { events[name] = fn; if(name === "message") listeners.push(fn); } }, parent, devicePixelRatio: 1, ResizeObserver: class { observe() {} }, TextDecoder, Float32Array, Uint8Array, DataView, ArrayBuffer, performance });
+  const uiElements: any[] = [];
+  const element = () => {
+    const children = new Map();
+    const result: any = { hidden: false, textContent: "", setAttribute() {}, remove() {}, querySelector(s: string) { if (!children.has(s)) children.set(s, element()); return children.get(s); } };
+    uiElements.push(result); return result;
+  };
+  vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)![1], { requestAnimationFrame: (fn: () => void) => {frame = fn;}, document: { createElement: element, body: { append() {} }, addEventListener() {}, querySelectorAll: () => [], querySelector: (s: string) => {if(s === "canvas") return canvas;if(s === "#status") return status;if(!controls.has(s)) controls.set(s,{value:s === '#material' ? 'ivory' : 'studio',checked:false,setAttribute() {}});return controls.get(s);} }, window: { addEventListener: (name: string, fn: any) => { events[name] = fn; if(name === "message") listeners.push(fn); } }, parent, devicePixelRatio: 1, ResizeObserver: class { observe() {} }, TextDecoder, Float32Array, Uint8Array, DataView, ArrayBuffer, performance });
   const dispatch = (data: any, ports: any[] = []) => { for(const listener of listeners)listener({source:parent,data,ports}); };
   dispatch({ type: "pi-artifact-stream", size, streamVersion: legacy ? 1 : 2 }, [port]);
   let nextChunk = 0;
-  return { dispatch, send: (data: any) => port.onmessage({ data: data.type === "chunk" ? {id:nextChunk++, ...data} : data }), messages, uploads, status, canvas, values, drawn, deleted, events, canvasEvents, controls, draw: () => { const fn = frame; frame = undefined; fn?.(); } };
+  return { dispatch, send: (data: any) => port.onmessage({ data: data.type === "chunk" ? {id:nextChunk++, ...data} : data }), messages, uiElements, uploads, status, canvas, values, drawn, deleted, events, canvasEvents, controls, draw: () => { const fn = frame; frame = undefined; fn?.(); } };
 }
 function binary(triangles: number) {
   const b = Buffer.alloc(84 + triangles * 50); b.writeUInt32LE(triangles, 80);
@@ -35,6 +41,19 @@ function binary(triangles: number) {
   return b;
 }
 describe("full-detail STL stream", () => {
+  it("owns large-file consent and sends boot connection before an arbitrarily long user decision", async () => {
+    const h = await harness(207486284);
+    expect(h.messages).toEqual([{ type: "connected" }]);
+    expect(h.uploads).toHaveLength(0);
+    expect(h.controls.has("#outlines")).toBe(false); // Renderer/GPU setup is deferred too.
+    const overlay = h.uiElements[0];
+    expect(overlay.querySelector(".stl-size").textContent).toContain("197.9 MiB");
+    overlay.querySelector(".stl-load").onclick();
+    expect(h.messages.at(-1)).toEqual({ type: "ready", streamVersion: 2 });
+    overlay.querySelector(".stl-stop").onclick();
+    expect(h.messages.at(-1)).toEqual({ type: "release" });
+  });
+
   it("keeps every binary triangle and coordinate across arbitrary chunk boundaries", async () => {
     const b = binary(8200), h = await harness(b.length);
     for (let offset = 0; offset < b.length; offset += 777) h.send({ type: "chunk", bytes: Uint8Array.from(b.subarray(offset, offset + 777)).buffer });
@@ -80,7 +99,8 @@ describe("full-detail STL stream", () => {
   });
   it("accepts legacy hosts without IDs or the v2 chunk-size contract", async () => {
     const b=binary(22000),h=await harness(b.length,0,true);
-    expect(h.messages[0]).toMatchObject({type:'ready',streamVersion:1});
+    expect(h.messages[0]).toEqual({type:"connected"});
+    expect(h.messages[1]).toMatchObject({type:'ready',streamVersion:1});
     h.send({type:'chunk',id:undefined,bytes:Uint8Array.from(b).buffer});h.send({type:'end'});
     expect(h.messages.at(-1)).toMatchObject({type:'complete',triangles:22000});
   });

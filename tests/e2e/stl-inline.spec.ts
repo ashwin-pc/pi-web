@@ -45,8 +45,8 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await page.locator('#prompt').fill('show gcode artifact');
     await page.locator('#promptForm').evaluate((f: HTMLFormElement) => f.requestSubmit());
     const card = page.locator('.artifactPreview--file').last();
-    if ((realSize || bytes.length) > 20 * 1024 * 1024) { await card.getByRole('button', { name: 'Load full model', exact: true }).click(); }
-    await expect(card.getByText('Exact source mesh · no simplification')).toBeVisible({ timeout: 90_000 });
+    if ((realSize || bytes.length) > 20 * 1024 * 1024) { await card.locator('.artifactPreviewShield').tap(); await card.locator('iframe').contentFrame().getByRole('button', { name: 'Load full model', exact: true }).click(); await page.locator('#prompt').tap(); }
+    await expect(card.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/, { timeout: 90_000 });
     const shield = card.locator('.artifactPreviewShield');
     await expect(shield).toBeVisible();
     await expect(shield.locator('span')).toHaveCSS('opacity', '1');
@@ -103,22 +103,22 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await card.getByRole('button', { name: 'Open in Artifacts panel' }).evaluate((button: HTMLButtonElement) => button.click());
     const panel = page.locator('#artifactBrowserPreviewBody');
     if (realSize) {
-      await expect(panel.getByRole('button', { name: 'Load full model', exact: true })).toBeVisible();
+      await expect(panel.locator('iframe').contentFrame().getByRole('button', { name: 'Load full model', exact: true })).toBeVisible();
       expect(full).toBe(1); // A second mount must still ask consent.
     } else {
-      await expect(panel.getByText('Exact source mesh · no simplification')).toBeVisible();
+      await expect(panel.locator('iframe').contentFrame().locator('#status')).toHaveText(/Full detail/);
       expect(full).toBe(2);
     }
     expect(probes).toBe(2);
-    await panel.getByRole('button', { name: 'Unload model', exact: true }).click();
+    await panel.locator('iframe').contentFrame().getByRole('button', { name: 'Unload model', exact: true }).click();
     await expect(panel.locator('iframe')).toHaveCount(0);
-    await expect(panel.getByText('Model closed', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Preview closed', { exact: true })).toBeVisible();
     for (const width of [393, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.screenshot({ path: `.pi/web/artifacts/stl-panel-${width}-closed.png` });
       const geometry = await panel.evaluate(el => {
         const host = el.getBoundingClientRect(), shell = el.querySelector('.artifact-stream')!.getBoundingClientRect();
-        const card = el.querySelector('.artifact-stream-card > div')!.getBoundingClientRect();
+        const card = el.querySelector('[role=status]')!.getBoundingClientRect();
         return { gap: Math.abs(host.height-shell.height), center: Math.abs((host.left+host.right)/2-(card.left+card.right)/2) };
       });
       expect(geometry.gap).toBeLessThan(2); expect(geometry.center).toBeLessThan(2);
@@ -127,11 +127,22 @@ test('streamed STL becomes touch interactive only when ready and remains active 
     await expect(panel.locator('iframe')).toBeVisible();
     await page.screenshot({path:'.pi/web/artifacts/stl-panel-desktop-ready.png'});
     await page.setViewportSize({width:393,height:900}); await page.screenshot({path:'.pi/web/artifacts/stl-panel-mobile-ready.png'});
-    await panel.getByRole('button',{name:'Unload model',exact:true}).click();
+    await panel.locator('iframe').contentFrame().getByRole('button',{name:'Unload model',exact:true}).click();
     consentSize=207000000;
     await panel.getByRole('button',{name:'Open again',exact:true}).click();
-    await expect(panel.getByText('Open full-detail 3D preview',{exact:true})).toBeVisible();
-    for(const width of [393,1440]) { await page.setViewportSize({width,height:900}); await page.screenshot({path:`.pi/web/artifacts/stl-panel-${width}-consent.png`}); const boxes=await panel.evaluate(el=>{const a=el.getBoundingClientRect(),b=el.querySelector('.artifact-stream-card > div')!.getBoundingClientRect();return Math.abs((a.left+a.right-b.left-b.right)/2);});expect(boxes).toBeLessThan(2); }
+    await expect(panel.locator('iframe').contentFrame().getByText('Open full-detail 3D preview',{exact:true})).toBeVisible();
+    const fullBeforeDecision = full;
+    // Boot is bounded, but a real user's consent decision may take >15s.
+    await page.waitForTimeout(16_000);
+    await expect(panel.locator('iframe').contentFrame().getByRole('button', {name:'Load full model',exact:true})).toBeVisible();
+    expect(full).toBe(fullBeforeDecision);
+
+    for(const width of [393,1440]) { await page.setViewportSize({width,height:900}); await page.screenshot({path:`.pi/web/artifacts/stl-panel-${width}-consent.png`}); const boxes=await panel.locator('iframe').contentFrame().locator('.stl-stream-card').evaluate(el=>{const b=el.getBoundingClientRect();return Math.abs((innerWidth-b.left-b.right)/2);});expect(boxes).toBeLessThan(2); }
+    await panel.locator('iframe').contentFrame().getByRole('button', {name:'Not now',exact:true}).click();
+    await expect(panel.locator('iframe')).toHaveCount(0);
+    expect(full).toBe(fullBeforeDecision);
+
+
 
 
   } finally { try { await context.close(); } finally { await server.close(); } }

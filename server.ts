@@ -11,6 +11,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
 import { handleArtifactDerivedRoute, mintArtifactDerivedSelection } from "./server/extensions/artifactDerivedRoute.js";
 import { ArtifactDerivations } from "./server/extensions/artifactDerived.js";
+import { ArtifactBridges } from "./server/extensions/artifactBridge.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
 import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
@@ -359,6 +360,7 @@ const settlementTracker = new SessionSettlementTracker(
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 let realtimeHub: RealtimeHub;
+let artifactBridges: ArtifactBridges | undefined;
 const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
 realtimeHub = new RealtimeHub(
   websocketHeartbeatMs,
@@ -370,6 +372,14 @@ realtimeHub = new RealtimeHub(
 
 const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
 function broadcast(value: unknown) {
+  if (value && typeof value === "object") {
+    const event = value as Record<string, unknown>;
+    if (event.type === "artifact_preview_invalidated") {
+      if (typeof event.sessionId === "string") artifactBridges?.releaseSession(event.sessionId, typeof event.key === "string" ? event.key : undefined);
+      return; // Internal lifecycle notification, never replayed or broadcast.
+    }
+    if (["extensions_reloaded", "session_deleted"].includes(String(event.type)) && typeof event.sessionId === "string") artifactBridges?.releaseSession(event.sessionId);
+  }
   if (mockMode && value && typeof value === "object" && (value as any).type === "agent_event") {
     const envelope = value as Record<string, any>;
     const eventMessage = envelope.event?.message;
@@ -546,6 +556,7 @@ function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
 }
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
+    artifactBridges?.releaseSession(event.sessionId);
     artifactDerivations.releaseSession(event.sessionId);
     mockPromptCorrelations.delete(event.sessionKey);
     mockPromptCorrelations.delete(event.sessionFile);
@@ -991,8 +1002,15 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         timeout.unref?.();
         try {
           const sessionId = resolveSessionId(body.sessionId);
+          if (body.slot === "artifact-preview" && body.preview && typeof body.preview === "object") {
+            if (!sessionId || typeof body.key !== "string") throw new HttpError("Invalid preview connection", 400);
+            artifactBridges ??= new ArtifactBridges(artifactDerivations, (id, owner) => realtimeHub.target(id, owner),
+              (id, selected, options) => sessionService.connectArtifactPreview(id, selected, options));
+            const result = await artifactBridges.invoke(auth.identity.id, sessionId, body.key, body.preview as Record<string, unknown>, controller.signal);
+            return sendJson(res, 200, { ok: true, ...result });
+          }
           const result = await sessionService.invokeContribution(sessionId, body, controller.signal) as Record<string, unknown>;
-          mintArtifactDerivedSelection(artifactDerivations, sessionId, body, result);
+          mintArtifactDerivedSelection(artifactDerivations, sessionId, body, result, auth.identity.id);
           return sendJson(res, 200, { ok: true, ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1581,6 +1599,8 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
+  const identity = (req as IncomingMessage & { authIdentity?: { id: string } }).authIdentity;
+  const artifactBridgeSocket = identity ? realtimeHub.bindTarget(realtimeWs, identity.id) : undefined;
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   let targetSession: PiWebSession | undefined;
@@ -1598,6 +1618,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const helloState = targetSession ? currentState(targetSession) : currentState();
   realtimeWs.send(JSON.stringify({
     type: "hello",
+    artifactBridgeSocket,
     seq: latestSeq,
     ...helloState,
   }));
