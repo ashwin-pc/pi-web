@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { nextRealtimeHello } from "./helpers/realtimeReady.js";
+import { sessionTabBox } from "./helpers/sessionBar.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
@@ -204,13 +205,8 @@ test.describe("session quick bar", () => {
     await expect(tabs).toHaveCount(2);
     await expect(draggedTab).toBeVisible();
     await expect(targetTab).toBeVisible();
-    let firstBox = await draggedTab.boundingBox();
-    let secondBox = await targetTab.boundingBox();
-    await expect.poll(async () => {
-      firstBox = await draggedTab.boundingBox();
-      secondBox = await targetTab.boundingBox();
-      return Boolean(firstBox && secondBox);
-    }).toBe(true);
+    const firstBox = await sessionTabBox(draggedTab);
+    const secondBox = await sessionTabBox(targetTab);
 
     await page.mouse.move(firstBox!.x + firstBox!.width / 2, firstBox!.y + firstBox!.height / 2);
     await page.mouse.down();
@@ -244,7 +240,7 @@ test.describe("session quick bar", () => {
       for (const tab of element.querySelectorAll<HTMLElement>(".sessionBarTab")) tab.style.flex = "0 0 220px";
     });
     await expect.poll(() => bar.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
-    const box = await tabs.nth(0).boundingBox(); expect(box).toBeTruthy();
+    const box = await sessionTabBox(tabs.nth(0));
     const cdp = await page.context().newCDPSession(page);
     const start = { x: box!.x + box!.width * 0.75, y: box!.y + box!.height / 2 };
     const before = await bar.evaluate((element) => element.scrollLeft);
@@ -264,8 +260,7 @@ test.describe("session quick bar", () => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
     const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
-    await expect(tab).toBeVisible();
-    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const box = await sessionTabBox(tab);
     const cdp = await page.context().newCDPSession(page);
     const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 9 }] });
@@ -280,8 +275,7 @@ test.describe("session quick bar", () => {
   test("trusted stationary touch hold opens the temporary-tab inspector only on release", async ({ page }) => {
     await page.goto("/");
     const tab = page.locator('.sessionBarTab.temporary[data-session-id="mock-current"]');
-    await expect(tab).toBeVisible();
-    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const box = await sessionTabBox(tab);
     const cdp = await page.context().newCDPSession(page);
     const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 10 }] });
@@ -300,9 +294,8 @@ test.describe("session quick bar", () => {
     const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(draggedTab).toBeVisible();
     await expect(targetTab).toBeVisible();
-    const firstBox = await draggedTab.boundingBox();
-    const secondBox = await targetTab.boundingBox();
-    expect(firstBox).toBeTruthy(); expect(secondBox).toBeTruthy();
+    const firstBox = await sessionTabBox(draggedTab);
+    const secondBox = await sessionTabBox(targetTab);
 
     // CDP touch dispatch follows Chromium's trusted touch -> pointer event path,
     // including touch-action arbitration. Synthetic PointerEvent dispatch does
@@ -336,7 +329,7 @@ test.describe("session quick bar", () => {
     await expect(reorderedTabs.nth(0)).toContainText("Older mock session");
 
     const cancelTab = reorderedTabs.nth(0);
-    const cancelBox = await cancelTab.boundingBox(); expect(cancelBox).toBeTruthy();
+    const cancelBox = await sessionTabBox(cancelTab);
     const cancelStart = { x: cancelBox!.x + cancelBox!.width / 2, y: cancelBox!.y + cancelBox!.height / 2 };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...cancelStart, id: 2 }] });
     await page.waitForTimeout(320);
