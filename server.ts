@@ -12,6 +12,7 @@ import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "
 import { handleArtifactDerivedRoute, mintArtifactDerivedSelection } from "./server/extensions/artifactDerivedRoute.js";
 import { ArtifactDerivations } from "./server/extensions/artifactDerived.js";
 import { ArtifactBridges } from "./server/extensions/artifactBridge.js";
+import { invokeArtifactBridge } from "./server/extensions/artifactBridgeInvoke.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
 import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
@@ -360,7 +361,6 @@ const settlementTracker = new SessionSettlementTracker(
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 let realtimeHub: RealtimeHub;
-let artifactBridges: ArtifactBridges | undefined;
 const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
 realtimeHub = new RealtimeHub(
   websocketHeartbeatMs,
@@ -370,15 +370,17 @@ realtimeHub = new RealtimeHub(
   (count) => { if (count === 0) sessionService?.cancelInteractions(); },
 );
 
+const artifactBridges = new ArtifactBridges(
+  artifactDerivations,
+  (id, owner) => realtimeHub.target(id, owner),
+  (id, selected, options) => sessionService.connectArtifactPreview(id, selected, options),
+);
+
 const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
 function broadcast(value: unknown) {
   if (value && typeof value === "object") {
     const event = value as Record<string, unknown>;
-    if (event.type === "artifact_preview_invalidated") {
-      if (typeof event.sessionId === "string") artifactBridges?.releaseSession(event.sessionId, typeof event.key === "string" ? event.key : undefined);
-      return; // Internal lifecycle notification, never replayed or broadcast.
-    }
-    if (["extensions_reloaded", "session_deleted"].includes(String(event.type)) && typeof event.sessionId === "string") artifactBridges?.releaseSession(event.sessionId);
+    if (["extensions_reloaded", "session_deleted"].includes(String(event.type)) && typeof event.sessionId === "string") artifactBridges.releaseSession(event.sessionId);
   }
   if (mockMode && value && typeof value === "object" && (value as any).type === "agent_event") {
     const envelope = value as Record<string, any>;
@@ -525,6 +527,7 @@ const mockSessionFactory = mockMode ? {
 
 sessionService = new LocalSessionService({
   extensionHttp,
+  invalidateArtifactPreview: (sessionId, key) => artifactBridges.releaseSession(sessionId, key),
   modelRuntime,
   sessionFactory: mockSessionFactory,
   additionalExtensionPaths,
@@ -556,7 +559,7 @@ function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
 }
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
-    artifactBridges?.releaseSession(event.sessionId);
+    artifactBridges.releaseSession(event.sessionId);
     artifactDerivations.releaseSession(event.sessionId);
     mockPromptCorrelations.delete(event.sessionKey);
     mockPromptCorrelations.delete(event.sessionFile);
@@ -1002,13 +1005,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         timeout.unref?.();
         try {
           const sessionId = resolveSessionId(body.sessionId);
-          if (body.slot === "artifact-preview" && body.preview && typeof body.preview === "object") {
-            if (!sessionId || typeof body.key !== "string") throw new HttpError("Invalid preview connection", 400);
-            artifactBridges ??= new ArtifactBridges(artifactDerivations, (id, owner) => realtimeHub.target(id, owner),
-              (id, selected, options) => sessionService.connectArtifactPreview(id, selected, options));
-            const result = await artifactBridges.invoke(auth.identity.id, sessionId, body.key, body.preview as Record<string, unknown>, controller.signal);
-            return sendJson(res, 200, { ok: true, ...result });
-          }
+          const preview = invokeArtifactBridge(artifactBridges, auth.identity.id, sessionId, body, controller.signal);
+          if (preview) return sendJson(res, 200, { ok: true, ...await preview });
           const result = await sessionService.invokeContribution(sessionId, body, controller.signal) as Record<string, unknown>;
           mintArtifactDerivedSelection(artifactDerivations, sessionId, body, result, auth.identity.id);
           return sendJson(res, 200, { ok: true, ...result });

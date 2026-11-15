@@ -74,6 +74,7 @@ export interface LocalSessionConfiguration {
 }
 
 export interface LocalSessionServiceDependencies {
+  invalidateArtifactPreview?(sessionId: string, key?: string): void;
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
@@ -323,6 +324,7 @@ export class LocalSessionService implements SessionService {
     });
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
+      invalidateArtifactPreview: deps.invalidateArtifactPreview,
       captureStore: this.captureStore,
       emit: (input) => {
         const value = input as Record<string, unknown>;

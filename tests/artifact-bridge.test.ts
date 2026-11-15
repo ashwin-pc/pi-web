@@ -138,6 +138,27 @@ describe("preview-scoped command/event bridge", () => {
     finish(null);
     expect((await settled).every(result => result.status === "rejected")).toBe(true);
   });
+  it("retains the global 256-request budget across closed noncooperating previews", async () => {
+    let finish!: (value: PiWebJson) => void;
+    const gate = new Promise<PiWebJson>(resolve => { finish = resolve; });
+    const s = await fixture(() => ({ request: () => gate }));
+    const pending: Promise<unknown>[] = [];
+    for (let connection = 0; connection < 16; connection++) {
+      const { preview } = await s.open();
+      for (let request = 0; request < 16; request++) {
+        pending.push(s.invoke({ operation: "request", preview, id: `r${request}`, command: "wait" }));
+      }
+      await s.invoke({ operation: "close", preview });
+    }
+    const settled = Promise.allSettled(pending);
+    const { preview } = await s.open();
+    try {
+      await expect(s.invoke({ operation: "request", preview, id: "extra", command: "wait" })).rejects.toMatchObject({ status: 429 });
+    } finally { finish(null); }
+    expect((await settled).every(result => result.status === "rejected")).toBe(true);
+    await expect(s.invoke({ operation: "request", preview, id: "released", command: "wait" })).resolves.toEqual({ result: null });
+    expect(s.registry).toMatchObject({ pending: 0 });
+  });
   it("bounds JSON, sanitizes errors, and closes event floods", async () => {
     let emit!: (event: PiWebJson) => boolean;
     const s = await fixture((_artifact, options) => { emit = options.emit; return { request: () => { throw Error("private /home/secret"); } }; });
@@ -180,7 +201,8 @@ describe("preview-scoped command/event bridge", () => {
 it("connect registration requires rendered opt-in, checks session context, and proactively invalidates replacements/unload", async () => {
   let ui: any;
   const emit = vi.fn();
-  const bridge = createWebUiBridge({ emit, clientCount: () => 1,
+  const invalidateArtifactPreview = vi.fn();
+  const bridge = createWebUiBridge({ emit, invalidateArtifactPreview, clientCount: () => 1,
     withWorkLease: (_session: unknown, _label: string, operation: () => Promise<unknown>) => operation(),
     createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}) } as never);
   const session = { sessionId: "one", sessionFile: "/tmp/one.jsonl", agent: { waitForIdle: async () => {} }, bindExtensions: async (options: any) => { ui = options.uiContext; } };
@@ -195,13 +217,15 @@ it("connect registration requires rendered opt-in, checks session context, and p
   expect(connected.request).toBeTypeOf("function");
   expect(() => bridge.connectArtifactPreview(session, { ...input, artifact: { ...artifact, path: "/api/session-artifacts/two/notes.gcode" } }, options)).toThrow("Invalid artifact context");
   emit.mockClear(); ui.web.contribute("notes", artifactBridgePreview);
-  expect(emit).toHaveBeenCalledWith({ type: "artifact_preview_invalidated", sessionId: "one", key: "notes" });
+  expect(invalidateArtifactPreview).toHaveBeenCalledWith("one", "notes");
+  expect(emit.mock.calls.some(([event]) => event.type === "artifact_preview_invalidated")).toBe(false);
   expect(() => bridge.connectArtifactPreview(session, input, options)).toThrow("registration changed");
   ui.web.contribute("notes", { ...artifactBridgePreview, connect: undefined });
   const disabled = await bridge.invokeContribution(session, { slot: "artifact-preview", key: "notes", event: { context: artifact } }) as Record<string, unknown>;
   expect(disabled.artifactBridge).toBeUndefined();
   emit.mockClear(); bridge.releaseSessionSettings(session);
-  expect(emit).toHaveBeenCalledWith({ type: "artifact_preview_invalidated", sessionId: "one" });
+  expect(invalidateArtifactPreview).toHaveBeenCalledWith("one");
+  expect(emit.mock.calls.some(([event]) => event.type === "artifact_preview_invalidated")).toBe(false);
 });
 
 it("live-targeted websocket delivery is exact-socket, bounded and never recorded/replayed/onBroadcast", () => {

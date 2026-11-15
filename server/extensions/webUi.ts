@@ -18,6 +18,7 @@ function previewRegistration(source: object) {
 export interface WebUiBridgeDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   emit(value: unknown): void;
+  invalidateArtifactPreview?(sessionId: string, key?: string): void;
   clientCount(): number;
   withWorkLease<T>(session: any, label: string, operation: () => Promise<T>): Promise<T>;
   createNewSession(cwd: string, previousSessionFile?: string): Promise<any>;
@@ -351,7 +352,7 @@ function notifySettingsChanged(id: string, values: Record<string, unknown>) {
 function releaseSessionSettings(value: any) {
   const session = value as object;
   disposedSettingsSessions.add(session);
-  deps.emit({ type: "artifact_preview_invalidated", sessionId: value.sessionId });
+  deps.invalidateArtifactPreview?.(value.sessionId);
   deps.extensionHttp?.revokeOwner(session);
   if (value?.sessionId) void deps.captureStore?.releaseOwner?.(String(value.sessionId));
   const previousSchemaList = settingsSchemaListKey();
@@ -541,7 +542,7 @@ function setContribution(
   if (!key) return;
   const contribution = create(key);
   const id = contributionId(slot, key);
-  if (slot === "artifact-preview") deps.emit({ type: "artifact_preview_invalidated", sessionId: value.sessionId, key });
+  if (slot === "artifact-preview") deps.invalidateArtifactPreview?.(value.sessionId, key);
   if (contribution) contributionState(value).set(id, contribution);
   else contributionState(value).delete(id);
   broadcastContributions(value);
@@ -615,13 +616,13 @@ function createPiWebUi(value: any): PiWebUi {
       const key = cleanContributionKey(keyValue);
       if (!key) throw new TypeError("Contribution key is required");
       if (!spec) {
-        deps.emit({ type: "artifact_preview_invalidated", sessionId: value.sessionId, key });
+        deps.invalidateArtifactPreview?.(value.sessionId, key);
         for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
         broadcastContributions(value);
         return;
       }
       const contribution = normalizedPublicContribution(key, spec);
-      deps.emit({ type: "artifact_preview_invalidated", sessionId: value.sessionId, key });
+      deps.invalidateArtifactPreview?.(value.sessionId, key);
       for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
       contributionState(value).set(contributionId(contribution.slot, key), contribution);
       broadcastContributions(value);

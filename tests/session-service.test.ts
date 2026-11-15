@@ -182,6 +182,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
 }
 
 type FixtureServiceOptions = {
+  invalidateArtifactPreview?: LocalSessionServiceDependencies["invalidateArtifactPreview"];
   modelRuntime?: LocalSessionServiceDependencies["modelRuntime"];
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
@@ -212,6 +213,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
     remove: options.remove,
   };
   const deps: LocalSessionServiceDependencies = {
+    invalidateArtifactPreview: options.invalidateArtifactPreview,
     modelRuntime: options.modelRuntime || {} as LocalSessionServiceDependencies["modelRuntime"],
     sessionFactory: factory,
     additionalExtensionPaths: () => [],
@@ -601,10 +603,24 @@ describe("LocalSessionService contract", () => {
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
   });
 
-  it("keeps seven true externals including the optional scoped extension transport", async () => {
+  it("delivers preview invalidation directly without a wire event", async () => {
+    const invalidateArtifactPreview = vi.fn();
+    const { service, fixture } = await fixtureService({ invalidateArtifactPreview });
+    const events: SessionServiceEvent[] = [];
+    const unsubscribe = service.subscribe(event => events.push(event));
+    const ui = fixture.extensionOptions?.uiContext;
+    expect(ui).toBeDefined();
+    ui.web.setArtifactPreview("notes", { title: "Notes", extensions: [".txt"], render: () => ({ html: "notes" }) });
+    expect(invalidateArtifactPreview).toHaveBeenCalledWith("current", "notes");
+    expect(events.some(event => event.type === "wire" && (event.value as Record<string, unknown>).type === "artifact_preview_invalidated")).toBe(false);
+    unsubscribe();
+  });
+
+  it("keeps eight true externals including direct preview lifecycle and scoped extension transport", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
     const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
-    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(7);
+    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(8);
+    expect(body).toContain("invalidateArtifactPreview?");
     expect(body).toContain("extensionHttp?");
     expect(body).not.toContain("decorateState");
     expect(body).not.toContain("resolve(sessionId");

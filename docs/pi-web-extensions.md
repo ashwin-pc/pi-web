@@ -356,13 +356,15 @@ The iframe receives `{ type: "pi-artifact-bridge", version: 1 }` from its parent
 with a **separate private MessagePort** (not either byte-stream port). Validate
 `event.source === parent` and accept it once. Send `{ type: "ready" }`, then
 `{ type: "request", id, command, payload? }`, `{ type: "cancel", id }`, or
-`{ type: "close" }`. IDs are 1–80 ASCII letters, digits, underscores or hyphens.
-Replies are `{ type: "response", id, result }`, sanitized
+`{ type: "close" }` or `{ type: "reopen" }`. IDs are 1–80 ASCII letters, digits,
+underscores or hyphens. Replies are `{ type: "response", id, result }`, sanitized
 `{ type: "error", id, error: { code, message } }`, asynchronous
-`{ type: "event", event }`, or `{ type: "closed" }`. Acknowledge each delivered
-response/error/event with `{ type: "ack" }` after consuming it. Ready and delivery
+`{ type: "event", event }`, and `{ type: "connection-state", state }` with states
+`connecting`, `ready`, `disconnected` or `reopen-required`. Acknowledge each delivered
+response/error/event/connection-state with `{ type: "ack" }` after consuming it. Ready and delivery
 acknowledgements have a ten-second deadline. Only one delivery awaits
-acknowledgement; the host queue is bounded to 32 messages and 256 KiB.
+acknowledgement; the host queue is bounded to 32 messages and 256 KiB. Permanent
+disposal sends `{ type: "closed" }` and closes the port without waiting for an ACK.
 No credentials, selection tokens, source paths or session/socket selectors cross
 into the iframe. The iframe cannot select another artifact or callback handler.
 
@@ -378,11 +380,21 @@ requires bulk-load consent.
 
 Delivery uses the existing authenticated invoke route and exact originating
 WebSocket, but bypasses event logs, replay, broadcast observers and agent context.
-Socket loss, preview unmount/replacement, session changes/disposal, extension
-reload/registration changes, expiry and explicit close abort the connection and
-its commands. Reconnection requires reopening; commands and events are not
-replayed. Preview-local JavaScript remains trusted extension code inside an
-opaque-origin sandbox, not a network-exfiltration boundary.
+Socket loss aborts the server connection and in-flight commands but retains the
+iframe, private port and browser-local draft. Interrupted commands receive
+`OUTCOME_UNKNOWN`: they may already have executed, so never retry mutations
+without extension-owned reconciliation. A new WebSocket hello probes the existing
+selection and opens a fresh connection ID automatically; commands and events are
+never replayed. Previews opened before the first hello wait for it. Extensions can
+resynchronize their state after a `ready` connection-state notification.
+
+Source changes, expired selections or changed registrations do not silently bind
+new authority. They produce `reopen-required` and a visible **Open again** action;
+the iframe can also send `reopen`. This explicitly re-renders the preview, obtains
+fresh selection authority and may discard browser-local state, unlike an ordinary
+socket reconnect. Unmount/replacement, session changes/disposal and explicit close
+terminate the preview lifetime. Preview-local JavaScript remains trusted extension
+code inside an opaque-origin sandbox, not a network-exfiltration boundary.
 
 ### Optional derived artifact streams
 

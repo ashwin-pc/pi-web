@@ -42,6 +42,13 @@ test("real authenticated extension bridge replies, emits only to its tab, and cl
     PI_WEB_SESSION_UI_STATE_FILE: join(dir, "sessions.json"),
   }, dir, 30_000);
   const context = await browser.newContext({ serviceWorkers: "block" });
+  await context.addInitScript(() => {
+    const Native = WebSocket;
+    (window as any).__bridgeSockets = [];
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); (window as any).__bridgeSockets.push(this); }
+    };
+  });
   const observe = (page: Page) => {
     const events: Record<string, unknown>[] = [];
     page.on("websocket", socket => socket.on("framereceived", ({ payload }) => {
@@ -69,7 +76,7 @@ test("real authenticated extension bridge replies, emits only to its tab, and cl
       }
     });
     // Real artifact browser, no synthetic chat messages, route fulfillment, mock
-    // endpoints, WebSocket replacement, model calls, or token extraction.
+    // endpoints, fake WebSocket transports, model calls, or token extraction.
     await page.getByRole("button", { name: "Open session actions" }).click();
     await page.getByRole("menuitem", { name: "File explorer" }).click();
     await page.locator("#filesArtifactsScope").click();
@@ -84,11 +91,40 @@ test("real authenticated extension bridge replies, emits only to its tab, and cl
     expect(fullReads).toBe(0);
     const opened = invocations.find(body => (body.preview as Record<string, unknown> | undefined)?.operation === "open");
     expect(opened).toBeDefined();
-    const preview = (opened!.preview as Record<string, unknown>).preview;
+    let preview = (opened!.preview as Record<string, unknown>).preview;
     await expect.poll(() => events.filter(event => event.type === "artifact_bridge_event" && event.preview === preview && event.event).length).toBe(1);
     // Give the second authenticated socket time to receive any erroneous broadcast.
     await other.waitForTimeout(250);
     expect(otherEvents.filter(event => event.type === "artifact_bridge_event")).toEqual([]);
+    const element = panel.locator("iframe");
+    await element.evaluate(element => { element.dataset.retained = "same-frame"; });
+    await frame.locator("#draft").fill("Keep this browser-only draft");
+    await frame.locator("#slow").click();
+    await expect.poll(() => invocations.filter(body => (body.preview as any)?.command === "wait").length).toBe(1);
+    await page.evaluate(() => (window as any).__bridgeSockets.at(-1).close());
+    await expect.poll(() => invocations.filter(body => (body.preview as any)?.operation === "open").length).toBe(2);
+    await expect(frame.locator("#connection")).toHaveText("ready");
+    await expect(frame.locator("#draft")).toHaveValue("Keep this browser-only draft");
+    await expect(element).toHaveAttribute("data-retained", "same-frame");
+    expect(invocations.filter(body => (body.preview as any)?.command === "wait")).toHaveLength(1);
+    await expect(frame.locator("#reply")).toContainText("outcome may be unknown");
+    await frame.locator("#event").evaluate(element => { element.textContent = "Awaiting new event"; });
+    await frame.locator("#request").click();
+    await expect(frame.locator("#reply")).toHaveText("Reply completed");
+    await expect(frame.locator("#event")).toHaveText("Asynchronous event after reply");
+    const connectionIds = invocations.filter(body => (body.preview as any)?.operation === "open").map(body => (body.preview as any).preview);
+    expect(new Set(connectionIds).size).toBe(2);
+    // A changed source cannot be silently rebound on reconnect. Only explicit full
+    // rendering/probing obtains fresh authority; the retained draft is left visible meanwhile.
+    await writeFile(join(workspace, ".pi/web/artifacts/notes.gcode"), "changed selected source\n");
+    await page.evaluate(() => (window as any).__bridgeSockets.at(-1).close());
+    await expect(frame.locator("#connection")).toHaveText("reopen-required");
+    await expect(frame.locator("#draft")).toHaveValue("Keep this browser-only draft");
+    await panel.getByRole("button", { name: "Open again", exact: true }).click();
+    await expect(panel.locator("iframe")).not.toHaveAttribute("data-retained", "same-frame");
+    await expect(frame.locator("#connection")).toHaveText("ready");
+    const last = invocations.filter(body => (body.preview as any)?.operation === "open").at(-1)!;
+    preview = (last.preview as any).preview;
     const closing = page.waitForResponse(response => response.url().endsWith("/api/web-contributions/invoke")
       && response.request().postDataJSON()?.preview?.operation === "close");
     await page.locator("#artifactBrowserPreviewBack").click();

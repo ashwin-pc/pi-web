@@ -88,21 +88,33 @@ export async function mountArtifactPreview(
   frame.srcdoc = html;
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
-  if (bridge) mountArtifactBridge({ frame, ...bridge, sessionId: invokingSession,
-    url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
-    current: () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()) });
+  const current = () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent());
+  let closeBridge = () => {};
+  const retry = () => {
+    if (!current()) return;
+    closeBridge();
+    void mountArtifactPreview(host, artifact, options).catch(() => {
+      if (!current()) return;
+      host.replaceChildren();
+      const error = document.createElement("p");
+      error.textContent = "Preview could not be reopened. Close and reopen the artifact to try again.";
+      host.append(error);
+    });
+  };
+  let notice: HTMLElement | undefined;
+  if (bridge) closeBridge = mountArtifactBridge({ frame, ...bridge, sessionId: invokingSession,
+    url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders, current, onReopen: retry,
+    onState: state => {
+      notice?.remove(); notice = undefined;
+      if (!current() || !frame.isConnected || !["disconnected", "reopen-required"].includes(state)) return;
+      notice = document.createElement("div"); notice.setAttribute("role", "status");
+      notice.textContent = state === "disconnected" ? "Preview disconnected. Waiting for connection. " : "Preview connection unavailable. Open again to validate its source and renderer. ";
+      const button = document.createElement("button"); button.textContent = "Open again";
+      button.onclick = retry; notice.append(button); frame.parentElement?.append(notice);
+    } });
   if (artifactBytes) {
     mountArtifactStream({ host, frame, url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
-      isCurrent: () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent()), onFrameReady: options.onFrameReady, layout: options.layout, derivation, onRetry: () => {
-        void mountArtifactPreview(host, artifact, options).catch(() => {
-          if (sessionId() === invokingSession && (!options.isCurrent || options.isCurrent())) {
-            host.replaceChildren();
-            const error = document.createElement("p");
-            error.textContent = "Preview could not be reopened. Close and reopen the artifact to try again.";
-            host.append(error);
-          }
-        });
-      } });
+      isCurrent: current, onFrameReady: options.onFrameReady, layout: options.layout, derivation, onRetry: retry });
   } else {
     host.replaceChildren(frame);
     options.onFrameReady?.(frame, host);

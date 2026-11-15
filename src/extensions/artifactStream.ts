@@ -61,7 +61,7 @@ export function mountArtifactStream(options: ArtifactStreamOptions) {
     signal: controller.signal,
     current,
     ready: () => { streamComplete = true; },
-    release: () => recover("Preview closed", "The preview has been unloaded to release its resources."),
+    release: () => recover("Preview closed", "Open again whenever you’re ready."),
     reopen: () => { stop(); retry(); },
     derive: () => {
       void derived.derive();
