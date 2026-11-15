@@ -88,7 +88,9 @@ test('twelve on-demand previews and real outline derivation and activity regroup
     }
     expect(await page.evaluate(() => (window as any).stlContexts)).toBe(0);
     await mkdir('.pi/web/artifacts/mobile-on-demand', { recursive: true });
-    await card.screenshot({ path: `.pi/web/artifacts/mobile-on-demand/${info.project.name}-before-load.png` });
+    const beforeLoadPath = info.outputPath('before-load.png');
+    await card.screenshot({ path: beforeLoadPath });
+    await info.attach('before-load', { path: beforeLoadPath, contentType: 'image/png' });
     await expect(runtime.getByRole('button', { name: 'Load 3D preview', exact: true })).toBeVisible();
     expect(fullSources).toBe(0);
     await card.locator('.artifactPreviewShield').click();
@@ -160,7 +162,13 @@ test('twelve on-demand previews and real outline derivation and activity regroup
       await assertRetained();
       await expect(page.locator('.activitySummary')).toHaveCount(density === 'minimal' ? 1 : 0);
     }
-    await card.screenshot({ path: `.pi/web/artifacts/mobile-on-demand/${info.project.name}-loaded-outlines.png` });
+    await page.locator('#settingsCloseButton').click();
+    await expect(page.locator('#settingsCloseButton')).toBeHidden();
+    await card.scrollIntoViewIfNeeded();
+    await card.locator('.artifactPreviewShield').click();
+    const loadedPath = info.outputPath('loaded-outlines.png');
+    await card.screenshot({ path: loadedPath });
+    await info.attach('loaded-outlines', { path: loadedPath, contentType: 'image/png' });
     await mkdir('.pi/web/artifacts/stl-outline-reset-followup', { recursive: true });
     await card.screenshot({ path: '.pi/web/artifacts/stl-outline-reset-followup/real-derive-after.png' });
   } finally {
