@@ -1,0 +1,144 @@
+[
+  {
+    "type": "message",
+    "id": "preceding-0",
+    "parentId": null,
+    "timestamp": "2026-11-09T02:00:00.000Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "preceding-call",
+          "name": "sessions_prompt",
+          "arguments": {
+            "id": "fixture-session",
+            "message": "Sanitized prior verification"
+          }
+        }
+      ],
+      "timestamp": 1794180000000,
+      "api": "openai-responses",
+      "provider": "openai",
+      "model": "fixture",
+      "stopReason": "toolUse",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "type": "message",
+    "id": "preceding-1",
+    "parentId": "preceding-0",
+    "timestamp": "2026-11-09T02:00:00.000Z",
+    "message": {
+      "role": "toolResult",
+      "content": [
+        {
+          "type": "text",
+          "text": "Sanitized preceding toolResult content"
+        }
+      ],
+      "timestamp": 1794180000001,
+      "toolCallId": "preceding-call",
+      "toolName": "sessions_prompt",
+      "isError": false
+    }
+  },
+  {
+    "type": "message",
+    "id": "preceding-2",
+    "parentId": "preceding-1",
+    "timestamp": "2026-11-09T02:00:00.000Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Sanitized preceding assistant content"
+        }
+      ],
+      "timestamp": 1794180000002,
+      "api": "openai-responses",
+      "provider": "openai",
+      "model": "fixture",
+      "stopReason": "stop",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "type": "message",
+    "id": "preceding-3",
+    "parentId": "preceding-2",
+    "timestamp": "2026-11-09T02:00:00.000Z",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Sanitized preceding user content"
+        }
+      ],
+      "timestamp": 1794180000003
+    }
+  },
+  {
+    "type": "message",
+    "id": "artifact-owner",
+    "parentId": "preceding-3",
+    "timestamp": "2026-11-09T02:00:00.000Z",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "[Test model](/api/artifacts/hook-cover.stl)"
+        }
+      ],
+      "timestamp": 1794180000004,
+      "api": "openai-responses",
+      "provider": "openai",
+      "model": "fixture",
+      "stopReason": "stop",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  }
+]

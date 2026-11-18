@@ -260,12 +260,9 @@ export function createActivitySummaries(options: {
       if (group) output.push(group.element);
       else if (!groupedCards.has(node)) output.push(node);
     }
-    // Move only when necessary: focused controls and live tool cards retain identity.
-    let cursor = messagesEl.firstElementChild;
-    for (const node of output) {
-      if (node === cursor) cursor = cursor.nextElementSibling;
-      else messagesEl.insertBefore(node, cursor);
-    }
+    // Remove grouped cards from the root ordering before reconciling siblings.
+    // Otherwise a stale root card can become the insertion cursor and cause an
+    // unchanged prose owner to move; moving its iframe reloads its document.
     for (const group of activeGroups) {
       let child = group.body.firstElementChild;
       for (const card of group.cards) {
@@ -276,8 +273,14 @@ export function createActivitySummaries(options: {
     for (const group of [...groups]) {
       if (activeGroups.has(group)) continue;
       if (openMenu === group) closeMenu();
-      group.element.remove();
+      group.element.replaceWith(...Array.from(group.body.children));
       groups.delete(group);
+    }
+    // Move only when necessary: focused controls and live tool cards retain identity.
+    let cursor = messagesEl.firstElementChild;
+    for (const node of output) {
+      if (node === cursor) cursor = cursor.nextElementSibling;
+      else messagesEl.insertBefore(node, cursor);
     }
     for (const group of activeGroups) fitSessionRefs(group);
   }

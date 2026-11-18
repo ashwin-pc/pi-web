@@ -573,6 +573,28 @@ function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
   else interactiveArtifactCards.delete(card);
 }
 
+function attachArtifactInteractionShield(card: HTMLElement, content: HTMLElement, iframe: HTMLIFrameElement, title: string) {
+  const shield = document.createElement("button");
+  shield.type = "button";
+  shield.className = "artifactPreviewShield";
+  shield.setAttribute("aria-label", `Tap or click to interact with ${title}`);
+  const hint = document.createElement("span");
+  hint.textContent = "Tap or click to interact";
+  shield.append(hint);
+  shield.addEventListener("click", () => {
+    setArtifactFrameInteraction(card, true);
+    iframe.focus();
+  });
+  // Touch pointers leave on every finger release, even inside the card.
+  // Only a hovering mouse leaving should restore the chat-scroll shield.
+  // Touch users can tap outside or minimize the preview to restore scrolling.
+  card.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "mouse") setArtifactFrameInteraction(card, false);
+  });
+  content.append(shield);
+  ensureArtifactInteractionListener();
+}
+
 function ensureArtifactInteractionListener() {
   if (artifactInteractionListenerAttached) return;
   artifactInteractionListenerAttached = true;
@@ -736,25 +758,12 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
         title: `Interactive preview of ${title.textContent}`,
         className: "artifactPreviewFrame",
         isCurrent: () => card.isConnected,
-      }).then((mounted) => {
-        if (!mounted || !card.isConnected) return;
-        const iframe = content.querySelector<HTMLIFrameElement>("iframe");
-        if (!iframe) return;
-        const shield = document.createElement("button");
-        shield.type = "button";
-        shield.className = "artifactPreviewShield";
-        shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-        const shieldHint = document.createElement("span");
-        shieldHint.textContent = "Click to interact";
-        shield.append(shieldHint);
-        shield.addEventListener("click", () => {
-          setArtifactFrameInteraction(card, true);
-          iframe.focus();
-        });
-        card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-        content.append(shield);
-        ensureArtifactInteractionListener();
-        refreshOverflow();
+        onFrameReady: (iframe, surface) => {
+          if (!card.isConnected) return;
+          setArtifactFrameInteraction(card, false);
+          attachArtifactInteractionShield(card, surface, iframe, title.textContent || fileName);
+          refreshOverflow();
+        },
       }).catch((error) => {
         if (!card.isConnected) return;
         content.textContent = error instanceof Error ? error.message : String(error);
@@ -775,20 +784,8 @@ function enhanceArtifactLinks(root: ParentNode, sessionId = artifactActionSessio
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
       iframe.setAttribute("sandbox", "allow-scripts");
-      const shield = document.createElement("button");
-      shield.type = "button";
-      shield.className = "artifactPreviewShield";
-      shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-      const shieldHint = document.createElement("span");
-      shieldHint.textContent = "Click to interact";
-      shield.append(shieldHint);
-      shield.addEventListener("click", () => {
-        setArtifactFrameInteraction(card, true);
-        iframe.focus();
-      });
-      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-      content.append(iframe, shield);
-      ensureArtifactInteractionListener();
+      content.append(iframe);
+      attachArtifactInteractionShield(card, content, iframe, title.textContent || fileName);
       refreshOverflow();
       continue;
     }

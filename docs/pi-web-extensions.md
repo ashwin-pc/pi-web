@@ -328,7 +328,83 @@ ctx.ui.web.contribute("gcode.viewer", {
 });
 ```
 
-The context is `{ name, path, kind }`. The path is either `/api/artifacts/...` or `/api/session-artifacts/<session>/...`; in the scoped form, the session segment always matches the invoking session. Extensions must parse both forms, as [`artifactRelativeFromUrl`](../examples/pi-web-extensions/3d-modeling/shared.ts) does. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
+The context is `{ name, path, kind }`. The path is either `/api/artifacts/...` or `/api/session-artifacts/<session>/...`; in the scoped form, the session segment always matches the invoking session. Extensions must parse both forms, as [`artifactRelativeFromUrl`](../examples/pi-web-extensions/3d-modeling/shared.ts) does. The `html` result field is capped at 1 MB. Previews may additionally opt into host-assisted loading with `artifactBytes: true`. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. For compact previews, extensions may parse source files server-side and embed visualization data. To preserve a large artifact exactly, return `{ html, artifactBytes: true }` without reading the source during rendering. The host probes one byte through the existing authenticated range route to determine size. The renderer owns its consent policy, progress display and resource-specific controls; core imposes no format-specific size threshold or presentation. The host does not start the full-file fetch until the renderer sends `ready`.
+
+Opt-in previews receive a parent `message` with `{ type: "pi-artifact-stream", size, streamVersion: 2 }` and a private transferred `MessagePort`. Validate `event.source === parent` and accept the port once. A renderer that needs user consent sends `{ type: "connected" }` within the 15-second initialization deadline, then sends `ready` only after consent. `connected` suspends that deadline for an abortable user-decision wait; no full-file fetch begins while waiting. Renderers without a consent step may send `ready` immediately, preserving the legacy handshake.
+
+The host aggregates reads into at most 1 MiB chunks. Legacy renderers reply `{ type: "ack" }` to one chunk at a time. When the host advertises `streamVersion: 2`, reply `{ type: "ready", streamVersion: 2 }` to opt into a bounded two-chunk (2 MiB) credit window. Chunks then carry a monotonic `id`; acknowledge `{ type: "ack", id, bytes: chunkByteLength }` in FIFO order only after consumption. Without the host advertisement, retain legacy ACK compatibility. After `{ type: "end", stats }`, validate completeness and reply `{ type: "complete" }`, or `{ type: "error", error: string }` on failure. Core interprets only transport counters: `receivedBytes`, `processedBytes`, `peakQueuedBytes`, `chunks`, `readerWaitMs` and `receiveElapsedMs`. Browser/network internal buffers are not part of the application queue. Decoding, geometry, GPU timing and other format-specific metrics belong entirely to the renderer.
+
+Renderers may send `{ type: "release" }` to abort work and remove their iframe, or `{ type: "reopen" }` to request a fresh preview and selection. Core presents only neutral loading, failure and Open again states. Disconnect, unmount, replacement and session changes cancel owned streams. The iframe cannot select a URL or receive credentials: only the invoking session's selected artifact is fetched through the existing authenticated disk-streaming route. Installed extensions remain trusted server-side code; this is not a network-exfiltration sandbox for malicious extensions.
+
+Renderers must bound their decoding memory and fail visibly on resource exhaustion. The full-detail STL example owns its 20 MiB consent threshold, model-specific warning, progress, GPU diagnostics and unload controls inside the iframe. It uploads fixed-size triangle batches without retaining a full CPU mesh or adjacency graph, preserving every triangle without welding, clustering, sampling or decimation. Optional outlines arrive through `derive`, described below; Smooth/CAD shading and transparency remain unavailable. Browser/GPU limits still apply despite consent.
+
+### Optional preview command/event bridge
+
+An **extension-rendered** HTML document can return `{ html, artifactBridge: true }`
+and register an optional `connect(artifact, { source, signal, emit })` handler.
+This does not change built-in HTML precedence or enable callbacks in fenced HTML.
+`connect` returns `{ request({ command, payload }, { signal }) }`; requests return
+JSON, and `emit(json)` sends asynchronous events for the lifetime of that exact
+preview, including after a request has returned. These callbacks do not submit
+agent prompts, create tool calls, apply composer effects, or enter chat history.
+`source` is a server-only, core-selected input path; never independently resolve
+`artifact.path`. Propagate the lifetime signal to background work and the request
+signal to command work. Core checks selected-source identity on requests/events;
+source changes require reopening.
+
+The iframe receives `{ type: "pi-artifact-bridge", version: 1 }` from its parent
+with a **separate private MessagePort** (not either byte-stream port). Validate
+`event.source === parent` and accept it once. Send `{ type: "ready" }`, then
+`{ type: "request", id, command, payload? }`, `{ type: "cancel", id }`, or
+`{ type: "close" }` or `{ type: "reopen" }`. IDs are 1–80 ASCII letters, digits,
+underscores or hyphens. Replies are `{ type: "response", id, result }`, sanitized
+`{ type: "error", id, error: { code, message } }`, asynchronous
+`{ type: "event", event }`, and `{ type: "connection-state", state }` with states
+`connecting`, `ready`, `disconnected` or `reopen-required`. Acknowledge each delivered
+response/error/event/connection-state with `{ type: "ack" }` after consuming it. Ready and delivery
+acknowledgements have a ten-second deadline. Only one delivery awaits
+acknowledgement; the host queue is bounded to 32 messages and 256 KiB. Permanent
+disposal sends `{ type: "closed" }` and closes the port without waiting for an ACK.
+No credentials, selection tokens, source paths or session/socket selectors cross
+into the iframe. The iframe cannot select another artifact or callback handler.
+
+JSON is capped at 64 KiB per command, result or event, with finite numbers and
+maximum nesting depth 64. There are at most 16 outstanding commands per preview,
+256 process-wide, 128 connections process-wide and 32 per owner. Events are capped
+at 32 per second per preview; overflow or a slow socket closes the bridge rather
+than growing queues. Connections expire after 30 minutes. Cancellation-ignoring
+trusted handlers retain admission until they settle; their late results are
+suppressed. A one-byte authenticated probe binds bridge-only previews to the same
+selected-source authority as byte previews; it never fetches the full file or
+requires bulk-load consent.
+
+Delivery uses the existing authenticated invoke route and exact originating
+WebSocket, but bypasses event logs, replay, broadcast observers and agent context.
+Socket loss aborts the server connection and in-flight commands but retains the
+iframe, private port and browser-local draft. Interrupted commands receive
+`OUTCOME_UNKNOWN`: they may already have executed, so never retry mutations
+without extension-owned reconciliation. A new WebSocket hello probes the existing
+selection and opens a fresh connection ID automatically; commands and events are
+never replayed. Previews opened before the first hello wait for it. Extensions can
+resynchronize their state after a `ready` connection-state notification.
+
+Source changes, expired selections or changed registrations do not silently bind
+new authority. They produce `reopen-required` and a visible **Open again** action;
+the iframe can also send `reopen`. This explicitly re-renders the preview, obtains
+fresh selection authority and may discard browser-local state, unlike an ordinary
+socket reconnect. Unmount/replacement, session changes/disposal and explicit close
+terminate the preview lifetime. Preview-local JavaScript remains trusted extension
+code inside an opaque-origin sandbox, not a network-exfiltration boundary.
+
+### Optional derived artifact streams
+
+A trusted preview can register `derive(artifact, { signal, source, destination }): Promise<void>` (on either `contribute()` or `setArtifactPreview()`) and return `{ html, artifactBytes: true, artifactDerived: true }`. This is additive: existing renderers are unchanged. Core advertises `artifactDerived: true` only when a derive handler exists. The handler runs as trusted, unsandboxed extension code; write the result to the **core-owned private destination**, never return a filesystem path or URL. The handler must consume the core-bound **`source` input path**, not independently resolve `artifact.path`: the original stream may have selected a legacy artifact location even if a different canonical file later appears. `source` is server-only trusted authority, never read from the browser or exposed to the iframe. Core validates that same source's identity before and after derivation. The handler must propagate `signal`, bound its own scratch/cache resources, and stop promptly on cancellation.
+
+After original loading completes, an explicit renderer opt-in such as enabling outlines sends `{ type: "derive" }` on the original private port. Core invokes the handler only then, preserving the usable original mesh while generating. The iframe receives a separate parent window message `{ type: "pi-artifact-derived", size, streamVersion: 2 }` with one transferred port. Validate `event.source === parent` and use the same ready/chunk/ACK/end/complete protocol and 2 MiB credit bound as the original stream. Empty derived outputs are valid. Generation reports `{ type: "derive-status", status: "generating" }` or `{ type: "derive-error", error }` on the original port. `{ type: "derive-cancel" }` aborts generation/transfer without unloading the original model; preview replacement, Close model and session changes abort both streams.
+
+The host calls the authenticated `POST /api/web-contributions/artifact-derived` with its opaque selection, renderer key and invoking session; no credentials, source URLs, selection tokens or private output paths cross into the iframe. Selection is bound to the renderer registration and the originally probed source's device, inode, size, nanosecond modification and change times, not merely its latest pathname. Core checks this identity on original reads and before/after derivation; source changes require reopening. This detects cooperating filesystem mutations, including same-size writes, but is not a filesystem snapshot or a sandbox against malicious trusted extensions. Tokens expire after 30 minutes or session disposal. The registry retains at most 128 selections with least-recently-used eviction of inactive selections; evicted authority is rejected rather than rebound. **Open again** re-renders the preview and obtains a fresh selection, so changed or expired sources require a new probe and consent decision. Shared physical caches remain extension-owned; every request still passes core's selected-source/session checks.
+
+Core admits at most two generation handlers concurrently and at most one per renderer registration. Adapters enforce their own tighter resource constraints; throwing an error with `code: "ARTIFACT_BUSY"` maps to a fixed, sanitized HTTP 429 response. Other unknown errors remain sanitized rather than exposing private paths. Core imposes a three-minute timeout and 128 MiB derived-output limit, accepts only an actual nonsymlink regular output file, streams that private file with backpressure, and removes it after transfer, failure or cancellation. Trusted in-process handlers cannot be forcibly killed: a handler ignoring cancellation retains its concurrency slot until it settles, and core removes late output again. There is no public cache/file URL for derived bytes.
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
 
@@ -338,7 +414,9 @@ The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. 
 
 ### Example: 3D modeling workflow
 
-[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.
+[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) provides a CLI-backed modeling interface with sandboxed interactive STL and G-code previews and a **Slice** action for STL artifacts. One `modeling` tool shares the CLI's discovery/execution implementation rather than registering separate Fusion, image-to-3D and slicing tools. The backend adapters retain their distinct permissions and lifecycle guarantees; the CLI is not a sandbox for runtime scripts. See the example README for command help, local configuration, migration from legacy tools and the supported execution contracts.
+
+The companion [`3d-modeling` skill](../examples/pi-web-skills/3d-modeling/SKILL.md) teaches incremental modeling, representation selection, evidence-based validation and CAD reverse engineering without prescribing a backend or machine-specific installation path. Install it separately in a Pi skill location and reload resources to advertise it.
 
 Install it globally from a checkout with a symlink so edits remain canonical in the example directory:
 

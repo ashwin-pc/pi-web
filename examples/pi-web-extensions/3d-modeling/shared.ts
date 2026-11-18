@@ -1,5 +1,5 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export function esc(value: unknown) {
   return String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]!));
@@ -59,10 +59,18 @@ export async function resolveArtifactWrite(cwd: string, input: string, extension
   const root = await artifactRoot(cwd);
   const candidate = resolve(root, rel);
   contained(root, candidate, "Artifact escapes the project artifact directory.");
-  await mkdir(dirname(candidate), { recursive: true });
-  const parent = await realpath(dirname(candidate));
-  contained(root, parent, "Artifact parent symlink escapes the project artifact directory.");
-  return { path: candidate, relative: rel, url: `/api/artifacts/${rel.split("/").map(encodeURIComponent).join("/")}` };
+  // Validate each existing ancestor before creating anything beneath it. A
+  // recursive mkdir followed by realpath can already write through an escaping
+  // symlink before the containment check. Local concurrent filesystem writers
+  // remain trusted (these checks are not an openat-style sandbox).
+  let parent = root;
+  for (const part of rel.split("/").slice(0, -1)) {
+    const next = join(parent, part);
+    try { await mkdir(next); } catch (error: any) { if (error.code !== "EEXIST") throw error; }
+    parent = await realpath(next);
+    contained(root, parent, "Artifact parent symlink escapes the project artifact directory.");
+  }
+  return { path: join(parent, rel.split("/").at(-1)!), relative: rel, url: `/api/artifacts/${rel.split("/").map(encodeURIComponent).join("/")}` };
 }
 
 export async function artifactFile(cwd: string, urlPath: string, maxBytes: number, kind: string, maxMb: number) {

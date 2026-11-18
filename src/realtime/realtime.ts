@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { receiveArtifactBridgeEvent, setArtifactBridgeSocket } from "../extensions/artifactBridge.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
@@ -748,6 +749,8 @@ export function createRealtime(options: {
         return;
       }
       const isReplay = data.replay === true;
+      if (data.type === "artifact_bridge_event") { receiveArtifactBridgeEvent(data); return; }
+      if (data.type === "hello") setArtifactBridgeSocket(data.artifactBridgeSocket);
       if (data.type === "hello" || data.type === "state_changed") {
         const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
         sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
@@ -892,6 +895,7 @@ export function createRealtime(options: {
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");
     });
     ws.addEventListener("close", () => {
+      setArtifactBridgeSocket(undefined);
       status.markWebSocketClosed();
       composer.updatePrimaryAction();
       window.setTimeout(connect, reconnectDelayMs);

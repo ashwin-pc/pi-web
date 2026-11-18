@@ -1,27 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerHunyuanTools, runOwned } from "./tools.js";
+import { runOwned } from "./tools.js";
+import { runCad } from "../cad/core.js";
 
-test("Hunyuan is opt-in, and an interpreter alone does not enable registration", async () => {
+test("Hunyuan execution is opt-in, and an interpreter alone does not configure discovery", async () => {
   const previous = { ...process.env };
   try {
-    const names: string[] = [];
-    const api = { registerTool: (tool: { name: string }) => { names.push(tool.name); } } as unknown as PiWebExtensionAPI;
     delete process.env.PI_HUNYUAN_COMFY_ROOT;
     process.env.PI_HUNYUAN_PYTHON = "/unused/python";
-    registerHunyuanTools(api);
-    assert.deepEqual(names, []);
+    const context = { cwd: tmpdir() };
+    assert.equal((await runCad(["discover"], context) as any).hunyuan.configured, false);
     await assert.rejects(runOwned("unused"), /Set PI_HUNYUAN_COMFY_ROOT/);
+    await assert.rejects(runCad(["hunyuan", "generate", "--json", '{"image":"unused.png"}'], context), /Set PI_HUNYUAN_COMFY_ROOT/);
     process.env.PI_HUNYUAN_COMFY_ROOT = "   ";
-    registerHunyuanTools(api);
-    assert.deepEqual(names, []);
+    assert.equal((await runCad(["discover"], context) as any).hunyuan.configured, false);
     process.env.PI_HUNYUAN_COMFY_ROOT = "/installed/comfy";
-    registerHunyuanTools(api);
-    assert.deepEqual(names, ["comfy_image_to_3d"]);
+    assert.equal((await runCad(["discover"], context) as any).hunyuan.configured, true);
   } finally {
     for (const name of ["PI_HUNYUAN_COMFY_ROOT", "PI_HUNYUAN_PYTHON"]) {
       if (previous[name] === undefined) delete process.env[name];

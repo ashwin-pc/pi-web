@@ -74,6 +74,7 @@ export interface LocalSessionConfiguration {
 }
 
 export interface LocalSessionServiceDependencies {
+  invalidateArtifactPreview?(sessionId: string, key?: string): void;
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
@@ -323,6 +324,7 @@ export class LocalSessionService implements SessionService {
     });
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
+      invalidateArtifactPreview: deps.invalidateArtifactPreview,
       captureStore: this.captureStore,
       emit: (input) => {
         const value = input as Record<string, unknown>;
@@ -733,6 +735,16 @@ export class LocalSessionService implements SessionService {
     return input.slot === "composer-input"
       ? this.withWorkLease(value, "composer-capture", "general", invoke)
       : invoke();
+  }
+
+  async connectArtifactPreview(sessionId: string, input: Parameters<ReturnType<typeof createWebUiBridge>["connectArtifactPreview"]>[1], options: Parameters<ReturnType<typeof createWebUiBridge>["connectArtifactPreview"]>[2]) {
+    const value = await this.require(sessionId);
+    return this.webUiBridge.connectArtifactPreview(value, input, options);
+  }
+
+  async deriveArtifactPreview(sessionId: string, input: Parameters<ReturnType<typeof createWebUiBridge>["deriveArtifactPreview"]>[1], options: Parameters<ReturnType<typeof createWebUiBridge>["deriveArtifactPreview"]>[2]) {
+    const value = await this.require(sessionId);
+    return this.withWorkLease(value, "artifact-derive", "general", () => this.webUiBridge.deriveArtifactPreview(value, input, options));
   }
 
   invokeHeaderAction(sessionId: string | undefined, key: unknown) {

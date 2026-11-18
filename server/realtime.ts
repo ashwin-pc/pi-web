@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 import type { SessionActivity } from "./session/activity.js";
 
 type RealtimeSocket = WebSocket & { missedPongs?: number };
@@ -8,6 +9,27 @@ export class RealtimeHub {
   private readonly clients = new Set<RealtimeSocket>();
   private readonly eventLog: RealtimeEnvelope[] = [];
   private nextSeq = 1;
+  private readonly liveTargets = new Map<string, { socket: RealtimeSocket; owner: string }>();
+
+  /** Exact-socket ephemeral delivery: deliberately bypasses record and onBroadcast. */
+  target(id: string, owner: string) {
+    const value = this.liveTargets.get(id);
+    if (!value || value.owner !== owner || value.socket.readyState !== value.socket.OPEN) return undefined;
+    return {
+      send: (event: unknown) => {
+        if (value.socket.readyState !== value.socket.OPEN || value.socket.bufferedAmount > 256 * 1024) return false;
+        try { value.socket.send(JSON.stringify(event)); return true; } catch { return false; }
+      },
+      onClose: (close: () => void) => { value.socket.once("close", close); return () => value.socket.off("close", close); },
+    };
+  }
+
+  bindTarget(socket: RealtimeSocket, owner: string) {
+    const id = randomUUID();
+    this.liveTargets.set(id, { socket, owner });
+    socket.once("close", () => this.liveTargets.delete(id));
+    return id;
+  }
 
   constructor(
     heartbeatMs: number,

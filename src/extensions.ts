@@ -86,6 +86,8 @@ export type PiWebContribution =
       title: string;
       label?: string;
       match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      derive?: PiWebArtifactDerive;
+      connect?: PiWebArtifactConnect;
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
     }
   | {
@@ -121,7 +123,34 @@ export type PiWebArtifactContext = {
 export type PiWebArtifactPreviewView = {
   /** Complete document rendered in an opaque-origin iframe with scripts allowed. */
   html: string;
+  /** Opt into the host-owned, confirmed stream of this preview's artifact only. */
+  artifactBytes?: true;
+  /** Opt into on-demand derived bytes; requires a registered derive handler. */
+  artifactDerived?: true;
+  /** Enable a private command/event bridge; requires a registered connect handler. */
+  artifactBridge?: true;
 };
+
+export type PiWebArtifactDeriveOptions = {
+  signal: AbortSignal;
+  /** Core-bound original input file. Consume this path, never re-resolve the artifact URL. Server-only. */
+  source: string;
+  /** Core-owned private output file. Write here; never return a path or URL. */
+  destination: string;
+};
+export type PiWebArtifactDerive = (artifact: PiWebArtifactContext, options: PiWebArtifactDeriveOptions) => Promise<void>;
+
+export type PiWebJson = null | boolean | number | string | PiWebJson[] | { [key: string]: PiWebJson };
+export type PiWebArtifactConnection = {
+  request(request: { command: string; payload?: PiWebJson }, options: { signal: AbortSignal }): PiWebJson | Promise<PiWebJson>;
+};
+/** Preview-lifetime connection. JSON messages are limited to 64 KiB; 16 requests and 32 events/second. */
+export type PiWebArtifactConnect = (artifact: PiWebArtifactContext, options: {
+  signal: AbortSignal;
+  /** Core-selected source, server-only. Never independently resolve artifact.path. */
+  source: string;
+  emit(event: PiWebJson): boolean;
+}) => PiWebArtifactConnection | Promise<PiWebArtifactConnection>;
 
 export type PiWebArtifactPreview = {
   title: string;
@@ -129,6 +158,8 @@ export type PiWebArtifactPreview = {
   /** Built-in previews retain precedence; this matches otherwise generic artifacts. */
   kinds?: PiWebArtifactContext["kind"][];
   extensions?: string[];
+  derive?: PiWebArtifactDerive;
+  connect?: PiWebArtifactConnect;
   render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
 };
 

@@ -1,3 +1,6 @@
+import { mountArtifactStream, selectedArtifactUrl } from "./artifactStream.js";
+import { mountArtifactBridge } from "./artifactBridge.js";
+
 export type ArtifactPreviewKind = "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
 
 type ArtifactPreviewDescriptor = {
@@ -13,8 +16,10 @@ export type ArtifactContext = { name: string; path: string; kind: ArtifactPrevie
 
 export type ArtifactPreviewMountOptions = {
   title: string;
+  layout?: "inline" | "panel";
   className?: string;
   isCurrent?: () => boolean;
+  onFrameReady?: (frame: HTMLIFrameElement, surface: HTMLElement) => void;
 };
 
 let descriptors: ArtifactPreviewDescriptor[] = [];
@@ -61,7 +66,11 @@ export async function renderArtifactPreview(descriptor: ArtifactPreviewDescripto
   if (!response.ok || !data.ok || typeof data.html !== "string") {
     throw new Error(data.error || response.statusText || "Artifact preview failed");
   }
-  return { html: data.html as string, label: typeof data.label === "string" ? data.label : undefined };
+  return { html: data.html as string, artifactBytes: data.artifactBytes === true,
+    bridge: data.artifactBridge === true && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key } : undefined,
+    // The stream's existing selection carrier also guards original bytes for bridge-only handlers.
+    // Server-side derived:false prevents this authority from enabling a derivation handler.
+    derivation: (data.artifactDerived === true || data.artifactBridge === true) && typeof data.selection === "string" ? { selection: data.selection as string, key: descriptor.key, sessionId: sessionId() } : undefined, label: typeof data.label === "string" ? data.label : undefined };
 }
 
 export async function mountArtifactPreview(
@@ -71,13 +80,44 @@ export async function mountArtifactPreview(
 ) {
   const descriptor = matchingArtifactPreview(artifact.name, artifact.kind);
   if (!descriptor) return false;
-  const { html } = await renderArtifactPreview(descriptor, artifact);
-  if (options.isCurrent && !options.isCurrent()) return true;
+  const invokingSession = sessionId();
+  const { html, artifactBytes, derivation, bridge } = await renderArtifactPreview(descriptor, artifact);
+  if (sessionId() !== invokingSession || (options.isCurrent && !options.isCurrent())) return true;
   const frame = document.createElement("iframe");
   if (options.className) frame.className = options.className;
   frame.srcdoc = html;
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
-  host.replaceChildren(frame);
+  const current = () => sessionId() === invokingSession && (!options.isCurrent || options.isCurrent());
+  let closeBridge = () => {};
+  const retry = () => {
+    if (!current()) return;
+    closeBridge();
+    void mountArtifactPreview(host, artifact, options).catch(() => {
+      if (!current()) return;
+      host.replaceChildren();
+      const error = document.createElement("p");
+      error.textContent = "Preview could not be reopened. Close and reopen the artifact to try again.";
+      host.append(error);
+    });
+  };
+  let notice: HTMLElement | undefined;
+  if (bridge) closeBridge = mountArtifactBridge({ frame, ...bridge, sessionId: invokingSession,
+    url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders, current, onReopen: retry,
+    onState: state => {
+      notice?.remove(); notice = undefined;
+      if (!current() || !frame.isConnected || !["disconnected", "reopen-required"].includes(state)) return;
+      notice = document.createElement("div"); notice.setAttribute("role", "status");
+      notice.textContent = state === "disconnected" ? "Preview disconnected. Waiting for connection. " : "Preview connection unavailable. Open again to validate its source and renderer. ";
+      const button = document.createElement("button"); button.textContent = "Open again";
+      button.onclick = retry; notice.append(button); frame.parentElement?.append(notice);
+    } });
+  if (artifactBytes) {
+    mountArtifactStream({ host, frame, url: selectedArtifactUrl(artifact.path, invokingSession), headers: requestHeaders,
+      isCurrent: current, onFrameReady: options.onFrameReady, layout: options.layout, derivation, onRetry: retry });
+  } else {
+    host.replaceChildren(frame);
+    options.onFrameReady?.(frame, host);
+  }
   return true;
 }

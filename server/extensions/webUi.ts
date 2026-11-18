@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactDeriveOptions, PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import type { AudioCapturePolicy, ValidatedAudioCapture } from "./captureStore.js";
 import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
@@ -8,9 +8,17 @@ import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
+const previewRegistrations = new WeakMap<object, string>();
+function previewRegistration(source: object) {
+  let id = previewRegistrations.get(source);
+  if (!id) { id = randomUUID(); previewRegistrations.set(source, id); }
+  return id;
+}
+
 export interface WebUiBridgeDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   emit(value: unknown): void;
+  invalidateArtifactPreview?(sessionId: string, key?: string): void;
   clientCount(): number;
   withWorkLease<T>(session: any, label: string, operation: () => Promise<T>): Promise<T>;
   createNewSession(cwd: string, previousSessionFile?: string): Promise<any>;
@@ -344,6 +352,7 @@ function notifySettingsChanged(id: string, values: Record<string, unknown>) {
 function releaseSessionSettings(value: any) {
   const session = value as object;
   disposedSettingsSessions.add(session);
+  deps.invalidateArtifactPreview?.(value.sessionId);
   deps.extensionHttp?.revokeOwner(session);
   if (value?.sessionId) void deps.captureStore?.releaseOwner?.(String(value.sessionId));
   const previousSchemaList = settingsSchemaListKey();
@@ -533,6 +542,7 @@ function setContribution(
   if (!key) return;
   const contribution = create(key);
   const id = contributionId(slot, key);
+  if (slot === "artifact-preview") deps.invalidateArtifactPreview?.(value.sessionId, key);
   if (contribution) contributionState(value).set(id, contribution);
   else contributionState(value).delete(id);
   broadcastContributions(value);
@@ -606,11 +616,13 @@ function createPiWebUi(value: any): PiWebUi {
       const key = cleanContributionKey(keyValue);
       if (!key) throw new TypeError("Contribution key is required");
       if (!spec) {
+        deps.invalidateArtifactPreview?.(value.sessionId, key);
         for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
         broadcastContributions(value);
         return;
       }
       const contribution = normalizedPublicContribution(key, spec);
+      deps.invalidateArtifactPreview?.(value.sessionId, key);
       for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
       contributionState(value).set(contributionId(contribution.slot, key), contribution);
       broadcastContributions(value);
@@ -623,7 +635,7 @@ function createPiWebUi(value: any): PiWebUi {
     setFooter: (key, footer) => contributeForSlot(key, "footer", footer === undefined ? undefined : { slot: "footer", kind: "static", view: footer }),
     setHeaderAction: (key, action) => contributeForSlot(key, "header-action", action === undefined ? undefined : { slot: "header-action", kind: "rendered", ...action, render: () => action.invoke() }),
     setArtifactAction: (key, action) => contributeForSlot(key, "artifact-action", action === undefined ? undefined : { slot: "artifact-action", kind: "rendered", title: action.title, label: action.label, match: { kinds: action.kinds, extensions: action.extensions }, render: (event) => action.invoke(event?.context as any) }),
-    setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, render: (event) => preview.render(event?.context as any) }),
+    setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, derive: preview.derive, connect: preview.connect, render: (event) => preview.render(event?.context as any) }),
     setGitTab: (key, tab) => contributeForSlot(key, "git-tab", tab === undefined ? undefined : { slot: "git-tab", kind: "rendered", title: tab.title, label: tab.label, render: (event) => tab.render({ action: event?.action, payload: event?.payload, repo: event?.context }) }),
     setPanel: (key, panel) => contributeForSlot(key, "panel", panel === undefined ? undefined : { slot: "panel", kind: "rendered", ...panel }),
     setSystemInfo: (key, panel) => contributeForSlot(key, "system-info", panel === undefined ? undefined : { slot: "system-info", kind: "rendered", ...panel }),
@@ -908,7 +920,28 @@ async function bindWebExtensions(value: any) {
     const result = await preview.render(artifact);
     const html = cleanFooterText(result?.html, contributionPolicies["artifact-preview"].viewBudget);
     if (!html) throw new Error("Artifact preview returned no HTML");
-    return { label: cleanHeaderActionText(preview.label) || cleanHeaderActionText(preview.title) || key, html };
+    return { label: cleanHeaderActionText(preview.label) || cleanHeaderActionText(preview.title) || key, html,
+      ...(result?.artifactBytes === true ? { artifactBytes: true } : {}),
+      ...(result?.artifactBytes === true && result?.artifactDerived === true && typeof preview.derive === "function"
+        ? { artifactDerived: true, registration: previewRegistration(preview) } : {}),
+      ...(result?.artifactBridge === true && typeof preview.connect === "function"
+        ? { artifactBridge: true, registration: previewRegistration(preview) } : {}) };
+  }
+
+  function connectArtifactPreview(value: any, input: { key: string; registration: string; artifact: { name: string; path: string; kind: string } }, options: Parameters<import("../../src/extensions.js").PiWebArtifactConnect>[1]) {
+    const { contribution } = renderedContribution(value, "artifact-preview", input.key);
+    if (!contribution || previewRegistration(contribution.source) !== input.registration || typeof contribution.source.connect !== "function") throw new Error("Artifact preview registration changed");
+    const artifact = cleanArtifactContext(input.artifact, String(value.sessionId || ""));
+    if (!artifactMatches(contribution.source, artifact)) throw new Error("Artifact preview does not match this artifact");
+    return contribution.source.connect(artifact, options);
+  }
+
+  async function deriveArtifactPreview(value: any, input: { key: string; registration: string; artifact: { name: string; path: string; kind: string } }, options: PiWebArtifactDeriveOptions) {
+    const { contribution } = renderedContribution(value, "artifact-preview", input.key);
+    if (!contribution || previewRegistration(contribution.source) !== input.registration) throw new Error("Artifact preview registration changed");
+    const artifact = cleanArtifactContext(input.artifact, String(value.sessionId || ""));
+    if (!artifactMatches(contribution.source, artifact) || typeof contribution.source.derive !== "function") throw new Error("Artifact derivation unavailable");
+    await contribution.source.derive(artifact, options);
   }
 
   async function invokeGitTab(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; repo?: unknown }) {
@@ -1089,6 +1122,8 @@ async function bindWebExtensions(value: any) {
     bind: bindWebExtensions,
     entries: (value: any) => ({ webContributions: webContributionEntries(value) }),
     invokeContribution,
+    connectArtifactPreview,
+    deriveArtifactPreview,
     invokeHeaderAction,
     invokeArtifactAction,
     invokeGitTab,
