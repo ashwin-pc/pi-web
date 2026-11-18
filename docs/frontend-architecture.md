@@ -53,6 +53,40 @@ When adding a new feature, keep ownership clear:
 - server calls should live in the controller that owns the user interaction;
 - cross-feature updates should go through narrow callbacks passed from `main.ts`.
 
+## Toast notifications
+
+`src/components/toasts.ts` owns notification rendering and lifecycle. Bootstrap creates
+one `ToastCenter` in `main.ts`; pass it to controllers rather than creating competing
+centers or hand-rolling timers. Its in-flow rail shares the header row, so notices
+reserve space instead of covering the composer. Actions have 44px touch targets and
+the rail respects mobile safe-area insets.
+
+```ts
+toasts.show({ id: "clipboard", message: "Copied", tone: "success" });
+toasts.show({
+  id: "connection", message: "Live updates unavailable", persistent: true,
+  actions: [{ label: "Retry", run: retryConnection }],
+});
+toasts.dismiss("connection");
+```
+
+Stable IDs replace an existing notice without stacking duplicates. Transient notices
+expire after six seconds (override with `durationMs`), pause on hover/focus, and offer
+Dismiss. Persistent notices have no timeout or dismiss button: their owner clears
+them when the condition resolves. Text is never interpreted as HTML. Status prose is
+announced politely without moving focus; buttons remain ordinary keyboard controls.
+Async actions are aria-disabled while pending (retaining keyboard focus), pause
+transient expiry, catch failures into a deduplicated transient error, and clear that
+error after a successful retry. Replacing or dismissing a notice invalidates its old
+action completions and timer callbacks; stale work cannot alter the new notice.
+
+Connection recovery preserves the delayed disconnect warning and brief Reconnected
+acknowledgement. **Live updates** uses the existing page-reload recovery path (drafts
+remain persisted). **Sync only** invokes the existing session list/state/history
+refresh callbacks without reloading; it does not pretend to repair the WebSocket.
+A missed-update notice survives reconnect until a successful sync, and failed or
+superseded sync attempts cannot clear it.
+
 ## Testing expectations
 
 After TypeScript or frontend behavior changes, run:

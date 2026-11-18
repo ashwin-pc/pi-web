@@ -15,6 +15,7 @@
   </head>
   <body>
     <main class="app">
+      <header class="appHeader">
       <div id="statusBar" class="statusBar">
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
           <span data-icon="menu"></span>
@@ -25,7 +26,6 @@
         </button>
         <span id="statusPath" class="statusPath"></span>
         <span id="activityStatus" class="activityStatus" hidden></span>
-        <span id="connectionStatus" class="connectionStatus" aria-live="polite" hidden></span>
         <span id="headerActions" class="headerActions"></span>
         <button id="newSessionHeaderButton" class="iconButton statusBarButton" type="button" aria-label="New session" title="New session">
           <span data-icon="square-pen"></span>
@@ -46,6 +46,8 @@
           <span data-icon="settings"></span>
         </button>
       </div>
+      <aside id="connectionStatus" hidden></aside>
+      </header>
 
       <section id="workspaceExtensionTrustNotice" class="workspaceTrustNotice" role="region" aria-labelledby="workspaceExtensionTrustTitle" hidden>
         <h2 id="workspaceExtensionTrustTitle">Trust this workspace’s resources?</h2>
