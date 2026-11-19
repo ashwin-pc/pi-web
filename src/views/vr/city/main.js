@@ -1,0 +1,103 @@
+// City (the pi-web VR view, ported from the vr-city mock): you are the mayor, flying over a night city that is your file system. Directories are blocks,
+// files are buildings, gold beams show where sessions are working, and a floating bar of pi-web avatars shows which
+// sessions need you. This file wires the modules and runs the frame loop.
+import * as THREE from 'three';
+import {panels} from './panel.js';
+import {S, emit, tickDwell} from './state.js';
+import {A, renderer, scene, camera, world, nowMs, QS, tickAnim} from './core.js';
+import {readers, tileStep, shaderWarmup} from './reader.js';
+import {city, bar, pops, comfort, composer, sideBatch, prefetchStep, openReader, tickReaders} from './app.js';
+import {followFrame} from './follow.js';
+import * as N from './city-nav.js';
+import {avatarsReady} from './avatars.js';
+import {mouse, pointers, updateHovers, updateHead, head, pressMove, panPoints} from './input.js';
+import {updateDeskCamera, updateMouseRay, deskFlight} from './desktop.js';
+import {xrFrame, updateXRVisuals, xrInput} from './xr.js';
+import './touch.js'; // pi-web (usability round 2): touch screens without a headset
+import './hooks.js';
+import {r3} from './r3.js'; // round 3: focus cockpit, layouts, artifacts
+import './r3-hooks.js';
+
+A.frames = 0; A.fpsWin = []; A.world = world; A.pops = pops;
+avatarsReady.then(() => { bar.invalidate(); for (const r of readers) r.header.invalidate(); city.cards.sig.clear(); });
+readers[0].setSession(S.currentId);
+if (QS.get('read') === '1') openReader(S.currentId);
+// Compile every material now (reading-mode ones included), so the first open does not stall on shader compilation.
+// pi-web: also the turn tiles' materials (they are created lazily), and once more on the first XR frame.
+function precompile(cam) {
+  const warm = shaderWarmup(); for (const m of warm) scene.add(m);
+  const hidden = []; scene.traverse((o) => { if (!o.visible) { hidden.push(o); o.visible = true; } }); renderer.compile(scene, cam); for (const o of hidden) o.visible = false;
+  for (const m of warm) scene.remove(m);
+  // Shaders link lazily (three checks a program on its first use, which blocks until the driver has finished):
+  // finish them all now, not on the first frame that draws them (a 300 ms stall in the middle of a session switch).
+  for (const p of renderer.info.programs || []) p.getUniforms?.();
+}
+precompile(camera);
+let xrCompiled = false;
+let last = nowMs(), lastBlink = 0;
+renderer.setAnimationLoop((time, frame) => {
+  const t = nowMs();
+  tickAnim();
+  tickDwell(S.reading);
+  const dt = Math.min(0.05, (t - last) / 1000);
+  // pi-web (usability round 3): the preview camera eases by wall-clock time (capped at 0.3 s a frame), so on a slow
+  // device it settles as fast as on a fast one; with frame-clamped time it drifted for seconds after an open, and a
+  // first tap landed on whatever the camera had moved to (the strip instead of the rail card).
+  const camDt = Math.min(0.3, (t - last) / 1000);
+  A.fpsWin.push(t - last); if (A.fpsWin.length > 120) A.fpsWin.shift();
+  last = t;
+  A.frames++;
+  if (frame && !xrCompiled) { xrCompiled = true; precompile(renderer.xr.getCamera()); }
+  if (frame) xrFrame(frame, dt);
+  else if (A.debugCam) { camera.position.fromArray(A.debugCam.pos); camera.lookAt(new THREE.Vector3().fromArray(A.debugCam.at)); camera.fov = A.debugCam.fov || 50; camera.updateProjectionMatrix(); camera.updateMatrixWorld(); updateMouseRay(); }
+  else { updateDeskCamera(camDt); updateMouseRay(); }
+  updateHead();
+  // Flight: only your own input moves you (stick, grips, pinch-drag, keys), or an explicit fly-to / Home.
+  if (frame) { if (xrInput.fwd || xrInput.strafe || xrInput.climb) N.fly(head.yaw, xrInput.fwd, xrInput.strafe, xrInput.climb, dt, head.local); }
+  else deskFlight(dt);
+  N.grab(r3.filterGrabs([...xrInput.grabs, ...panPoints()].slice(0, 2)));
+  const blink = N.tick();
+  N.apply(city.root);
+  r3.afterNav(dt);
+  comfort.update(blink);
+  for (const r of readers) r.tick(dt);
+  tickReaders();
+  for (const r of readers) r.updateClip();
+  const ph0 = performance.now();
+  r3.frame(dt);
+  const ph1 = performance.now();
+  followFrame(dt);
+  const ph2 = performance.now();
+  updateHovers();
+  for (const p of pointers) if (p !== mouse && p.press) pressMove(p);
+  // The composer redraws for the dictation meter (8 a second) and for its caret (twice a second, pi-web: it was 8,
+  // each a texture upload of the side columns' atlas).
+  if (S.composer.dictating && t - lastBlink > 120 || S.composer.focused && Math.floor(t / 500) !== Math.floor(lastBlink / 500)) { composer.invalidate(); lastBlink = t; }
+  const ph3 = performance.now();
+  // pi-web (usability round 2): redraws share a 4 ms budget a frame (the first always runs); the rest wait a frame.
+  let slow = null;
+  for (const p of panels) if (!p.isTurn && (!p.dirty || performance.now() - ph3 < 4)) { const q0 = performance.now(); if (p.update() && performance.now() - q0 > (slow?.ms || 2)) slow = {name: p.name, ms: +(performance.now() - q0).toFixed(1)}; }
+  A.slowPanel = slow;
+  const ph4 = performance.now();
+  prefetchStep();
+  tileStep(); // pi-web: turn tiles, windowed and budgeted (reader.js)
+  const ph5 = performance.now();
+  if (frame) updateXRVisuals();
+  sideBatch.sync();
+  const ph6 = performance.now();
+  renderer.render(scene, camera);
+  // pi-web: where this frame's time went (ms), for the measurement tools.
+  A.phaseMs = {r3: ph1 - ph0, follow: ph2 - ph1, hovers: ph3 - ph2, panels: ph4 - ph3, tiles: ph5 - ph4, batch: ph6 - ph5, render: performance.now() - ph6};
+});
+// Running timers in the bar and the header tick once a second; live data arrives through the client.
+const tickTimer = setInterval(() => emit('tick'), 1000);
+
+/** Stop the frame loop and release the GPU resources (the page navigates away afterwards). */
+export function disposeCity() {
+  clearInterval(tickTimer);
+  renderer.setAnimationLoop(null);
+  if (renderer.xr.isPresenting) void renderer.xr.getSession()?.end().catch(() => undefined);
+  scene.traverse((o) => { o.geometry?.dispose?.(); for (const m of [].concat(o.material || [])) { for (const v of Object.values(m.uniforms || {})) v?.value?.isTexture && v.value.dispose(); m.map?.dispose?.(); m.dispose?.(); } });
+  renderer.dispose();
+  renderer.domElement.remove();
+}
