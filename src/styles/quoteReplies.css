@@ -96,14 +96,23 @@
   box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 58%, transparent);
 }
 .quoteReplyMark.flash { animation: quoteReplyFlash .7s ease; }
+.quoteReplyLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 1090;
+  pointer-events: none;
+}
+.quoteReplyLayer > * { pointer-events: auto; }
+.quoteReplyLayer [hidden] { display: none; }
 .quoteReplyPin {
+  position: fixed;
   display: inline-grid;
   place-items: center;
   width: 20px;
   min-width: 20px;
   height: 20px;
   min-height: 20px;
-  margin-left: 5px;
+  margin-left: 0;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
   border-radius: 50%;
@@ -116,13 +125,16 @@
 .quoteReplyPin.submitted { opacity: .72; }
 
 .quoteFootnote {
-  position: relative;
+  position: fixed;
   z-index: 1;
   display: flex;
   align-items: center;
   gap: 7px;
-  max-width: 680px;
-  margin: 5px 0 9px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  overflow: auto;
+  margin: 0;
   padding: 5px 7px;
   border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent) 14%);
   border-radius: 10px;
@@ -132,8 +144,8 @@
 }
 /* Derive footer visibility from the existing editor state, not a second flag.
    Keep the composer mounted so its draft, attachments and focus state survive. */
-body:has(#messages .quoteFootnote.editing.open) .composer,
-body:has(#messages .quoteFootnote.editing.open) #extensionFooter {
+body:has(.quoteReplyLayer .quoteFootnote.editing.open) #promptForm,
+body:has(.quoteReplyLayer .quoteFootnote.editing.open) #extensionFooter {
   display: none;
 }
 
@@ -145,7 +157,7 @@ html.quoteReplyTransition::view-transition-group(*) { animation-duration: 140ms;
 html.quoteReplyTransition::view-transition-old(root),
 html.quoteReplyTransition::view-transition-new(root) { animation: none; }
 
-.quoteFootnote.saved:not(.open) { display: none; }
+.quoteFootnote:not(.open) { display: none; }
 .quoteFootnoteNumber {
   display: inline-grid;
   place-items: center;
@@ -166,19 +178,24 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
   background: color-mix(in srgb, var(--accent) 4%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 13%, transparent);
 }
-.quoteFootnoteEditor input {
+.quoteFootnoteEditor textarea {
   flex: 1;
   min-width: 0;
-  height: 30px;
-  padding: 3px 1px;
+  min-height: 68px;
+  max-height: min(50dvh, 360px);
+  box-sizing: border-box;
+  resize: none;
+  overflow-y: auto;
+  padding: 10px 8px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: 16px;
+  line-height: 1.5;
 }
-.quoteFootnoteEditor input::placeholder { color: color-mix(in srgb, var(--muted) 76%, transparent); }
+.quoteFootnoteEditor textarea::placeholder { color: color-mix(in srgb, var(--muted) 76%, transparent); }
 .quoteFootnoteConfirm,
 .quoteFootnoteRemove,
 .quoteFootnoteEdit {
@@ -203,7 +220,7 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
 .quoteFootnoteRemove:focus-visible,
 .quoteFootnoteEdit:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 .quoteFootnoteRead { color: var(--text); font-size: 11px; }
-.quoteFootnoteQuestion { flex: 1; overflow-wrap: anywhere; }
+.quoteFootnoteQuestion { flex: 1; overflow-wrap: anywhere; white-space: pre-wrap; }
 .quoteFootnoteEdit svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .quoteFootnote.saved .quoteFootnoteEditor { display: none; }
 .quoteFootnote:not(.saved) .quoteFootnoteRead { display: none; }

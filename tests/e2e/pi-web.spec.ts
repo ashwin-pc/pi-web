@@ -426,7 +426,10 @@ test.describe("composer layout", () => {
     await expect(composer).toBeVisible();
     await expect(page.locator("#sessionButton")).toBeVisible();
     await expect(page.locator("#attachButton")).toBeVisible();
+    await expect(composer).toHaveClass(/compactInactive/);
+    await expect(page.locator("#prompt")).toHaveValue("");
     await expect(page.locator("#primaryButton")).toBeHidden();
+    await expect(page.locator("#primaryButton")).toBeDisabled();
 
     await page.locator("#prompt").focus();
     await expect(page.locator("#primaryButton")).toBeVisible();

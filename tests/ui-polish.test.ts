@@ -420,7 +420,7 @@ describe("compact inactive composer styling", () => {
     expect(css).toContain(".modelSettingsModelName,");
     expect(css).toContain(".modelSettingsCurrent {");
     expect(css).toContain(".modelSettingsCurrentValue {");
-    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} .composerCaptureButton,\n${compactSelector} .composerCaptureCancel,\n${compactSelector} #stopButton {`);
+    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} .composerCaptureButton,\n${compactSelector} .composerCaptureCancel,\n${compactSelector} #stopButton,\n${compactSelector}:not([data-capture-chrome="settling"]) #primaryButton {`);
     expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
   });
 
@@ -437,8 +437,9 @@ describe("compact inactive composer styling", () => {
     expect(responsiveCss).toContain(".modelSettingsThinkingText {");
   });
 
-  it("hides nonessential inactive controls until focus", () => {
-    expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
+  it("keeps send available while hiding nonessential inactive controls until focus", () => {
+    expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton:disabled {\n  display: none !important;\n}`);
+    expect(css).not.toMatch(/#primaryButton\s*\{\s*display:\s*none/);
   });
 
   it("sets or restores the compact inactive state during composer initialization", () => {

@@ -75,6 +75,47 @@ async function selectAssistantExcerpt(page: Page, text: string) {
   }, text);
 }
 
+test("period replies to a live selection without waiting for the toolbar", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#prompt").blur();
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.keyboard.press(".");
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await expect(input).toBeVisible();
+  await expect(input).toBeFocused();
+  await input.fill("First line");
+  await input.press("Shift+Enter");
+  await input.press(".");
+  await expect(input).toHaveValue("First line\n.");
+  await input.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+  await expect(input).toBeVisible();
+});
+
+test("period shortcut ignores editable targets, composition, repeats and modifiers", async ({ page }) => {
+  await page.goto("/");
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true }, { isComposing: true }, { repeat: true }, { keyCode: 229 }]) {
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.locator("body").dispatchEvent("keydown", { key: ".", ...options });
+    await expect(page.locator(".quoteFootnote")).toHaveCount(0);
+  }
+  for (const tag of ["input", "textarea", "div"]) {
+    await page.evaluate((tag) => {
+      const element = document.createElement(tag);
+      if (tag === "div") element.contentEditable = "true";
+      element.id = "shortcut-editable";
+      document.body.append(element);
+      element.focus();
+    }, tag);
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.locator("#shortcut-editable").dispatchEvent("keydown", { key: "." });
+    await expect(page.locator(".quoteFootnote")).toHaveCount(0);
+    await page.locator("#shortcut-editable").evaluate((element) => element.remove());
+  }
+  await page.evaluate(() => getSelection()?.removeAllRanges());
+  await page.keyboard.press(".");
+  await expect(page.locator(".quoteFootnote")).toHaveCount(0);
+});
+
 test("keeps one reply action tethered to the highlighted text and dismisses it with Escape", async ({ page }) => {
   await page.goto("/");
   await selectAssistantExcerpt(page, "Image attachment support");
@@ -128,6 +169,76 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
 });
 
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`comment editor grows and read-only popups dismiss outside (${viewport.width}px)`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const input = page.getByRole("textbox", { name: "Question for quote 1" });
+    await expect(input).toBeVisible();
+    await expect(input).toHaveCSS("min-height", "68px");
+    await input.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)));
+    const initial = await input.boundingBox();
+    expect(initial!.height).toBeGreaterThanOrEqual(64);
+    const text = Array.from({ length: 8 }, (_, i) => `Question line ${i}: explain this in more detail.`).join("\n");
+    await input.fill(text);
+    const grown = await input.boundingBox();
+    expect(grown!.height).toBeGreaterThan(initial!.height);
+    await page.locator("#statusTitle").click();
+    await expect(input).toBeVisible(); // Outside presses never discard an active edit.
+    await page.getByRole("button", { name: "Confirm question" }).click();
+    const pin = page.locator(".quoteReplyPin");
+    await pin.click();
+    const note = page.locator(".quoteFootnote.open");
+    await expect(note).toContainText("Question line 0");
+    await note.locator(".quoteFootnoteQuestion").click();
+    await expect(note).toBeVisible();
+    await page.locator("#statusTitle").click();
+    await expect(note).toHaveCount(0);
+    await pin.click();
+    await page.getByRole("button", { name: "Edit question" }).click();
+    await expect(input).toHaveValue(text);
+    expect((await input.boundingBox())!.height).toBeGreaterThan(initial!.height);
+    await input.fill("Short again");
+    expect((await input.boundingBox())!.height).toBeLessThan(grown!.height);
+    await input.press("Enter");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.user").last()).toContainText("Short again");
+    await expect(page.locator(".quoteReplyPin.submitted")).toHaveCount(1);
+    await page.locator(".quoteReplyMark").evaluate((mark) => mark.scrollIntoView({ block: "center" }));
+    await pin.click();
+    await expect(page.locator(".quoteFootnote.open")).toBeVisible();
+    await page.locator("#statusTitle").click();
+    await expect(page.locator(".quoteFootnote.open")).toHaveCount(0);
+  });
+
+  test(`sends pending comments directly from the collapsed composer (${viewport.width}px)`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const question = page.getByRole("textbox", { name: "Question for quote 1" });
+    await question.fill("Explain this attachment support");
+    await question.press("Enter");
+    await page.locator("#prompt").blur();
+    const composer = page.locator("#promptForm");
+    const send = page.locator("#primaryButton");
+    await expect(composer).toHaveClass(/compactInactive/);
+    await expect(page.locator("#prompt")).toHaveValue("");
+    await expect(send).toBeVisible();
+    await expect(send).toBeEnabled();
+    const bounds = await send.boundingBox();
+    const shell = await composer.boundingBox();
+    expect(bounds!.width).toBe(38);
+    expect(bounds!.height).toBe(38);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(shell!.x + shell!.width);
+    expect(shell!.height).toBeLessThanOrEqual(54);
+    await send.click();
+    await expect(page.locator(".message.user").last()).toContainText("Explain this attachment support");
+    await expect(send).toBeDisabled();
+  });
+
   test(`quote editing hides footer chrome without losing the draft (${viewport.width}px)`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.routeWebSocket("**/ws**", () => {});
@@ -329,6 +440,7 @@ test("restores unfinished quote replies and composer text after reload", async (
   await expect(page.locator("#prompt")).toHaveValue("Please compare the tradeoffs.");
   await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
   await expect(page.locator(".quoteReplySummaryButton")).toContainText("1 linked reply");
+  await page.locator(".quoteReplyMark").evaluate((mark) => mark.scrollIntoView({ block: "center" }));
   await page.locator(".quoteReplyPin").click();
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this work offline?");
 });
@@ -414,6 +526,7 @@ test("restores an outgoing quote draft after switching sessions before its debou
   await switchSession(page, "Older mock session");
   await switchSession(page, "Current mock session");
 
+  await page.locator(".quoteReplyMark").evaluate((mark) => mark.scrollIntoView({ block: "center" }));
   await page.locator(".quoteReplyPin").click();
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("Preserve this outgoing draft");
 });
@@ -531,6 +644,7 @@ test("links questions to multiple assistant responses and sends structured quote
   await expect(page.locator(".message.user .submittedQuoteDetails").last()).toContainText("2 linked excerpts");
   await expect(page.locator(".quoteReplyMark")).toHaveCount(2);
   await expect(page.locator(".quoteReplyPin.submitted")).toHaveCount(2);
+  await page.locator(".quoteReplyMark").first().evaluate((mark) => mark.scrollIntoView({ block: "center" }));
   await page.locator(".quoteReplyPin.submitted").first().click();
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this behave on mobile?");
 });

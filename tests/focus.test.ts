@@ -88,13 +88,33 @@ describe("mobile focus helpers", () => {
 });
 
 describe("mobile focus wiring", () => {
-  it("keeps submit refocus mobile-safe while preserving explicit editor focus", () => {
+  it("keeps command refocus mobile-safe while preserving explicit editor focus", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
+    const commands = composer.slice(composer.indexOf('if (rawMessage.startsWith("!")'), composer.indexOf("const clearedPromptRevision"));
 
     expect(composer).toContain("function settlePromptFocusAfterSubmit()");
-    expect(composer.match(/settlePromptFocusAfterSubmit\(\);/g) || []).toHaveLength(3);
+    expect(commands.match(/settlePromptFocusAfterSubmit\(\);/g) || []).toHaveLength(2);
     expect(composer).toContain("function setPromptText(text: string)");
     expect(composer).toContain("    elements.promptEl.focus();\n  }\n\n  function slashCommandName");
+  });
+
+  it("collapses accepted prompts without refocusing or blurring failed drafts", () => {
+    const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
+    const promptSend = composer.slice(composer.indexOf('const res = await fetch("/api/prompt"'), composer.indexOf('elements.promptEl.addEventListener("keydown"'));
+    const [accepted, failed] = promptSend.split("} catch (error) {");
+
+    // Runtime coverage lives in composer-send-collapse.spec.ts; this wiring
+    // guard prevents a shared finally/refocus from undoing either outcome.
+    expect(accepted).toContain("if (!res.ok) throw new Error(await res.text());");
+    expect(accepted).toContain("promptRevision === clearedPromptRevision");
+    expect(accepted).toContain("setEditorExpanded(false);");
+    expect(accepted).toContain("active.blur();");
+    expect(accepted).toContain("applyCompactInactive(true);");
+    expect(failed).toContain("elements.promptEl.value = rawMessage;");
+    expect(failed).not.toContain(".blur()");
+    expect(failed).not.toContain("setEditorExpanded(false)");
+    expect(promptSend).not.toContain("settlePromptFocusAfterSubmit()");
+    expect(promptSend).not.toContain(".focus(");
   });
 
   it("blurs mobile editables before opening panels and popovers", () => {

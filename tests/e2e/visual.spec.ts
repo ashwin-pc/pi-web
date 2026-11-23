@@ -545,7 +545,13 @@ test.describe("visual regression", () => {
         await expect(page.locator(".webHeaderActionPopoverBody")).toContainText("faster handoffs");
       }
       if (scene === "artifact-reference") {
+        const accepted = page.waitForResponse((response) => response.url().endsWith("/api/prompt") && response.request().method() === "POST");
         await sendPrompt(page, "Create an HTML artifact for the launch brief.");
+        await accepted;
+        await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+        // Keep the editing viewport while the artifact streams in, as intended
+        // by this scene; successful sends no longer retain focus implicitly.
+        await page.locator("#prompt").focus();
         await expect(page.locator(".artifactPreview--html")).toBeVisible();
         await expect(page.locator("#stopButton")).toBeHidden();
         const reference = page.getByRole("button", { name: "Reference" });
@@ -572,6 +578,18 @@ test.describe("visual regression", () => {
         await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
         await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+        await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+        if (project === "desktop") {
+          // Frame the reference card, not the introductory assistant prose.
+          // Use the message gutter as breathing room above the reference card.
+          await page.locator(".artifactPreview--html").evaluate((element) => {
+            element.scrollIntoView({ block: "start" });
+            const messages = document.querySelector("#messages");
+            const message = element.closest(".message");
+            if (messages && message) messages.scrollTop -= parseFloat(getComputedStyle(message).getPropertyValue("--message-inline-padding")) || 0;
+          });
+        }
+        await page.mouse.move(0, 0);
       }
       if (scene === "git-footer") {
         const footer = page.locator('.webFooterEntry[data-footer-key="local-git-footer"]');
@@ -706,6 +724,15 @@ test.describe("visual regression", () => {
     await expect(page.locator(".message.assistant .imageFrame")).toBeVisible();
     if (testInfo.project.name === "mobile") await scrollMessagesToBottom(page);
 
+    // Desktop showcases the full editing control; mobile showcases the compact
+    // control. Establish that state explicitly rather than relying on send focus.
+    if (testInfo.project.name === "desktop") {
+      await page.locator("#prompt").focus();
+      await expect(page.locator("#promptForm")).not.toHaveClass(/compactInactive/);
+    } else {
+      await page.locator("#prompt").blur();
+      await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+    }
     await expect(page.locator("#modelSettingsButton")).toHaveScreenshot(`model-picker-${testInfo.project.name}.png`, {
       animations: "disabled",
       maxDiffPixelRatio: 0.001,

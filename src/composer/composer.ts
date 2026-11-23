@@ -203,6 +203,15 @@ export function createComposer(options: {
     }
   }
 
+  function setEditorExpanded(expanded: boolean) {
+    state.editorExpanded = expanded;
+    elements.formEl.classList.toggle("expanded", expanded);
+    setIcon(elements.expandButton, expanded ? "minimize-2" : "maximize-2");
+    elements.expandButton.title = expanded ? "Collapse editor" : "Expand editor";
+    elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
+    try { sessionStorage.setItem(expandedStorageKey, JSON.stringify(expanded)); } catch { /* ignore */ }
+  }
+
   function setPromptText(text: string) {
     composerCapture.cancel();
     elements.promptEl.value = text;
@@ -682,6 +691,7 @@ export function createComposer(options: {
       contextAttachments = [];
       rememberContextAttachments(sessionId);
       renderAttachments();
+      const clearedPromptRevision = promptRevision;
       const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
       const runtimeTransition = sessionState.patchRuntime(sessionId, {
         loaded: true,
@@ -704,6 +714,16 @@ export function createComposer(options: {
         if (!res.ok) throw new Error(await res.text());
         if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);
         updatePrimaryAction();
+        // Only collapse the draft that was sent, never a new draft (or another
+        // session) the user started while the request was in flight.
+        if (ownedSessionId === sessionId && promptRevision === clearedPromptRevision
+          && !elements.promptEl.value && state.attachedImages.length === 0 && contextAttachments.length === 0) {
+          setEditorExpanded(false);
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && elements.formEl.contains(active)) active.blur();
+          applyCompactInactive(true);
+          try { sessionStorage.removeItem(restoreFocusStorageKey); } catch { /* ignore */ }
+        }
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
         sessionState.replaceRuntime(sessionId, runtimeTransition.previous);
@@ -732,8 +752,6 @@ export function createComposer(options: {
         }
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
-      } finally {
-        settlePromptFocusAfterSubmit();
       }
     });
 
@@ -850,12 +868,7 @@ export function createComposer(options: {
     });
 
     elements.expandButton.addEventListener("click", () => {
-      state.editorExpanded = !state.editorExpanded;
-      elements.formEl.classList.toggle("expanded", state.editorExpanded);
-      setIcon(elements.expandButton, state.editorExpanded ? "minimize-2" : "maximize-2");
-      elements.expandButton.title = state.editorExpanded ? "Collapse editor" : "Expand editor";
-      elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
-      try { sessionStorage.setItem(expandedStorageKey, JSON.stringify(state.editorExpanded)); } catch { /* ignore */ }
+      setEditorExpanded(!state.editorExpanded);
       focusIfKeyboardFriendly(elements.promptEl);
     });
 

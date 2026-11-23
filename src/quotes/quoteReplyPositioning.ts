@@ -1,0 +1,86 @@
+type QuoteSurface = { mark: HTMLElement; pin: HTMLButtonElement; note: HTMLDivElement };
+
+/** Keep all interactive quote UI out of Markdown, table and SVG layout trees. */
+export function createQuoteReplyPositioning(messages: HTMLElement, getReferences: () => QuoteSurface[]) {
+  const layer = document.createElement("div");
+  layer.className = "quoteReplyLayer";
+  layer.dataset.quoteReplyUi = "true";
+  document.body.append(layer);
+  let frame = 0;
+
+  function position() {
+    frame = 0;
+    const transcript = messages.getBoundingClientRect();
+    const edge = 12;
+    const bottom = Math.max(edge + 80, innerHeight - edge);
+    const references = [...getReferences()].sort((a, b) => a.mark.compareDocumentPosition(b.mark) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+    references.forEach(({ pin, note }, index) => {
+      if (layer.children[index * 2] !== pin) layer.insertBefore(pin, layer.children[index * 2] || null);
+      if (layer.children[index * 2 + 1] !== note) layer.insertBefore(note, layer.children[index * 2 + 1] || null);
+    });
+    for (const { mark, pin, note } of references) {
+      const range = document.createRange();
+      range.selectNodeContents(mark);
+      const rect = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0).at(-1) || mark.getBoundingClientRect();
+      let left = Math.max(edge, transcript.left), right = Math.min(innerWidth - edge, transcript.right);
+      let topEdge = Math.max(edge, transcript.top), bottomEdge = Math.min(bottom, transcript.bottom);
+      // A source can also scroll or be clipped inside code/artifact previews.
+      for (let parent = mark.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        const bounds = parent.getBoundingClientRect();
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, bounds.left); right = Math.min(right, bounds.right); }
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { topEdge = Math.max(topEdge, bounds.top); bottomEdge = Math.min(bottomEdge, bounds.bottom); }
+      }
+      const visible = mark.isConnected && rect.width > 0 && rect.height > 0
+        && rect.bottom > topEdge && rect.top < bottomEdge && rect.right > left && rect.left < right;
+      pin.hidden = !visible;
+      if (!mark.isConnected) {
+        note.style.visibility = "hidden";
+        continue;
+      }
+      pin.style.left = `${Math.max(edge, Math.min(innerWidth - edge - 20, rect.right - 10))}px`;
+      pin.style.top = `${Math.max(edge, Math.min(bottom - 20, rect.top - 18))}px`;
+      // Keep an active editor reachable even if its anchor scrolls out of view.
+      note.style.visibility = visible || note.classList.contains("editing") ? "visible" : "hidden";
+      if (!note.classList.contains("open")) continue;
+      const width = Math.max(0, Math.min(680, transcript.width - edge * 2, innerWidth - edge * 2));
+      note.style.width = `${width}px`;
+      const input = note.querySelector<HTMLTextAreaElement>("textarea");
+      if (input && note.classList.contains("editing")) {
+        input.style.height = "auto";
+        input.style.height = `${input.scrollHeight}px`;
+      }
+      const height = note.getBoundingClientRect().height;
+      const below = rect.bottom + 8;
+      const above = rect.top - height - 8;
+      const top = below + height <= bottom ? below : above >= edge ? above : Math.max(edge, bottom - height);
+      note.style.left = `${Math.max(edge, Math.min(innerWidth - width - edge, rect.left))}px`;
+      note.style.top = `${Math.max(edge, top)}px`;
+    }
+  }
+
+  function schedule() {
+    if (!frame) frame = requestAnimationFrame(position);
+  }
+  const resize = new ResizeObserver(schedule);
+  resize.observe(messages);
+  new MutationObserver(schedule).observe(messages, { childList: true, subtree: true });
+  document.addEventListener("scroll", schedule, { capture: true, passive: true });
+  window.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("resize", schedule);
+
+  return {
+    mount(reference: QuoteSurface) {
+      layer.append(reference.pin, reference.note);
+      resize.observe(reference.note);
+      schedule();
+    },
+    remove(reference: QuoteSurface) {
+      resize.unobserve(reference.note);
+      reference.pin.remove();
+      reference.note.remove();
+    },
+    position,
+    schedule,
+  };
+}
