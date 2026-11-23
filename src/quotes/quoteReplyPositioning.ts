@@ -12,7 +12,14 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
     frame = 0;
     const transcript = messages.getBoundingClientRect();
     const edge = 12;
-    const bottom = Math.max(edge + 80, innerHeight - edge);
+    // Fixed coordinates use layout-viewport space; the keyboard/pinch zoom can
+    // leave only an offset portion of that space visible.
+    const viewport = window.visualViewport;
+    const viewportLeft = (viewport?.offsetLeft || 0) + edge;
+    const viewportTop = (viewport?.offsetTop || 0) + edge;
+    const viewportRight = (viewport?.offsetLeft || 0) + (viewport?.width || innerWidth) - edge;
+    const bottom = (viewport?.offsetTop || 0) + (viewport?.height || innerHeight) - edge;
+    const availableHeight = Math.max(0, bottom - viewportTop);
     const references = [...getReferences()].sort((a, b) => a.mark.compareDocumentPosition(b.mark) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
     references.forEach(({ pin, note }, index) => {
       if (layer.children[index * 2] !== pin) layer.insertBefore(pin, layer.children[index * 2] || null);
@@ -22,8 +29,8 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
       const range = document.createRange();
       range.selectNodeContents(mark);
       const rect = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0).at(-1) || mark.getBoundingClientRect();
-      let left = Math.max(edge, transcript.left), right = Math.min(innerWidth - edge, transcript.right);
-      let topEdge = Math.max(edge, transcript.top), bottomEdge = Math.min(bottom, transcript.bottom);
+      let left = Math.max(viewportLeft, transcript.left), right = Math.min(viewportRight, transcript.right);
+      let topEdge = Math.max(viewportTop, transcript.top), bottomEdge = Math.min(bottom, transcript.bottom);
       // A source can also scroll or be clipped inside code/artifact previews.
       for (let parent = mark.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
         const style = getComputedStyle(parent);
@@ -38,24 +45,28 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
         note.style.visibility = "hidden";
         continue;
       }
-      pin.style.left = `${Math.max(edge, Math.min(innerWidth - edge - 20, rect.right - 10))}px`;
-      pin.style.top = `${Math.max(edge, Math.min(bottom - 20, rect.top - 18))}px`;
+      pin.style.left = `${Math.max(viewportLeft, Math.min(viewportRight - 20, rect.right - 10))}px`;
+      pin.style.top = `${Math.max(viewportTop, Math.min(bottom - 20, rect.top - 18))}px`;
       // Keep an active editor reachable even if its anchor scrolls out of view.
       note.style.visibility = visible || note.classList.contains("editing") ? "visible" : "hidden";
       if (!note.classList.contains("open")) continue;
-      const width = Math.max(0, Math.min(680, transcript.width - edge * 2, innerWidth - edge * 2));
+      const width = Math.max(0, Math.min(680, transcript.width - edge * 2, viewportRight - viewportLeft));
       note.style.width = `${width}px`;
+      note.style.maxHeight = `${availableHeight}px`;
       const input = note.querySelector<HTMLTextAreaElement>("textarea");
       if (input && note.classList.contains("editing")) {
+        input.style.maxHeight = `${Math.max(0, Math.min(360, availableHeight - 24))}px`;
         input.style.height = "auto";
         input.style.height = `${input.scrollHeight}px`;
       }
-      const height = note.getBoundingClientRect().height;
+      // Enter animations transform the painted box; use its final layout size
+      // so placement remains valid after the animation completes.
+      const height = note.offsetHeight;
       const below = rect.bottom + 8;
       const above = rect.top - height - 8;
-      const top = below + height <= bottom ? below : above >= edge ? above : Math.max(edge, bottom - height);
-      note.style.left = `${Math.max(edge, Math.min(innerWidth - width - edge, rect.left))}px`;
-      note.style.top = `${Math.max(edge, top)}px`;
+      const top = below + height <= bottom ? below : above >= viewportTop ? above : Math.max(viewportTop, bottom - height);
+      note.style.left = `${Math.max(viewportLeft, Math.min(viewportRight - width, rect.left))}px`;
+      note.style.top = `${Math.max(viewportTop, top)}px`;
     }
   }
 
@@ -68,6 +79,7 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
   document.addEventListener("scroll", schedule, { capture: true, passive: true });
   window.addEventListener("resize", schedule);
   window.visualViewport?.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("scroll", schedule);
 
   return {
     mount(reference: QuoteSurface) {

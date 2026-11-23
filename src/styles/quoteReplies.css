@@ -99,7 +99,8 @@
 .quoteReplyLayer {
   position: fixed;
   inset: 0;
-  z-index: 1090;
+  /* Above transcript chrome, below full-screen panel backdrops (30). */
+  z-index: 25;
   pointer-events: none;
 }
 .quoteReplyLayer > * { pointer-events: auto; }
@@ -320,7 +321,7 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
 
 @media (max-width: 760px) {
   .quoteSelectionReply { height: 38px; min-height: 38px; padding-right: 13px; }
-  .quoteFootnote { margin: 5px 0 9px; padding: 4px 5px; }
+  .quoteFootnote { padding: 4px 5px; }
   .quoteFootnoteEntering {
     animation:
       quoteFootnoteInputIn .46s cubic-bezier(.16, 1.2, .3, 1) .32s both,

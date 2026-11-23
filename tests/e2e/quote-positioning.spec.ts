@@ -48,6 +48,12 @@ async function selectText(page: Page, target: Locator, text: string) {
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", { data: { composer: { expanded: false } } });
+  // Own this fixture instead of depending on a report.md left by another test
+  // (CI shards run in separate workspaces and can encounter this suite first).
+  await page.route(/\/api\/(?:session-artifacts\/[^/]+|artifacts)\/report\.md(?:\?.*)?$/, (route) => route.fulfill({
+    contentType: "text/markdown",
+    body: "# Artifact report\n\nThis markdown artifact renders inline.\n",
+  }));
   await page.route("**/api/messages?*", (route) => route.fulfill({ json: { messages: [
     { role: "assistant", text: fixture, entryId: "quote-layout-source" },
   ] } }));
@@ -132,6 +138,55 @@ test("an active code comment survives asynchronous source replacement", async ({
   await expect(input).toBeFocused();
   await expect(page.locator(".quoteFootnote.editing.open")).toHaveCount(1);
 });
+
+test("quote editor fits an offset visual viewport when the keyboard opens", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+  await page.keyboard.press(".");
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await input.fill(Array.from({ length: 18 }, () => question).join("\n"));
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    // Model a mobile keyboard without resizing the larger layout viewport.
+    for (const [key, value] of Object.entries({ height: 300, width: 350, offsetTop: 80, offsetLeft: 20 })) {
+      Object.defineProperty(viewport, key, { configurable: true, value });
+    }
+    viewport.dispatchEvent(new Event("resize"));
+    viewport.dispatchEvent(new Event("scroll"));
+  });
+  const note = page.locator(".quoteFootnote.open");
+  await expect.poll(async () => {
+    const b = await note.boundingBox();
+    return !!b && b.x >= 32 && b.y >= 92 && b.x + b.width <= 358 && b.y + b.height <= 368;
+  }).toBe(true);
+  await expect(input).toBeFocused();
+  const confirm = page.getByRole("button", { name: "Confirm question" });
+  await expect(confirm).toBeInViewport();
+  await confirm.click();
+  await expect(input).toBeHidden();
+});
+
+for (const panel of ["session", "preferences"] as const) {
+  test(`unfinished quote editor stays below the full-screen ${panel} panel`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+    await page.keyboard.press(".");
+    const input = page.getByRole("textbox", { name: "Question for quote 1" });
+    await input.fill(question);
+    if (panel === "session") await page.locator("#sessionButton").click();
+    else await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    const overlay = page.locator(panel === "session" ? "#sessionDrawer" : "#settingsPanel");
+    await expect(overlay).toBeVisible();
+    // The portal must neither paint nor intercept clicks above the panel.
+    const note = page.locator(".quoteFootnote.editing.open");
+    await expect.poll(() => note.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      const top = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+      return !!top?.closest(".appSidePanel");
+    })).toBe(true);
+    await expect(input).toHaveValue(question);
+  });
+}
 
 test("right artifact panel remains a separate, non-commentable surface", async ({ page }) => {
   await page.locator(".artifactPreview--markdown").scrollIntoViewIfNeeded();
