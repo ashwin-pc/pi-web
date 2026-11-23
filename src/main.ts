@@ -925,6 +925,14 @@ const keyboardShortcuts: Shortcut[] = [
     run: () => shortcutHelp.toggle(),
   },
   {
+    id: "quote.reply",
+    key: ".",
+    description: "Reply to selected assistant text",
+    scope: "global",
+    when: () => !hasBlockingShortcutOverlay() && quoteReplies.hasReplyableSelection(),
+    run: () => quoteReplies.replyToSelection(),
+  },
+  {
     id: "composer.focus",
     key: ".",
     description: "Focus composer",

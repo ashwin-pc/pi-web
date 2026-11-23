@@ -42,7 +42,9 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
         && rect.bottom > topEdge && rect.top < bottomEdge && rect.right > left && rect.left < right;
       pin.hidden = !visible;
       if (!mark.isConnected) {
-        note.style.visibility = "hidden";
+        // Lazy source replacement is repaired on the next frame. Do not hide
+        // (and blur) the active editor during that temporary detached interval.
+        note.style.visibility = note.classList.contains("editing") ? "visible" : "hidden";
         continue;
       }
       pin.style.left = `${Math.max(viewportLeft, Math.min(viewportRight - 20, rect.right - 10))}px`;

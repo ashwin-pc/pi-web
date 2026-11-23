@@ -55,7 +55,7 @@ export function initKeyboardShortcuts(shortcuts: Shortcut[], options: {
   onError?: (error: unknown) => void;
 } = {}) {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.isComposing) return;
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
 
     const inEditable = isEditableTarget(event.target);
     const activeScopes = activeShortcutScopes(options.getScopes?.(event));

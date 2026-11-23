@@ -34,6 +34,8 @@ type PendingSelection = {
 
 export type QuoteRepliesController = {
   hasDrafts: () => boolean;
+  hasReplyableSelection: () => boolean;
+  replyToSelection: () => void;
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
   checkpoint: () => { restore: () => void };
@@ -532,7 +534,8 @@ export function createQuoteReplies(options: {
     if (sessionId) {
       for (const draft of drafts.get(sessionId).quoteReplies) {
         if (!draft.sourceMessageId || references.some((reference) => reference.mark.isConnected && reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId)) continue;
-        const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
+        if (body && body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== draft.sourceMessageId) continue;
+        const sourceBody = body || messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
         if (sourceBody) restoreDraftReference(draft, sourceBody);
         else hasPendingSource = true;
       }
@@ -600,11 +603,35 @@ export function createQuoteReplies(options: {
 
   // Artifact text and Mermaid labels arrive after the initial Markdown render.
   // Retry only unresolved anchors when those asynchronous surfaces become ready.
-  new MutationObserver(() => {
-    // Relink replaced marks without discarding the active editor or its focus.
-    const pendingDraft = drafts.get(getSessionId()).quoteReplies.some((draft) => !references.some((reference) => reference.mark.isConnected && reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId));
-    const pendingSubmitted = Array.from(persistedReplies.values()).some((replies) => Array.from(replies.values()).some((attachment) => !references.some((reference) => reference.mark.isConnected && reference.submitted && reference.sourceMessageId === attachment.source?.messageId && reference.mark.dataset.quoteAttachmentId === attachment.id)));
-    if (pendingDraft || pendingSubmitted) restoreSubmittedReferences();
+  const changedBodies = new Set<HTMLElement>();
+  let restoreFrame = 0;
+  new MutationObserver((records) => {
+    for (const record of records) {
+      const target = record.target instanceof Element ? record.target : record.target.parentElement;
+      const body = target?.closest<HTMLElement>(".message.assistant > .body");
+      if (body) changedBodies.add(body);
+      for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (node.matches(".message.assistant > .body")) changedBodies.add(node);
+        node.querySelectorAll<HTMLElement>(".message.assistant > .body").forEach((body) => changedBodies.add(body));
+      }
+    }
+    if (!changedBodies.size || restoreFrame) return;
+    restoreFrame = requestAnimationFrame(() => {
+      restoreFrame = 0;
+      const bodies = [...changedBodies];
+      changedBodies.clear();
+      for (const body of bodies) {
+        if (!body.isConnected) continue;
+        const sourceMessageId = body.closest<HTMLElement>(".message.assistant")?.dataset.entryId;
+        if (!sourceMessageId) continue;
+        // Only retry unresolved anchors whose own source changed. A missing or
+        // ambiguous old quote must not rescan history on every new streamed token.
+        const pendingDraft = drafts.get(getSessionId()).quoteReplies.some((draft) => draft.sourceMessageId === sourceMessageId && !references.some((reference) => reference.mark.isConnected && reference.id === draft.id && reference.sourceMessageId === sourceMessageId));
+        const pendingSubmitted = Array.from(persistedReplies.get(sourceMessageId)?.values() || []).some((attachment) => !references.some((reference) => reference.mark.isConnected && reference.submitted && reference.sourceMessageId === sourceMessageId && reference.mark.dataset.quoteAttachmentId === attachment.id));
+        if (pendingDraft || pendingSubmitted) restoreSubmittedReferences(body, false);
+      }
+    });
   }).observe(messagesEl, { childList: true, subtree: true });
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
@@ -636,16 +663,7 @@ export function createQuoteReplies(options: {
   }, true);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !toolbar.hidden) hideToolbar(true);
-    if (event.key !== "." || event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-    const target = event.target instanceof Element ? event.target : document.activeElement;
-    if (target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")) return;
-    // Revalidate the live selection instead of trusting the delayed toolbar state.
-    showSelection();
-    if (!pending) return;
-    event.preventDefault();
-    const selection = pending;
-    transitionEditor(() => createReference(selection));
-  }, true); // A selected quote takes precedence over the global '.' composer-focus shortcut.
+  });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => {
     hideToolbar();
@@ -654,6 +672,9 @@ export function createQuoteReplies(options: {
       if (input) resizeEditor(input);
     }
   });
+  // Keep the compact composer from moving this control between pointerdown
+  // and click; keyboard activation still retains its normal focus behavior.
+  summaryButton.addEventListener("pointerdown", (event) => event.preventDefault());
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -667,6 +688,15 @@ export function createQuoteReplies(options: {
   });
 
   return {
+    hasReplyableSelection() {
+      showSelection();
+      return Boolean(pending);
+    },
+    replyToSelection() {
+      showSelection();
+      const selection = pending;
+      if (selection) transitionEditor(() => createReference(selection));
+    },
     hasDrafts: () => draftReferences().length > 0,
     prepareSubmission(overallInstruction) {
       const drafts = draftReferences();

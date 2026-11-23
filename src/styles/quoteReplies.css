@@ -103,6 +103,9 @@
   z-index: 25;
   pointer-events: none;
 }
+/* The summary belongs to the composer's lower stacking context. Suspend
+   transcript portals while it is open rather than letting pins pierce rows. */
+body:has(.quoteReplySummaryPopover:not([hidden])) .quoteReplyLayer { display: none; }
 .quoteReplyLayer > * { pointer-events: auto; }
 .quoteReplyLayer [hidden] { display: none; }
 .quoteReplyPin {

@@ -188,6 +188,65 @@ for (const panel of ["session", "preferences"] as const) {
   });
 }
 
+test("quote summary suspends transcript portals until it closes", async ({ page }) => {
+  await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+  await page.keyboard.press(".");
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill(question);
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await expect(page.locator(".quoteFootnote.editing")).toHaveCount(0);
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  const pin = page.locator(".quoteReplyPin");
+  await expect(pin).toBeVisible();
+  await page.locator(".quoteReplySummaryButton").click();
+  await expect(page.locator(".quoteReplySummaryPopover")).toBeVisible();
+  await expect(pin).toBeHidden();
+  await page.locator("#messages").click({ position: { x: 5, y: 5 } });
+  await expect(page.locator(".quoteReplySummaryPopover")).toBeHidden();
+  await expect(pin).toBeVisible();
+});
+
+test("selected-quote shortcut is documented and blocked by shortcut help", async ({ page }) => {
+  await page.keyboard.press("Control+/");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Reply to selected assistant text");
+  await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+  await page.locator("body").dispatchEvent("keydown", { key: "." });
+  await expect(page.locator(".quoteFootnote")).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+});
+
+test("unresolved old quote does not rescan during another message's streaming", async ({ page }) => {
+  await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+  await page.keyboard.press(".");
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill(question);
+  await page.locator(".message.assistant > .body").evaluate((body) => {
+    const original = body.querySelectorAll.bind(body);
+    body.querySelectorAll = ((selector: string) => {
+      body.dataset.quoteScans = String(Number(body.dataset.quoteScans || 0) + 1);
+      return original(selector);
+    }) as typeof body.querySelectorAll;
+    body.textContent = "The original quote is no longer present.";
+  });
+  const source = page.locator('.message.assistant[data-entry-id="quote-layout-source"] > .body');
+  await expect.poll(() => source.getAttribute("data-quote-scans")).not.toBeNull();
+  await source.evaluate((body) => { body.dataset.quoteScans = "0"; });
+  await page.evaluate(async () => {
+    const message = document.createElement("div");
+    message.className = "message assistant";
+    message.dataset.entryId = "unrelated-stream";
+    const body = document.createElement("div");
+    body.className = "body";
+    message.append(body);
+    document.querySelector("#messages")!.append(message);
+    for (let index = 0; index < 8; index++) {
+      body.append(document.createTextNode("next chunk "));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  });
+  await expect(source).toHaveAttribute("data-quote-scans", "0");
+});
+
 test("right artifact panel remains a separate, non-commentable surface", async ({ page }) => {
   await page.locator(".artifactPreview--markdown").scrollIntoViewIfNeeded();
   await page.getByRole("button", { name: "Open in Artifacts panel" }).click();
