@@ -579,16 +579,14 @@ test.describe("visual regression", () => {
         await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
         await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
-        if (project === "desktop") {
-          // Frame the reference card, not the introductory assistant prose.
-          // Use the message gutter as breathing room above the reference card.
-          await page.locator(".artifactPreview--html").evaluate((element) => {
-            element.scrollIntoView({ block: "start" });
-            const messages = document.querySelector("#messages");
-            const message = element.closest(".message");
-            if (messages && message) messages.scrollTop -= parseFloat(getComputedStyle(message).getPropertyValue("--message-inline-padding")) || 0;
-          });
-        }
+        // Frame the reference card explicitly on both viewports. Footer/model
+        // transitions otherwise leave mobile at a timing-dependent scroll offset.
+        await page.locator(".artifactPreview--html").evaluate((element) => {
+          element.scrollIntoView({ block: "start" });
+          const messages = document.querySelector("#messages");
+          const message = element.closest(".message");
+          if (messages && message) messages.scrollTop -= parseFloat(getComputedStyle(message).getPropertyValue("--message-inline-padding")) || 0;
+        });
         await page.mouse.move(0, 0);
       }
       if (scene === "git-footer") {

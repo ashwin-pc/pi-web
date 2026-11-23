@@ -19,7 +19,11 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
     const viewportTop = (viewport?.offsetTop || 0) + edge;
     const viewportRight = (viewport?.offsetLeft || 0) + (viewport?.width || innerWidth) - edge;
     const bottom = (viewport?.offsetTop || 0) + (viewport?.height || innerHeight) - edge;
-    const availableHeight = Math.max(0, bottom - viewportTop);
+    // Notes share the transcript's available space: the composer and its
+    // popovers intentionally stack above this portal, so never place beneath it.
+    const noteTop = Math.max(viewportTop, transcript.top + edge);
+    const noteBottom = Math.min(bottom, transcript.bottom - edge);
+    const availableHeight = Math.max(0, noteBottom - noteTop);
     const references = [...getReferences()].sort((a, b) => a.mark.compareDocumentPosition(b.mark) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
     references.forEach(({ pin, note }, index) => {
       if (layer.children[index * 2] !== pin) layer.insertBefore(pin, layer.children[index * 2] || null);
@@ -66,9 +70,9 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
       const height = note.offsetHeight;
       const below = rect.bottom + 8;
       const above = rect.top - height - 8;
-      const top = below + height <= bottom ? below : above >= viewportTop ? above : Math.max(viewportTop, bottom - height);
+      const top = below + height <= noteBottom ? below : above >= noteTop ? above : Math.max(noteTop, noteBottom - height);
       note.style.left = `${Math.max(viewportLeft, Math.min(viewportRight - width, rect.left))}px`;
-      note.style.top = `${Math.max(viewportTop, top)}px`;
+      note.style.top = `${Math.max(noteTop, top)}px`;
     }
   }
 

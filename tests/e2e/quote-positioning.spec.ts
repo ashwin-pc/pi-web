@@ -188,6 +188,38 @@ for (const panel of ["session", "preferences"] as const) {
   });
 }
 
+test("bottom-anchored editors and saved notes remain above the composer", async ({ page }) => {
+  await selectText(page, page.locator(".message.assistant > .body > p").last(), "Additional context makes the transcript scrollable.");
+  await page.keyboard.press(".");
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await input.fill(question);
+  const mark = page.locator(".quoteReplyMark");
+  await mark.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  const note = page.locator(".quoteFootnote.open");
+  const confirm = page.getByRole("button", { name: "Confirm question" });
+  await expect.poll(() => confirm.evaluate((element) => {
+    const b = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2));
+  })).toBe(true);
+  await confirm.click();
+  await expect(input).toBeHidden();
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  await mark.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  await page.locator(".quoteReplyPin").click();
+  await expect(note).toBeVisible();
+  await expect.poll(async () => {
+    const [n, transcript] = await Promise.all([note.boundingBox(), page.locator("#messages").boundingBox()]);
+    return !!n && !!transcript && n.y >= transcript.y && n.y + n.height <= transcript.y + transcript.height;
+  }).toBe(true);
+  const edit = page.getByRole("button", { name: "Edit question" });
+  expect(await edit.evaluate((element) => {
+    const b = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2));
+  })).toBe(true);
+  await edit.click();
+  await expect(input).toBeFocused();
+});
+
 test("quote summary stacks above transcript portals and dismisses outside", async ({ page }) => {
   await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
   await page.keyboard.press(".");
