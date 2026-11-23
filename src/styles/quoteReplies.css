@@ -99,13 +99,11 @@
 .quoteReplyLayer {
   position: fixed;
   inset: 0;
-  /* Above transcript chrome, below full-screen panel backdrops (30). */
-  z-index: 25;
+  /* Transcript chrome is isolated; composer/popovers (3), notices and panels
+     stay above this sibling portal without per-overlay visibility rules. */
+  z-index: 2;
   pointer-events: none;
 }
-/* The summary belongs to the composer's lower stacking context. Suspend
-   transcript portals while it is open rather than letting pins pierce rows. */
-body:has(.quoteReplySummaryPopover:not([hidden])) .quoteReplyLayer { display: none; }
 .quoteReplyLayer > * { pointer-events: auto; }
 .quoteReplyLayer [hidden] { display: none; }
 .quoteReplyPin {

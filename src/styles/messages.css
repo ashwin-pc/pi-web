@@ -23,6 +23,9 @@
 .app:has(#emptyCwdChooser:not([hidden]))::after { display: none; }
 
 .messages {
+  /* Sticky preview chrome stays in the transcript's stacking context, beneath
+     its quote portal and the composer's popovers. */
+  isolation: isolate;
   grid-row: 2;
   grid-column: 1;
   min-height: 0;

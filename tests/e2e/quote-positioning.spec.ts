@@ -188,7 +188,7 @@ for (const panel of ["session", "preferences"] as const) {
   });
 }
 
-test("quote summary suspends transcript portals until it closes", async ({ page }) => {
+test("quote summary stacks above transcript portals and dismisses outside", async ({ page }) => {
   await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
   await page.keyboard.press(".");
   await page.getByRole("textbox", { name: "Question for quote 1" }).fill(question);
@@ -199,11 +199,58 @@ test("quote summary suspends transcript portals until it closes", async ({ page 
   await expect(pin).toBeVisible();
   await page.locator(".quoteReplySummaryButton").click();
   await expect(page.locator(".quoteReplySummaryPopover")).toBeVisible();
-  await expect(pin).toBeHidden();
+  expect(await page.locator(".quoteReplySummaryPopover").evaluate((popover) => {
+    const pin = document.querySelector<HTMLElement>(".quoteReplyPin")!;
+    const row = popover.querySelector("button")!.getBoundingClientRect();
+    const saved = pin.style.cssText;
+    // Force geometric overlap to test stacking, regardless of source scrolling.
+    pin.style.left = `${row.left + row.width / 2 - 10}px`;
+    pin.style.top = `${row.top + row.height / 2 - 10}px`;
+    const top = document.elementFromPoint(row.left + row.width / 2, row.top + row.height / 2);
+    pin.style.cssText = saved;
+    return !!top && popover.contains(top);
+  })).toBe(true);
   await page.locator("#messages").click({ position: { x: 5, y: 5 } });
   await expect(page.locator(".quoteReplySummaryPopover")).toBeHidden();
   await expect(pin).toBeVisible();
 });
+
+for (const overlay of ["context", "slash commands", "jump button", "workspace trust"] as const) {
+  test(`${overlay} stacks above quote pins`, async ({ page }) => {
+    await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+    await page.keyboard.press(".");
+    await page.getByRole("textbox", { name: "Question for quote 1" }).fill(question);
+    await page.getByRole("button", { name: "Confirm question" }).click();
+    await expect(page.locator(".quoteFootnote.editing")).toHaveCount(0);
+    await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+    let target: Locator;
+    if (overlay === "context") {
+      await page.locator("#contextMeter").click();
+      target = page.locator("#contextMeterPopover");
+    } else if (overlay === "slash commands") {
+      await page.locator("#prompt").fill("/");
+      target = page.locator("#slashCommands");
+    } else {
+      target = page.locator(overlay === "jump button" ? ".jumpToLatestButton" : "#workspaceExtensionTrustNotice");
+      // Exercise the real component's CSS independently of streaming/trust
+      // setup: this test owns presentation, not those components' state machines.
+      await target.evaluate((element: HTMLElement) => { element.hidden = false; });
+    }
+    await expect(target).toBeVisible();
+    expect(await target.evaluate((element) => {
+      const pin = document.querySelector<HTMLElement>(".quoteReplyPin")!;
+      const bounds = element.getBoundingClientRect();
+      const x = bounds.left + bounds.width / 2, y = bounds.top + bounds.height / 2;
+      const saved = pin.style.cssText;
+      pin.hidden = false;
+      pin.style.left = `${x - 10}px`;
+      pin.style.top = `${y - 10}px`;
+      const top = document.elementFromPoint(x, y);
+      pin.style.cssText = saved;
+      return !!top && element.contains(top);
+    })).toBe(true);
+  });
+}
 
 test("selected-quote shortcut is documented and blocked by shortcut help", async ({ page }) => {
   await page.keyboard.press("Control+/");
