@@ -548,9 +548,9 @@ test.describe("visual regression", () => {
         const accepted = page.waitForResponse((response) => response.url().endsWith("/api/prompt") && response.request().method() === "POST");
         await sendPrompt(page, "Create an HTML artifact for the launch brief.");
         await accepted;
-        await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
-        // Keep the editing viewport while the artifact streams in, as intended
-        // by this scene; successful sends no longer retain focus implicitly.
+        if (project === "mobile") await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+        // Touch sends now dismiss editing; explicitly restore this scene's
+        // editing viewport. Desktop sends retain focus without intervention.
         await page.locator("#prompt").focus();
         await expect(page.locator(".artifactPreview--html")).toBeVisible();
         await expect(page.locator("#stopButton")).toBeHidden();

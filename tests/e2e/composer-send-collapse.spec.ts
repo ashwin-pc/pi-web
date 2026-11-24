@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
 
+for (const device of ["project device", "folded cover", "unfolded fold"] as const) {
+  test.describe(device, () => {
+    if (device !== "project device") {
+      // Use the app's touch-first focus classification, not viewport width:
+      // unfolded foldables can be wider than the mobile CSS breakpoint.
+      test.use({ hasTouch: true, isMobile: true, viewport: device === "folded cover" ? { width: 344, height: 882 } : { width: 884, height: 1104 } });
+    }
 for (const fullscreen of [false, true]) {
   test(`${fullscreen ? "fullscreen" : "focused"} composer: empty submission preserves editor`, async ({ page }) => {
     await page.request.post("/api/mock/reset");
@@ -49,12 +56,22 @@ for (const fullscreen of [false, true]) {
       // Let the submit handler consume the response before checking retained UI.
       await page.waitForTimeout(50);
       if (outcome === "success") {
-        await expect(form).toHaveClass(/compactInactive/);
-        await expect(form).not.toHaveClass(/expanded/);
-        await expect(prompt).not.toBeFocused();
+        const touchFirst = await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches || "ontouchstart" in window || navigator.maxTouchPoints > 0);
         await expect(prompt).toHaveValue("");
-        await prompt.click();
-        await prompt.fill("Next message");
+        if (touchFirst) {
+          await expect(form).toHaveClass(/compactInactive/);
+          await expect(form).not.toHaveClass(/expanded/);
+          await expect(prompt).not.toBeFocused();
+          await prompt.click();
+        } else {
+          await expect(form).not.toHaveClass(/compactInactive/);
+          await expect(prompt).toBeFocused();
+          if (fullscreen) await expect(form).toHaveClass(/expanded/);
+          else await expect(form).not.toHaveClass(/expanded/);
+        }
+        // Desktop can immediately type a follow-up without a click or shortcut.
+        await page.keyboard.type("Next message");
+        await expect(prompt).toHaveValue("Next message");
         await expect(form).not.toHaveClass(/compactInactive/);
       } else {
         if (outcome === "failure") await expect(prompt).toHaveValue("Send this message");
@@ -65,4 +82,6 @@ for (const fullscreen of [false, true]) {
       }
     });
   }
+}
+  });
 }

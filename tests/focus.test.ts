@@ -98,13 +98,13 @@ describe("mobile focus wiring", () => {
     expect(composer).toContain("    elements.promptEl.focus();\n  }\n\n  function slashCommandName");
   });
 
-  it("collapses accepted prompts without refocusing or blurring failed drafts", () => {
+  it("collapses accepted touch prompts but refocuses desktop without changing failed drafts", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
     const promptSend = composer.slice(composer.indexOf('const res = await fetch("/api/prompt"'), composer.indexOf('elements.promptEl.addEventListener("keydown"'));
     const [accepted, failed] = promptSend.split("} catch (error) {");
 
     // Runtime coverage lives in composer-send-collapse.spec.ts; this wiring
-    // guard prevents a shared finally/refocus from undoing either outcome.
+    // guard keeps responsive success behavior out of the failure path.
     expect(accepted).toContain("if (!res.ok) throw new Error(await res.text());");
     expect(accepted).toContain("promptRevision === clearedPromptRevision");
     expect(accepted).toContain("setEditorExpanded(false);");
@@ -113,7 +113,8 @@ describe("mobile focus wiring", () => {
     expect(failed).toContain("elements.promptEl.value = rawMessage;");
     expect(failed).not.toContain(".blur()");
     expect(failed).not.toContain("setEditorExpanded(false)");
-    expect(promptSend).not.toContain("settlePromptFocusAfterSubmit()");
+    expect(accepted).toContain("if (shouldAvoidProgrammaticKeyboardFocus()) {");
+    expect(accepted).toContain("} else {\n            settlePromptFocusAfterSubmit();");
     expect(promptSend).not.toContain(".focus(");
   });
 

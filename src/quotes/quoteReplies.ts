@@ -1,4 +1,5 @@
 import { createQuoteReplyPositioning } from "./quoteReplyPositioning.js";
+import { readQuoteSelection, selectableBlockSelector, type PendingSelection } from "./quoteSelection.js";
 import type { AttachedImage, QuoteReplyAttachment } from "../app/types.js";
 import type { SessionDraftStore, StoredQuoteDraft } from "../drafts/sessionDraftStore.js";
 
@@ -22,16 +23,6 @@ type QuoteReference = {
   submitted: boolean;
 };
 
-type PendingSelection = {
-  range: Range;
-  quote: string;
-  body: HTMLElement;
-  block: HTMLElement;
-  sourceMessageId?: string;
-  startOffset: number;
-  endOffset: number;
-};
-
 export type QuoteRepliesController = {
   hasDrafts: () => boolean;
   hasReplyableSelection: () => boolean;
@@ -43,20 +34,6 @@ export type QuoteRepliesController = {
   restoreSubmittedReferences: (body?: HTMLElement) => void;
   renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
 };
-
-const selectableBlockSelector = "p, li, blockquote, pre, td, th";
-
-function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let offset = 0;
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    if (node.parentElement?.closest("[data-quote-reply-ui]")) continue;
-    if (node === target) return offset + targetOffset;
-    offset += node.data.length;
-  }
-  return offset;
-}
 
 function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -172,43 +149,14 @@ export function createQuoteReplies(options: {
   }
 
   function showSelection() {
-    const selection = getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount !== 1) {
+    pending = readQuoteSelection(messagesEl);
+    if (!pending) {
       hideToolbar();
       return;
     }
-    const range = selection.getRangeAt(0);
-    const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement;
-    const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE ? range.endContainer as Element : range.endContainer.parentElement;
-    if (!startElement || !endElement) {
-      hideToolbar();
-      return;
-    }
-    const body = startElement.closest<HTMLElement>(".message.assistant > .body");
-    if (!body || body !== endElement.closest(".message.assistant > .body") || startElement.closest("[data-quote-reply-ui]")) {
-      hideToolbar();
-      return;
-    }
-    const startBlock = startElement.closest<HTMLElement>(selectableBlockSelector) || body;
-    const endBlock = endElement.closest<HTMLElement>(selectableBlockSelector) || body;
-    const quote = selection.toString().replace(/\s+/g, " ").trim();
-    if (startBlock !== endBlock || quote.length < 2) {
-      hideToolbar();
-      return;
-    }
+    const { range, block: startBlock } = pending;
     const rects = Array.from(range.getClientRects()).filter((rect) => rect.width && rect.height);
     const rect = rects.at(-1) || range.getBoundingClientRect();
-    if (!rect.width && !rect.height) return;
-    const message = body.closest<HTMLElement>(".message.assistant");
-    pending = {
-      range: range.cloneRange(),
-      quote,
-      body,
-      block: startBlock,
-      sourceMessageId: message?.dataset.entryId,
-      startOffset: textOffset(body, range.startContainer, range.startOffset),
-      endOffset: textOffset(body, range.endContainer, range.endOffset),
-    };
     toolbar.hidden = false;
     const actionRect = toolbar.getBoundingClientRect();
     const safeEdge = 8;
@@ -688,13 +636,9 @@ export function createQuoteReplies(options: {
   });
 
   return {
-    hasReplyableSelection() {
-      showSelection();
-      return Boolean(pending);
-    },
+    hasReplyableSelection: () => Boolean(readQuoteSelection(messagesEl)),
     replyToSelection() {
-      showSelection();
-      const selection = pending;
+      const selection = readQuoteSelection(messagesEl);
       if (selection) transitionEditor(() => createReference(selection));
     },
     hasDrafts: () => draftReferences().length > 0,

@@ -19,11 +19,8 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
     const viewportTop = (viewport?.offsetTop || 0) + edge;
     const viewportRight = (viewport?.offsetLeft || 0) + (viewport?.width || innerWidth) - edge;
     const bottom = (viewport?.offsetTop || 0) + (viewport?.height || innerHeight) - edge;
-    // Notes share the transcript's available space: the composer and its
-    // popovers intentionally stack above this portal, so never place beneath it.
-    const noteTop = Math.max(viewportTop, transcript.top + edge);
-    const noteBottom = Math.min(bottom, transcript.bottom - edge);
-    const availableHeight = Math.max(0, noteBottom - noteTop);
+    const transcriptNoteTop = Math.max(viewportTop, transcript.top + edge);
+    const transcriptNoteBottom = Math.min(bottom, transcript.bottom - edge);
     const references = [...getReferences()].sort((a, b) => a.mark.compareDocumentPosition(b.mark) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
     references.forEach(({ pin, note }, index) => {
       if (layer.children[index * 2] !== pin) layer.insertBefore(pin, layer.children[index * 2] || null);
@@ -56,11 +53,19 @@ export function createQuoteReplyPositioning(messages: HTMLElement, getReferences
       // Keep an active editor reachable even if its anchor scrolls out of view.
       note.style.visibility = visible || note.classList.contains("editing") ? "visible" : "hidden";
       if (!note.classList.contains("open")) continue;
+      // Saved notes stay in the transcript so they cannot hide behind the
+      // composer. Editing hides composer/footer chrome; if a keyboard leaves a
+      // tiny transcript band, use the remaining visual viewport below its top
+      // rather than shrinking the textarea and confirmation controls to zero.
+      const editing = note.classList.contains("editing");
+      const noteTop = transcriptNoteTop;
+      const noteBottom = editing && transcriptNoteBottom - noteTop < 120 ? bottom : transcriptNoteBottom;
+      const availableHeight = Math.max(0, noteBottom - noteTop);
       const width = Math.max(0, Math.min(680, transcript.width - edge * 2, viewportRight - viewportLeft));
       note.style.width = `${width}px`;
       note.style.maxHeight = `${availableHeight}px`;
       const input = note.querySelector<HTMLTextAreaElement>("textarea");
-      if (input && note.classList.contains("editing")) {
+      if (input && editing) {
         input.style.maxHeight = `${Math.max(0, Math.min(360, availableHeight - 24))}px`;
         input.style.height = "auto";
         input.style.height = `${input.scrollHeight}px`;

@@ -188,6 +188,26 @@ for (const panel of ["session", "preferences"] as const) {
   });
 }
 
+test("short transcript bands retain a usable quote editor", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 360 });
+  await selectText(page, page.locator("td").filter({ hasText: "bounded cadence" }), "bounded cadence");
+  await page.keyboard.press(".");
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await input.fill(question);
+  await page.locator("#messages").evaluate((element: HTMLElement) => {
+    element.style.height = "72px";
+    element.style.alignSelf = "start";
+  });
+  await expect.poll(async () => (await input.boundingBox())?.height || 0).toBeGreaterThan(68);
+  const confirm = page.getByRole("button", { name: "Confirm question" });
+  await expect.poll(() => confirm.evaluate((element) => {
+    const b = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2));
+  })).toBe(true);
+  await confirm.click();
+  await expect(input).toBeHidden();
+});
+
 test("bottom-anchored editors and saved notes remain above the composer", async ({ page }) => {
   await selectText(page, page.locator(".message.assistant > .body > p").last(), "Additional context makes the transcript scrollable.");
   await page.keyboard.press(".");

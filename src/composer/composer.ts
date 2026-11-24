@@ -4,7 +4,7 @@ import { sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/type
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
-import { focusIfKeyboardFriendly } from "../app/focus.js";
+import { focusIfKeyboardFriendly, shouldAvoidProgrammaticKeyboardFocus } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
 import { openImagePreview } from "../components/imageActions.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
@@ -718,11 +718,17 @@ export function createComposer(options: {
         // session) the user started while the request was in flight.
         if (ownedSessionId === sessionId && promptRevision === clearedPromptRevision
           && !elements.promptEl.value && state.attachedImages.length === 0 && contextAttachments.length === 0) {
-          setEditorExpanded(false);
-          const active = document.activeElement;
-          if (active instanceof HTMLElement && elements.formEl.contains(active)) active.blur();
-          applyCompactInactive(true);
-          try { sessionStorage.removeItem(restoreFocusStorageKey); } catch { /* ignore */ }
+          if (shouldAvoidProgrammaticKeyboardFocus()) {
+            // Touch-first phones and foldables should dismiss their keyboard
+            // and leave expanded editing. Keyboard desktops keep their mode.
+            setEditorExpanded(false);
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && elements.formEl.contains(active)) active.blur();
+            applyCompactInactive(true);
+            try { sessionStorage.removeItem(restoreFocusStorageKey); } catch { /* ignore */ }
+          } else {
+            settlePromptFocusAfterSubmit();
+          }
         }
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
