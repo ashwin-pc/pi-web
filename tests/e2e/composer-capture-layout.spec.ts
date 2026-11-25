@@ -137,6 +137,7 @@ test("a 44px CSS chrome contract drives the real resolving handoff and final lay
   expect(first.queueWidthFrames).toContain("0px");
   expect(first.queueWidthFrames).toContain("44px");
   expect(first.queue.width).toBeLessThanOrEqual(2);
+  // With no draft content, compact Send is hidden and enters from zero width.
   expect(first.send.width).toBeLessThanOrEqual(2);
 
   await expect(page.locator("#promptForm")).toHaveAttribute("data-capture-phase", "idle");

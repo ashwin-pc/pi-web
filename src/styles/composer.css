@@ -934,12 +934,12 @@ button:disabled:hover { border-color: var(--border); }
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .expandButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #queueToggle,
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton:disabled {
   display: none !important;
 }
-/* Queue and send join the expanded footer as zero-width slots, then consume
-   their final budget while the footer itself grows. This prevents an 80px
-   first-frame subtraction from the compact model control. */
+/* Queue and empty-draft send enter from zero width while the footer grows.
+   An enabled send can instead grow from its compact width. This avoids
+   subtracting the expanded action budget from the compact model control. */
 .composer[data-capture-chrome="settling"] #queueToggle,
 .composer[data-capture-chrome="settling"] #primaryButton {
   display: inline-grid !important;
@@ -1028,7 +1028,8 @@ button:disabled:hover { border-color: var(--border); }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureCancel,
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded):not([data-capture-chrome="settling"]) #primaryButton {
   flex-basis: var(--composer-control-size);
   width: var(--composer-control-size);
   min-width: var(--composer-control-size);

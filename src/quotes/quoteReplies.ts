@@ -1,3 +1,5 @@
+import { createQuoteReplyPositioning } from "./quoteReplyPositioning.js";
+import { readQuoteSelection, selectableBlockSelector, type PendingSelection } from "./quoteSelection.js";
 import type { AttachedImage, QuoteReplyAttachment } from "../app/types.js";
 import type { SessionDraftStore, StoredQuoteDraft } from "../drafts/sessionDraftStore.js";
 
@@ -21,18 +23,10 @@ type QuoteReference = {
   submitted: boolean;
 };
 
-type PendingSelection = {
-  range: Range;
-  quote: string;
-  body: HTMLElement;
-  block: HTMLElement;
-  sourceMessageId?: string;
-  startOffset: number;
-  endOffset: number;
-};
-
 export type QuoteRepliesController = {
   hasDrafts: () => boolean;
+  hasReplyableSelection: () => boolean;
+  replyToSelection: () => void;
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
   checkpoint: () => { restore: () => void };
@@ -40,20 +34,6 @@ export type QuoteRepliesController = {
   restoreSubmittedReferences: (body?: HTMLElement) => void;
   renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
 };
-
-const selectableBlockSelector = "p, li, blockquote, pre, td, th";
-
-function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let offset = 0;
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    if (node.parentElement?.closest("[data-quote-reply-ui]")) continue;
-    if (node === target) return offset + targetOffset;
-    offset += node.data.length;
-  }
-  return offset;
-}
 
 function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -64,7 +44,7 @@ function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
     const node = walker.currentNode as Text;
     if (node.parentElement?.closest("[data-quote-reply-ui]")) continue;
     const nextOffset = offset + node.data.length;
-    if (!start && startOffset >= offset && startOffset <= nextOffset) start = { node, offset: startOffset - offset };
+    if (!start && startOffset >= offset && startOffset < nextOffset) start = { node, offset: startOffset - offset };
     if (endOffset >= offset && endOffset <= nextOffset) {
       end = { node, offset: endOffset - offset };
       break;
@@ -78,6 +58,26 @@ function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
   return range;
 }
 
+function quoteRange(root: HTMLElement, startOffset: number, endOffset: number, quote: string) {
+  const matches = (range: Range) => !range.collapsed && range.toString().replace(/\s+/g, " ").trim() === quote.replace(/\s+/g, " ").trim();
+  const anchored = textRange(root, startOffset, endOffset);
+  if (anchored && matches(anchored)) return anchored;
+  // Lazy diagram/artifact rendering can change the preceding generated text.
+  // Recover only an unambiguous excerpt, never guess among repeated matches.
+  const candidates: Range[] = [];
+  for (const block of root.querySelectorAll<HTMLElement>(selectableBlockSelector)) {
+    if (!block.getClientRects().length || block.closest("[data-quote-reply-ui]")) continue;
+    const text = block.textContent || "";
+    let index = text.indexOf(quote);
+    while (index >= 0) {
+      const range = textRange(block, index, index + quote.length);
+      if (range && matches(range) && !candidates.some((candidate) => candidate.compareBoundaryPoints(Range.START_TO_START, range) === 0 && candidate.compareBoundaryPoints(Range.END_TO_END, range) === 0)) candidates.push(range);
+      index = text.indexOf(quote, index + 1);
+    }
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
 export function createQuoteReplies(options: {
   messagesEl: HTMLElement;
   composerEl: HTMLFormElement;
@@ -87,6 +87,7 @@ export function createQuoteReplies(options: {
 }): QuoteRepliesController {
   const { messagesEl, composerEl, getSessionId, drafts, onChange } = options;
   let references: QuoteReference[] = [];
+  const positioning = createQuoteReplyPositioning(messagesEl, () => references);
   let pending: PendingSelection | undefined;
   let nextId = 1;
   let settleTimer = 0;
@@ -148,43 +149,14 @@ export function createQuoteReplies(options: {
   }
 
   function showSelection() {
-    const selection = getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount !== 1) {
+    pending = readQuoteSelection(messagesEl);
+    if (!pending) {
       hideToolbar();
       return;
     }
-    const range = selection.getRangeAt(0);
-    const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement;
-    const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE ? range.endContainer as Element : range.endContainer.parentElement;
-    if (!startElement || !endElement) {
-      hideToolbar();
-      return;
-    }
-    const body = startElement.closest<HTMLElement>(".message.assistant > .body");
-    if (!body || body !== endElement.closest(".message.assistant > .body") || startElement.closest("[data-quote-reply-ui]")) {
-      hideToolbar();
-      return;
-    }
-    const startBlock = startElement.closest<HTMLElement>(selectableBlockSelector) || body;
-    const endBlock = endElement.closest<HTMLElement>(selectableBlockSelector) || body;
-    const quote = selection.toString().replace(/\s+/g, " ").trim();
-    if (startBlock !== endBlock || quote.length < 2) {
-      hideToolbar();
-      return;
-    }
+    const { range, block: startBlock } = pending;
     const rects = Array.from(range.getClientRects()).filter((rect) => rect.width && rect.height);
     const rect = rects.at(-1) || range.getBoundingClientRect();
-    if (!rect.width && !rect.height) return;
-    const message = body.closest<HTMLElement>(".message.assistant");
-    pending = {
-      range: range.cloneRange(),
-      quote,
-      body,
-      block: startBlock,
-      sourceMessageId: message?.dataset.entryId,
-      startOffset: textOffset(body, range.startContainer, range.startOffset),
-      endOffset: textOffset(body, range.endContainer, range.endOffset),
-    };
     toolbar.hidden = false;
     const actionRect = toolbar.getBoundingClientRect();
     const safeEdge = 8;
@@ -237,12 +209,16 @@ export function createQuoteReplies(options: {
 
   function jumpToReference(reference: QuoteReference) {
     reference.note.classList.add("open");
+    positioning.position();
+    const input = reference.note.querySelector<HTMLTextAreaElement>("textarea");
+    if (input) resizeEditor(input);
     reference.mark.scrollIntoView({ behavior: "smooth", block: "center" });
     reference.mark.classList.add("flash");
     window.setTimeout(() => reference.mark.classList.remove("flash"), 700);
   }
 
   function updateSummary() {
+    positioning.schedule();
     const drafts = draftReferences();
     summary.hidden = drafts.length === 0;
     const incomplete = drafts.filter((reference) => !reference.question.trim()).length;
@@ -269,7 +245,7 @@ export function createQuoteReplies(options: {
         summaryPopover.hidden = true;
         summaryButton.setAttribute("aria-expanded", "false");
         jumpToReference(reference);
-        if (!reference.question.trim()) window.setTimeout(() => reference.note.querySelector<HTMLInputElement>("input")?.focus(), 350);
+        if (!reference.question.trim()) window.setTimeout(() => reference.note.querySelector<HTMLTextAreaElement>("textarea")?.focus(), 350);
       });
       summaryPopover.append(row);
     }
@@ -320,15 +296,57 @@ export function createQuoteReplies(options: {
   function removeReferenceImmediately(reference: QuoteReference) {
     if (reference.submitted) return;
     reference.mark.replaceWith(...reference.mark.childNodes);
-    reference.pin.remove();
-    reference.note.remove();
+    positioning.remove(reference);
     references = references.filter((candidate) => candidate !== reference);
     persistDrafts();
     updateSummary();
   }
 
+  function resizeEditor(input: HTMLTextAreaElement) {
+    if (!input.getClientRects().length) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }
+
+  function bindEditor(reference: QuoteReference) {
+    const { note } = reference;
+    const input = note.querySelector<HTMLTextAreaElement>("textarea")!;
+    input.value = reference.question;
+    input.addEventListener("input", () => {
+      resizeEditor(input);
+      reference.question = input.value;
+      schedulePersistDrafts();
+      updateSummary();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
+        saveReference(reference);
+      }
+    });
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
+      if (reference.submitted) return;
+      note.classList.remove("saved");
+      note.classList.add("editing", "open");
+      resizeEditor(input);
+      input.focus();
+      input.select();
+    });
+    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
+    reference.pin.addEventListener("click", () => {
+      note.classList.toggle("open");
+      if (note.classList.contains("open")) {
+        resizeEditor(input);
+        jumpToReference(reference);
+      }
+    });
+    resizeEditor(input);
+    return input;
+  }
+
   function saveReference(reference: QuoteReference) {
-    if (!reference.note.querySelector<HTMLInputElement>("input")!.value.trim()) {
+    if (!reference.note.querySelector<HTMLTextAreaElement>("textarea")!.value.trim()) {
       saveReferenceImmediately(reference);
       return;
     }
@@ -336,7 +354,7 @@ export function createQuoteReplies(options: {
   }
 
   function saveReferenceImmediately(reference: QuoteReference) {
-    const input = reference.note.querySelector<HTMLInputElement>("input")!;
+    const input = reference.note.querySelector<HTMLTextAreaElement>("textarea")!;
     const question = input.value.trim();
     if (!question) {
       reference.note.classList.remove("shake");
@@ -359,7 +377,7 @@ export function createQuoteReplies(options: {
     if (!source || !attachment.quote || !attachment.question || !attachment.id) return;
     if (body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== source.messageId) return;
     if (body.querySelector(`[data-quote-attachment-id="${CSS.escape(attachment.id)}"]`)) return;
-    const range = textRange(body, source.startOffset, source.endOffset);
+    const range = quoteRange(body, source.startOffset, source.endOffset, attachment.quote);
     if (!range || range.collapsed || range.toString().replace(/\s+/g, " ").trim() !== attachment.quote.replace(/\s+/g, " ").trim()) return;
 
     const number = attachment.label?.match(/\d+/)?.[0] || "•";
@@ -373,23 +391,24 @@ export function createQuoteReplies(options: {
       return;
     }
 
+    const existing = references.find((reference) => reference.submitted && reference.sourceMessageId === source.messageId && reference.mark.dataset.quoteAttachmentId === attachment.id);
+    if (existing) {
+      existing.mark = mark;
+      positioning.schedule();
+      return;
+    }
     const pin = document.createElement("button");
     pin.type = "button";
     pin.className = "quoteReplyPin submitted";
     pin.dataset.quoteReplyUi = "true";
     pin.textContent = number;
     pin.title = attachment.question;
-    mark.after(pin);
 
     const note = document.createElement("div");
     note.className = "quoteFootnote submitted saved";
     note.dataset.quoteReplyUi = "true";
     note.innerHTML = `<span class="quoteFootnoteNumber">${number}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span></div></div>`;
     note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = attachment.question;
-    let noteAnchor: Element = mark.closest(selectableBlockSelector) || body;
-    while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
-    noteAnchor.after(note);
-
     const id = Number(number);
     const reference: QuoteReference = {
       id: Number.isSafeInteger(id) ? id : nextId,
@@ -404,6 +423,7 @@ export function createQuoteReplies(options: {
       submitted: true,
     };
     references.push(reference);
+    positioning.mount(reference);
     nextId = Math.max(nextId, reference.id + 1);
     pin.addEventListener("click", () => {
       note.classList.toggle("open");
@@ -415,7 +435,7 @@ export function createQuoteReplies(options: {
     if (!draft.sourceMessageId || body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== draft.sourceMessageId) return;
     const attachmentId = `quote-reply-${draft.id}`;
     if (body.querySelector(`[data-quote-attachment-id="${CSS.escape(attachmentId)}"]`)) return;
-    const range = textRange(body, draft.startOffset, draft.endOffset);
+    const range = quoteRange(body, draft.startOffset, draft.endOffset, draft.quote);
     if (!range || range.collapsed || range.toString().replace(/\s+/g, " ").trim() !== draft.quote.replace(/\s+/g, " ").trim()) return;
 
     const mark = document.createElement("mark");
@@ -428,45 +448,29 @@ export function createQuoteReplies(options: {
     } catch {
       return;
     }
+    const existing = references.find((reference) => reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId);
+    if (existing) {
+      existing.mark = mark;
+      positioning.schedule();
+      return;
+    }
     const pin = document.createElement("button");
     pin.type = "button";
     pin.className = "quoteReplyPin";
     pin.dataset.quoteReplyUi = "true";
     pin.textContent = String(draft.id);
     pin.title = draft.question || "Open linked question";
-    mark.after(pin);
 
     const note = document.createElement("div");
     note.className = `quoteFootnote ${draft.question.trim() ? "saved" : "editing"}`;
     note.dataset.quoteReplyUi = "true";
-    note.innerHTML = `<span class="quoteFootnoteNumber">${draft.id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${draft.id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
-    const input = note.querySelector<HTMLInputElement>("input")!;
-    input.value = draft.question;
+    note.innerHTML = `<span class="quoteFootnoteNumber">${draft.id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><textarea rows="2" aria-label="Question for quote ${draft.id}" placeholder="Question for this quote…"></textarea><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
     note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = draft.question;
-    let noteAnchor: Element = mark.closest(selectableBlockSelector) || body;
-    while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
-    noteAnchor.after(note);
-
     const reference: QuoteReference = { ...draft, mark, pin, note, submitted: false };
     references.push(reference);
+    positioning.mount(reference);
     nextId = Math.max(nextId, draft.id + 1);
-    input.addEventListener("input", () => { reference.question = input.value; schedulePersistDrafts(); updateSummary(); });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
-    });
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
-      note.classList.remove("saved");
-      note.classList.add("editing", "open");
-      input.focus();
-      input.select();
-    });
-    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => {
-      note.classList.toggle("open");
-      if (note.classList.contains("open")) jumpToReference(reference);
-    });
+    bindEditor(reference);
     updateSummary();
   }
 
@@ -477,8 +481,9 @@ export function createQuoteReplies(options: {
     // arrived yet, while existing references make each successful restore idempotent.
     if (sessionId) {
       for (const draft of drafts.get(sessionId).quoteReplies) {
-        if (!draft.sourceMessageId || references.some((reference) => reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId)) continue;
-        const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
+        if (!draft.sourceMessageId || references.some((reference) => reference.mark.isConnected && reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId)) continue;
+        if (body && body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== draft.sourceMessageId) continue;
+        const sourceBody = body || messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
         if (sourceBody) restoreDraftReference(draft, sourceBody);
         else hasPendingSource = true;
       }
@@ -496,9 +501,8 @@ export function createQuoteReplies(options: {
     }
   }
 
-  function createReference() {
-    if (!pending) return;
-    const selection = pending;
+  function createReference(selection = pending) {
+    if (!selection) return;
     const id = nextId++;
     const mark = document.createElement("mark");
     mark.className = "quoteReplyMark";
@@ -517,16 +521,11 @@ export function createQuoteReplies(options: {
     pin.dataset.quoteReplyUi = "true";
     pin.textContent = String(id);
     pin.title = "Open linked question";
-    mark.after(pin);
 
     const note = document.createElement("div");
     note.className = "quoteFootnote editing open quoteFootnoteEntering";
     note.dataset.quoteReplyUi = "true";
-    note.innerHTML = `<span class="quoteFootnoteNumber">${id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
-    let noteAnchor: Element = selection.block;
-    while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
-    noteAnchor.after(note);
-
+    note.innerHTML = `<span class="quoteFootnoteNumber">${id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><textarea rows="2" aria-label="Question for quote ${id}" placeholder="Question for this quote…"></textarea><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
     const reference: QuoteReference = {
       id,
       quote: selection.quote,
@@ -540,41 +539,54 @@ export function createQuoteReplies(options: {
       submitted: false,
     };
     references.push(reference);
+    positioning.mount(reference);
+    positioning.position();
     persistDrafts();
-    const input = note.querySelector<HTMLInputElement>("input")!;
-    input.addEventListener("input", () => {
-      reference.question = input.value;
-      schedulePersistDrafts();
-      updateSummary();
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        saveReference(reference);
-      }
-    });
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
-      if (reference.submitted) return;
-      note.classList.remove("saved");
-      note.classList.add("editing", "open");
-      input.focus();
-      input.select();
-    });
-    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => {
-      note.classList.toggle("open");
-      if (note.classList.contains("open")) jumpToReference(reference);
-    });
+    const input = bindEditor(reference);
     updateSummary();
     hideToolbar(true);
     window.setTimeout(() => input.focus(), 30);
     window.setTimeout(() => note.classList.remove("quoteFootnoteEntering"), 1800);
   }
 
+  // Artifact text and Mermaid labels arrive after the initial Markdown render.
+  // Retry only unresolved anchors when those asynchronous surfaces become ready.
+  const changedBodies = new Set<HTMLElement>();
+  let restoreFrame = 0;
+  new MutationObserver((records) => {
+    for (const record of records) {
+      const target = record.target instanceof Element ? record.target : record.target.parentElement;
+      const body = target?.closest<HTMLElement>(".message.assistant > .body");
+      if (body) changedBodies.add(body);
+      for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (node.matches(".message.assistant > .body")) changedBodies.add(node);
+        node.querySelectorAll<HTMLElement>(".message.assistant > .body").forEach((body) => changedBodies.add(body));
+      }
+    }
+    if (!changedBodies.size || restoreFrame) return;
+    restoreFrame = requestAnimationFrame(() => {
+      restoreFrame = 0;
+      const bodies = [...changedBodies];
+      changedBodies.clear();
+      for (const body of bodies) {
+        if (!body.isConnected) continue;
+        const sourceMessageId = body.closest<HTMLElement>(".message.assistant")?.dataset.entryId;
+        if (!sourceMessageId) continue;
+        // Only retry unresolved anchors whose own source changed. A missing or
+        // ambiguous old quote must not rescan history on every new streamed token.
+        const pendingDraft = drafts.get(getSessionId()).quoteReplies.some((draft) => draft.sourceMessageId === sourceMessageId && !references.some((reference) => reference.mark.isConnected && reference.id === draft.id && reference.sourceMessageId === sourceMessageId));
+        const pendingSubmitted = Array.from(persistedReplies.get(sourceMessageId)?.values() || []).some((attachment) => !references.some((reference) => reference.mark.isConnected && reference.submitted && reference.sourceMessageId === sourceMessageId && reference.mark.dataset.quoteAttachmentId === attachment.id));
+        if (pendingDraft || pendingSubmitted) restoreSubmittedReferences(body, false);
+      }
+    });
+  }).observe(messagesEl, { childList: true, subtree: true });
+
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
-  reply.addEventListener("click", () => transitionEditor(createReference));
+  reply.addEventListener("click", () => {
+    const selection = pending;
+    transitionEditor(() => createReference(selection));
+  });
   messagesEl.addEventListener("pointerup", () => {
     if (!isMobileSelection()) window.setTimeout(showSelection);
   });
@@ -591,12 +603,26 @@ export function createQuoteReplies(options: {
   });
   document.addEventListener("pointerdown", (event) => {
     if (!toolbar.hidden && !toolbar.contains(event.target as Node)) hideToolbar();
+    for (const reference of references) {
+      if (reference.note.classList.contains("saved") && !reference.note.contains(event.target as Node) && !reference.pin.contains(event.target as Node)) {
+        reference.note.classList.remove("open");
+      }
+    }
   }, true);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !toolbar.hidden) hideToolbar(true);
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
-  window.addEventListener("resize", () => hideToolbar());
+  window.addEventListener("resize", () => {
+    hideToolbar();
+    for (const reference of references) {
+      const input = reference.note.querySelector<HTMLTextAreaElement>("textarea");
+      if (input) resizeEditor(input);
+    }
+  });
+  // Keep the compact composer from moving this control between pointerdown
+  // and click; keyboard activation still retains its normal focus behavior.
+  summaryButton.addEventListener("pointerdown", (event) => event.preventDefault());
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -610,6 +636,11 @@ export function createQuoteReplies(options: {
   });
 
   return {
+    hasReplyableSelection: () => Boolean(readQuoteSelection(messagesEl)),
+    replyToSelection() {
+      const selection = readQuoteSelection(messagesEl);
+      if (selection) transitionEditor(() => createReference(selection));
+    },
     hasDrafts: () => draftReferences().length > 0,
     prepareSubmission(overallInstruction) {
       const drafts = draftReferences();
@@ -617,7 +648,7 @@ export function createQuoteReplies(options: {
       const incomplete = drafts.find((reference) => !reference.question.trim());
       if (incomplete) {
         jumpToReference(incomplete);
-        window.setTimeout(() => incomplete.note.querySelector<HTMLInputElement>("input")?.focus(), 350);
+        window.setTimeout(() => incomplete.note.querySelector<HTMLTextAreaElement>("textarea")?.focus(), 350);
         throw new Error("Each linked quote needs its own question.");
       }
       return {
@@ -656,6 +687,7 @@ export function createQuoteReplies(options: {
       const saved = { references: [...references], pending, nextId, persisted: new Map(persistedReplies) };
       return { restore() {
         references = saved.references;
+        references.forEach(positioning.mount);
         pending = saved.pending;
         nextId = saved.nextId;
         persistedReplies.clear();
@@ -672,6 +704,7 @@ export function createQuoteReplies(options: {
       // Transcript teardown only clears rendered UI. Draft deletion is reserved
       // for explicit submission/removal paths.
       drafts.flush();
+      references.forEach(positioning.remove);
       references = [];
       persistedReplies.clear();
       pending = undefined;
