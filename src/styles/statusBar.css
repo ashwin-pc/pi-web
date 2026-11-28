@@ -78,8 +78,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.activityStatus,
-.connectionStatus {
+.activityStatus {
   flex: 0 1 auto;
   min-width: 0;
   max-width: min(220px, 34vw);
@@ -93,8 +92,7 @@
   font-size: 11px;
   line-height: 17px;
 }
-.activityStatus[hidden],
-.connectionStatus[hidden] { display: none; }
+.activityStatus[hidden] { display: none; }
 .activityStatus.running {
   border-color: color-mix(in srgb, var(--accent) 34%, transparent);
   color: var(--accent);
@@ -106,26 +104,6 @@
 .activityStatus.stale {
   border-color: color-mix(in srgb, #fb923c 48%, transparent);
   color: #fb923c;
-}
-.connectionStatus.reconnecting {
-  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
-  color: var(--accent);
-}
-.connectionStatus.offline {
-  border-color: color-mix(in srgb, var(--danger, #ef4444) 45%, transparent);
-  color: var(--danger, #ef4444);
-}
-.connectionStatus.reconnected {
-  border-color: color-mix(in srgb, var(--success, #22c55e) 45%, transparent);
-  color: var(--success, #22c55e);
-}
-.connectionStatus.syncRequired {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  color: var(--accent);
-}
-.connectionStatus.syncRequired,
-.connectionStatus.offline {
-  cursor: pointer;
 }
 
 @media (max-width: 700px) {

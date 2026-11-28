@@ -591,7 +591,6 @@ export type AppState = {
   lastRealtimeSeq: number;
   reconnectNoticeTimer: number | undefined;
   connectionLostTimer: number | undefined;
-  reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
@@ -736,7 +735,6 @@ export function createAppState(): AppState {
     lastRealtimeSeq: 0,
     reconnectNoticeTimer: undefined,
     connectionLostTimer: undefined,
-    reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
     lanes: readLegacyPinnedSessions().map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionNotes: [],

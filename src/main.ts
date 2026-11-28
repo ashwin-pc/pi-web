@@ -65,6 +65,7 @@ import { createSessions, type SessionsController } from "./sessions/sessionDrawe
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
+import { createToastCenter } from "./components/toasts.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
@@ -673,7 +674,9 @@ modelSettings = createModelSettings({
   addMessage: messages.addMessage,
 });
 
+const toasts = createToastCenter(elements.connectionStatusEl);
 statusBar = createStatusBar({
+  toasts,
   state,
   elements,
   api,
